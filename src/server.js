@@ -31,22 +31,30 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
+
 app.post("/webhook", async (req, res) => {
   try {
-    console.log("Webhook received:");
+    console.log(
+      `[${new Date().toLocaleString()}] Webhook received`
+    );
+
     console.log(req.body);
 
-    const { signal, symbol, price } = req.body;
+    const { signal, symbol, price, time } = req.body;
+
+    const emoji = signal === "BUY" ? "🚀" : "🔻";
 
     await sendTelegram(
-      `🚨 Trading Signal
-
-Signal : ${signal}
+`${emoji} ${signal === "BUY" ? "LONG ENTRY" : "SHORT ENTRY"}
 
 Symbol : ${symbol}
 
-Price : ${price}`,
+Price  : ${price}
+
+Time   : ${time}`
     );
+
+    console.log("Telegram sent successfully");
 
     res.status(200).send("Webhook processed");
   } catch (error) {

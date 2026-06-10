@@ -1,34 +1,32 @@
 const axios = require("axios");
+const logger = require("./logger");
 
 async function sendTelegram(message) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
 
-    const token = process.env.TELEGRAM_BOT_TOKEN;
-    const chatId = process.env.TELEGRAM_CHAT_ID;
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
 
-    const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  try {
+    const response = await axios.post(url, {
+      chat_id: chatId,
+      text: message,
+    });
 
-    try {
+    logger.info("Telegram sent successfully");
 
-        const response = await axios.post(url, {
-            chat_id: chatId,
-            text: message
-        });
+    return response.data;
+  } catch (error) {
+    logger.error(
+      `Telegram Error: ${JSON.stringify(
+        error.response?.data || error.message,
+      )}`,
+    );
 
-        console.log("Telegram sent successfully");
-
-        return response.data;
-
-    } catch (error) {
-
-        console.error(
-            "Telegram Error:",
-            error.response?.data || error.message
-        );
-
-        throw error;
-    }
+    throw error;
+  }
 }
 
 module.exports = {
-    sendTelegram
+  sendTelegram,
 };

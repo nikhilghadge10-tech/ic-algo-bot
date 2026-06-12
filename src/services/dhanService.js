@@ -21,19 +21,29 @@ async function getProfile() {
 
 async function placeOrder(orderData) {
   try {
-    const response = await axios.post(
-      "https://api.dhan.co/v2/orders",
-      orderData,
-      {
-        headers,
+    const response = await axios.post(url, payload, {
+      headers: {
+        "access-token": process.env.DHAN_ACCESS_TOKEN,
       },
+    });
+
+    logger.info(`DHAN SUCCESS: ${JSON.stringify(response.data)}`);
+
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    logger.error(
+      `DHAN FAILED: ${
+        error.response ? JSON.stringify(error.response.data) : error.message
+      }`,
     );
 
-    return response.data;
-  } catch (error) {
-    console.error("Dhan Order Error:", error.response?.data || error.message);
-
-    throw error;
+    return {
+      success: false,
+      error: error.response ? error.response.data : error.message,
+    };
   }
 }
 

@@ -106,14 +106,25 @@ app.post("/webhook", async (req, res) => {
 
     const { signal, symbol, price, time } = req.body;
 
+    if (!signal || !symbol || !price) {
+      logger.warn(`Invalid webhook payload: ${JSON.stringify(req.body)}`);
+
+      await sendTelegram(
+        `❌ Invalid Webhook Payload
+
+Received:
+${JSON.stringify(req.body, null, 2)}
+
+No order placed.`,
+      );
+
+      return res.status(400).send("Invalid payload");
+    }
+
     lastSignal = signal;
     lastSignalTime = time || new Date().toISOString();
 
     logger.info(`Last Signal Updated: ${signal}`);
-
-    if (!signal || !symbol || !price) {
-      return res.status(400).send("Invalid payload");
-    }
 
     // Trading disabled today
     if (process.env.NO_TRADE_TODAY === "true") {
@@ -135,57 +146,104 @@ No order placed.`,
     const emoji = getSignalEmoji(signal);
 
     switch (signal) {
+      //  =============================== LONG ENTRY ===============================
       case "LONG_ENTRY": {
-        if (currentPosition !== null) {
-          await sendTelegram(
-            `⚠️ LONG_ENTRY ignored
+        if (currentPosition === "LONG") {
+          logger.warn("Duplicate LONG_ENTRY ignored");
 
-Current Position : ${currentPosition}`,
+          await sendTelegram(
+            `⚠️ Duplicate LONG ignored
+
+Already in LONG position.
+
+Symbol : ${symbol}
+Price : ${price}
+
+No order placed.`,
           );
 
-          return res.status(200).send("Position already open");
+          return res.status(200).send("Duplicate ignored");
         }
+        try {
+          if (currentPosition !== null) {
+            await sendTelegram(
+              `⚠️ LONG_ENTRY ignored
 
-        const option = getOptionDetails(signal, price);
+Current Position : ${currentPosition}`,
+            );
 
-        const contract = getNiftyOption(option.strike, option.optionType);
+            return res.status(200).send("Position already open");
+          }
 
-        if (!contract) {
-          logger.error("No matching option contract found");
+          const option = getOptionDetails(signal, price);
 
-          return res.status(500).send("Contract not found");
-        }
-        quantity =
-          Number(process.env.LOT_SIZE) *
-          Number(process.env.NUMBER_OF_LOTS || 1);
+          const contract = getNiftyOption(option.strike, option.optionType);
 
-        securityId = contract.SEM_SMST_SECURITY_ID;
-        optionSymbol = contract.SEM_CUSTOM_SYMBOL;
+          if (!contract) {
+            logger.error("No matching option contract found");
 
-        console.log(contract);
+            await sendTelegram(
+              `❌ Contract Not Found
 
-        logger.info(`Selected Option: ${option.strike} ${option.optionType}`);
+Signal : ${signal}
+Symbol : ${symbol}
+Price  : ${price}
 
-        console.log("ORDER CONTRACT");
-        console.log(contract);
+No matching NIFTY option contract found.
 
-        const orderResult = await placeMarketBuyOrder(contract, quantity);
+No order placed.`,
+            );
 
-        console.log(orderResult);
+            return res.status(200).send("Contract not found");
+          }
 
-        currentPosition = "LONG";
+          quantity =
+            Number(process.env.LOT_SIZE) *
+            Number(process.env.NUMBER_OF_LOTS || 1);
 
-        logger.info("Position changed to LONG");
+          securityId = contract.SEM_SMST_SECURITY_ID;
+          optionSymbol = contract.SEM_CUSTOM_SYMBOL;
 
-        savePosition({
-          currentPosition,
-          securityId: contract.SEM_SMST_SECURITY_ID,
-          quantity,
-          optionSymbol: contract.SEM_CUSTOM_SYMBOL,
-        });
+          console.log(contract);
 
-        await sendTelegram(
-          `${emoji} PAPER TRADE
+          logger.info(`Selected Option: ${option.strike} ${option.optionType}`);
+
+          console.log("ORDER CONTRACT");
+          console.log(contract);
+
+          const orderResult = await placeMarketBuyOrder(contract, quantity);
+
+          console.log(orderResult);
+
+          if (!orderResult.success) {
+            await sendTelegram(
+              `❌ LONG_ENTRY failed
+
+Symbol : ${symbol}
+Price  : ${price}
+
+Reason:
+${JSON.stringify(orderResult.error, null, 2)}
+
+Position NOT changed.`,
+            );
+
+            return res.status(200).send("LONG_ENTRY failed");
+          }
+
+          currentPosition = "LONG";
+
+          logger.info("Position changed to LONG");
+
+          savePosition({
+            currentPosition,
+            securityId: contract.SEM_SMST_SECURITY_ID,
+            quantity,
+            optionSymbol: contract.SEM_CUSTOM_SYMBOL,
+          });
+
+          await sendTelegram(
+            `${emoji} PAPER TRADE
 
 Signal : LONG_ENTRY
 
@@ -204,62 +262,112 @@ ${contract.SEM_SMST_SECURITY_ID}
 Qty : ${process.env.LOT_SIZE}
 
 No real order placed.`,
-        );
-
-        break;
-      }
-      case "SHORT_ENTRY": {
-        if (currentPosition !== null) {
-          await sendTelegram(
-            `⚠️ SHORT_ENTRY ignored
-
-Current Position : ${currentPosition}`,
           );
 
-          return res.status(200).send("Position already open");
+          break;
+        } catch (err) {
+          logger.error("LONG_ENTRY FAILED", err);
+          return res.status(500).send("LONG_ENTRY failed");
         }
+      }
+      //  =============================== SHORT ENTRY ===============================
+      case "SHORT_ENTRY": {
+        if (currentPosition === "SHORT") {
+          logger.warn("Duplicate SHORT_ENTRY ignored");
 
-        const option = getOptionDetails(signal, price);
+          await sendTelegram(
+            `⚠️ Duplicate SHORT ignored
 
-        const contract = getNiftyOption(option.strike, option.optionType);
+Already in SHORT position.
 
-        if (!contract) {
-          logger.error("No matching option contract found");
+Symbol : ${symbol}
+Price : ${price}
 
-          return res.status(500).send("Contract not found");
+No order placed.`,
+          );
+
+          return res.status(200).send("Duplicate ignored");
         }
+        try {
+          if (currentPosition !== null) {
+            await sendTelegram(
+              `⚠️ SHORT_ENTRY ignored
 
-        quantity =
-          Number(process.env.LOT_SIZE) *
-          Number(process.env.NUMBER_OF_LOTS || 1);
+Current Position : ${currentPosition}`,
+            );
 
-        securityId = contract.SEM_SMST_SECURITY_ID;
-        optionSymbol = contract.SEM_CUSTOM_SYMBOL;
+            return res.status(200).send("Position already open");
+          }
 
-        console.log(contract);
+          const option = getOptionDetails(signal, price);
 
-        logger.info(`Selected Option: ${option.strike} ${option.optionType}`);
+          const contract = getNiftyOption(option.strike, option.optionType);
 
-        console.log("ORDER QUANTITY");
-        console.log(quantity);
+          if (!contract) {
+            logger.error("No matching option contract found");
 
-        const orderResult = await placeMarketBuyOrder(contract, quantity);
+            await sendTelegram(
+              `❌ Contract Not Found
 
-        console.log(orderResult);
+Signal : ${signal}
+Symbol : ${symbol}
+Price  : ${price}
 
-        currentPosition = "SHORT";
+No matching NIFTY option contract found.
 
-        logger.info("Position changed to SHORT");
+No order placed.`,
+            );
 
-        savePosition({
-          currentPosition,
-          securityId: contract.SEM_SMST_SECURITY_ID,
-          quantity,
-          optionSymbol: contract.SEM_CUSTOM_SYMBOL,
-        });
+            return res.status(200).send("Contract not found");
+          }
 
-        await sendTelegram(
-          `${emoji} PAPER TRADE
+          quantity =
+            Number(process.env.LOT_SIZE) *
+            Number(process.env.NUMBER_OF_LOTS || 1);
+
+          securityId = contract.SEM_SMST_SECURITY_ID;
+          optionSymbol = contract.SEM_CUSTOM_SYMBOL;
+
+          console.log(contract);
+
+          logger.info(`Selected Option: ${option.strike} ${option.optionType}`);
+
+          console.log("ORDER QUANTITY");
+          console.log(quantity);
+
+          const orderResult = await placeMarketBuyOrder(contract, quantity);
+
+          console.log(orderResult);
+
+          if (!orderResult.success) {
+            await sendTelegram(
+              `❌ SHORT_ENTRY failed
+
+Symbol : ${symbol}
+Price  : ${price}
+
+Reason:
+${JSON.stringify(orderResult.error, null, 2)}
+
+Position NOT changed.`,
+            );
+
+            return res.status(200).send("LONG_ENTRY failed");
+          }
+
+          currentPosition = "SHORT";
+
+          logger.info("Position changed to SHORT");
+
+          savePosition({
+            currentPosition,
+            securityId: contract.SEM_SMST_SECURITY_ID,
+            quantity,
+            optionSymbol: contract.SEM_CUSTOM_SYMBOL,
+          });
+
+          await sendTelegram(
+            `${emoji} PAPER TRADE
 
 Signal : SHORT_ENTRY
 
@@ -278,10 +386,15 @@ ${contract.SEM_SMST_SECURITY_ID}
 Qty : ${process.env.LOT_SIZE}
 
 No real order placed.`,
-        );
-        break;
-      }
+          );
 
+          break;
+        } catch (err) {
+          logger.error("SHORT_ENTRY FAILED", err);
+          return res.status(500).send("SHORT_ENTRY failed");
+        }
+      }
+      //  =============================== LONG EXIT ===============================
       case "LONG_EXIT": {
         if (currentPosition !== "LONG") {
           return res.status(200).send("No LONG position");
@@ -328,7 +441,7 @@ Position Closed`,
 
         break;
       }
-
+      //  =============================== SHORT EXIT ===============================
       case "SHORT_EXIT": {
         if (currentPosition !== "SHORT") {
           return res.status(200).send("No SHORT position");
@@ -377,7 +490,19 @@ Position Closed`,
         break;
       }
       default:
-        return res.status(400).send("Unknown signal");
+        logger.warn(`Unknown signal received: ${signal}`);
+
+        await sendTelegram(
+          `⚠️ Unknown Signal Received
+
+Signal : ${signal}
+Symbol : ${symbol}
+Price  : ${price}
+
+No order placed.`,
+        );
+
+        return res.status(200).send("Unknown signal ignored");
     }
 
     console.log(`Current Position = ${currentPosition}`);

@@ -1,5 +1,19 @@
 const axios = require("axios");
 
+function handleDhanError(error, payload, orderSide) {
+  console.log(`DHAN ${orderSide} ERROR STATUS:`, error.response?.status);
+  console.log(`DHAN ${orderSide} ERROR DATA:`, error.response?.data);
+  console.log(`DHAN ${orderSide} ERROR MESSAGE:`, error.message);
+
+  return {
+    success: false,
+    side: orderSide,
+    payload,
+    status: error.response?.status,
+    error: error.response?.data || error.message,
+  };
+}
+
 async function placeMarketBuyOrder(contract, quantity) {
   const payload = {
     dhanClientId: process.env.DHAN_CLIENT_ID,
@@ -12,7 +26,6 @@ async function placeMarketBuyOrder(contract, quantity) {
     quantity,
   };
 
-  // PAPER MODE
   if (process.env.PAPER_TRADE === "true") {
     console.log("\n==============================");
     console.log("PAPER ORDER");
@@ -21,23 +34,42 @@ async function placeMarketBuyOrder(contract, quantity) {
     console.log("==============================\n");
 
     return {
+      success: true,
       paperTrade: true,
       payload,
     };
   }
 
-  const response = await axios.post("https://api.dhan.co/v2/orders", payload, {
-    headers: {
-      "access-token": process.env.DHAN_ACCESS_TOKEN,
-      "client-id": process.env.DHAN_CLIENT_ID,
-      "Content-Type": "application/json",
-    },
-  });
+  console.log("\n==============================");
+  console.log("LIVE BUY ORDER");
+  console.log("==============================");
+  console.log(payload);
+  console.log("==============================\n");
 
-  console.log("DHAN RESPONSE");
-  console.log(response.data);
+  try {
+    const response = await axios.post(
+      "https://api.dhan.co/v2/orders",
+      payload,
+      {
+        headers: {
+          "access-token": process.env.DHAN_ACCESS_TOKEN,
+          "client-id": process.env.DHAN_CLIENT_ID,
+          "Content-Type": "application/json",
+        },
+      },
+    );
 
-  return response.data;
+    console.log("DHAN BUY RESPONSE");
+    console.log(response.data);
+
+    return {
+      success: true,
+      data: response.data,
+      payload,
+    };
+  } catch (error) {
+    return handleDhanError(error, payload, "BUY");
+  }
 }
 
 async function placeMarketSellOrder(securityId, quantity) {
@@ -60,23 +92,36 @@ async function placeMarketSellOrder(securityId, quantity) {
     console.log("==============================\n");
 
     return {
+      success: true,
       paperTrade: true,
       payload,
     };
   }
 
-  const response = await axios.post("https://api.dhan.co/v2/orders", payload, {
-    headers: {
-      "access-token": process.env.DHAN_ACCESS_TOKEN,
-      "client-id": process.env.DHAN_CLIENT_ID,
-      "Content-Type": "application/json",
-    },
-  });
+  try {
+    const response = await axios.post(
+      "https://api.dhan.co/v2/orders",
+      payload,
+      {
+        headers: {
+          "access-token": process.env.DHAN_ACCESS_TOKEN,
+          "client-id": process.env.DHAN_CLIENT_ID,
+          "Content-Type": "application/json",
+        },
+      },
+    );
 
-  console.log("DHAN RESPONSE");
-  console.log(response.data);
+    console.log("DHAN SELL RESPONSE");
+    console.log(response.data);
 
-  return response.data;
+    return {
+      success: true,
+      data: response.data,
+      payload,
+    };
+  } catch (error) {
+    return handleDhanError(error, payload, "SELL");
+  }
 }
 
 module.exports = {

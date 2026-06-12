@@ -6,8 +6,23 @@ const { sendTelegram } = require("./services/telegramService");
 const { getProfile } = require("./services/dhanService");
 const { loadPosition, savePosition } = require("./services/positionService");
 const { getOptionDetails } = require("./services/optionSelector");
+const {
+  placeMarketBuyOrder,
+  placeMarketSellOrder,
+} = require("./services/dhanOrderService");
 
-let currentPosition = loadPosition().currentPosition;
+const { placeOrder } = require("./services/dhanService");
+const {
+  loadInstruments,
+  getNiftyOption,
+} = require("./services/instrumentService");
+
+const positionData = loadPosition();
+
+let currentPosition = positionData.currentPosition;
+let securityId = positionData.securityId;
+let quantity = positionData.quantity;
+let optionSymbol = positionData.optionSymbol;
 
 console.log(`Restored Position: ${currentPosition}`);
 
@@ -49,6 +64,8 @@ app.get("/dhan-test", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
+loadInstruments();
+
 app.get("/status", (req, res) => {
   res.json({
     currentPosition,
@@ -82,6 +99,8 @@ function getSignalEmoji(signal) {
 }
 
 app.post("/webhook", async (req, res) => {
+  console.log("Webhook Position =", currentPosition);
+
   try {
     logger.info(`Webhook received: ${JSON.stringify(req.body)}`);
 
@@ -127,16 +146,43 @@ Current Position : ${currentPosition}`,
           return res.status(200).send("Position already open");
         }
 
+        const option = getOptionDetails(signal, price);
+
+        const contract = getNiftyOption(option.strike, option.optionType);
+
+        if (!contract) {
+          logger.error("No matching option contract found");
+
+          return res.status(500).send("Contract not found");
+        }
+        quantity =
+          Number(process.env.LOT_SIZE) *
+          Number(process.env.NUMBER_OF_LOTS || 1);
+
+        securityId = contract.SEM_SMST_SECURITY_ID;
+        optionSymbol = contract.SEM_CUSTOM_SYMBOL;
+
+        console.log(contract);
+
+        logger.info(`Selected Option: ${option.strike} ${option.optionType}`);
+
+        console.log("ORDER CONTRACT");
+        console.log(contract);
+
+        const orderResult = await placeMarketBuyOrder(contract, quantity);
+
+        console.log(orderResult);
+
         currentPosition = "LONG";
+
         logger.info("Position changed to LONG");
 
         savePosition({
           currentPosition,
+          securityId: contract.SEM_SMST_SECURITY_ID,
+          quantity,
+          optionSymbol: contract.SEM_CUSTOM_SYMBOL,
         });
-
-        const option = getOptionDetails(signal, price);
-
-        logger.info(`Selected Option: ${option.strike} ${option.optionType}`);
 
         await sendTelegram(
           `${emoji} PAPER TRADE
@@ -150,7 +196,10 @@ Underlying : ${symbol}
 Spot Price : ${price}
 
 Selected :
-${option.strike} ${option.optionType}
+${contract.SEM_CUSTOM_SYMBOL}
+
+Security ID :
+${contract.SEM_SMST_SECURITY_ID}
 
 Qty : ${process.env.LOT_SIZE}
 
@@ -170,16 +219,44 @@ Current Position : ${currentPosition}`,
           return res.status(200).send("Position already open");
         }
 
+        const option = getOptionDetails(signal, price);
+
+        const contract = getNiftyOption(option.strike, option.optionType);
+
+        if (!contract) {
+          logger.error("No matching option contract found");
+
+          return res.status(500).send("Contract not found");
+        }
+
+        quantity =
+          Number(process.env.LOT_SIZE) *
+          Number(process.env.NUMBER_OF_LOTS || 1);
+
+        securityId = contract.SEM_SMST_SECURITY_ID;
+        optionSymbol = contract.SEM_CUSTOM_SYMBOL;
+
+        console.log(contract);
+
+        logger.info(`Selected Option: ${option.strike} ${option.optionType}`);
+
+        console.log("ORDER QUANTITY");
+        console.log(quantity);
+
+        const orderResult = await placeMarketBuyOrder(contract, quantity);
+
+        console.log(orderResult);
+
         currentPosition = "SHORT";
+
         logger.info("Position changed to SHORT");
 
         savePosition({
           currentPosition,
+          securityId: contract.SEM_SMST_SECURITY_ID,
+          quantity,
+          optionSymbol: contract.SEM_CUSTOM_SYMBOL,
         });
-
-        const option = getOptionDetails(signal, price);
-
-        logger.info(`Selected Option: ${option.strike} ${option.optionType}`);
 
         await sendTelegram(
           `${emoji} PAPER TRADE
@@ -193,7 +270,10 @@ Underlying : ${symbol}
 Spot Price : ${price}
 
 Selected :
-${option.strike} ${option.optionType}
+${contract.SEM_CUSTOM_SYMBOL}
+
+Security ID :
+${contract.SEM_SMST_SECURITY_ID}
 
 Qty : ${process.env.LOT_SIZE}
 
@@ -202,13 +282,28 @@ No real order placed.`,
         break;
       }
 
-      case "LONG_EXIT":
+      case "LONG_EXIT": {
         if (currentPosition !== "LONG") {
           return res.status(200).send("No LONG position");
         }
 
+        console.log("EXIT SECURITY ID =", securityId);
+        console.log("EXIT QUANTITY =", quantity);
+
+        const exitSecurityId = securityId;
+        const exitQuantity = quantity;
+        const exitOptionSymbol = optionSymbol;
+
+        const exitResult = await placeMarketSellOrder(
+          exitSecurityId,
+          exitQuantity,
+        );
+        console.log(exitResult);
+
         currentPosition = null;
-        logger.info("Position closed");
+        securityId = null;
+        quantity = null;
+        optionSymbol = null;
 
         savePosition({
           currentPosition,
@@ -219,17 +314,44 @@ No real order placed.`,
 
 Signal : LONG_EXIT
 
+Contract :
+${exitOptionSymbol}
+
+Security ID :
+${exitSecurityId}
+
+Qty :
+${exitQuantity}
+
 Position Closed`,
         );
 
         break;
+      }
 
-      case "SHORT_EXIT":
+      case "SHORT_EXIT": {
         if (currentPosition !== "SHORT") {
           return res.status(200).send("No SHORT position");
         }
 
+        console.log("EXIT SECURITY ID =", securityId);
+        console.log("EXIT QUANTITY =", quantity);
+
+        const exitSecurityId = securityId;
+        const exitQuantity = quantity;
+        const exitOptionSymbol = optionSymbol;
+
+        const exitResult = await placeMarketSellOrder(
+          exitSecurityId,
+          exitQuantity,
+        );
+
+        console.log(exitResult);
+
         currentPosition = null;
+        securityId = null;
+        quantity = null;
+        optionSymbol = null;
 
         savePosition({
           currentPosition,
@@ -240,11 +362,20 @@ Position Closed`,
 
 Signal : SHORT_EXIT
 
+Contract :
+${exitOptionSymbol}
+
+Security ID :
+${exitSecurityId}
+
+Qty :
+${exitQuantity}
+
 Position Closed`,
         );
 
         break;
-
+      }
       default:
         return res.status(400).send("Unknown signal");
     }

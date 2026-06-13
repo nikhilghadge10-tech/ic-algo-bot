@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Algo Bot Control Center</title>
+  <link rel="stylesheet" href="style.css">
+
+  <script
+    id="sap-ui-bootstrap"
+    src="https://sdk.openui5.org/resources/sap-ui-core.js"
+    data-sap-ui-theme="sap_horizon"
+    data-sap-ui-libs="sap.m"
+    data-sap-ui-async="true">
+  </script>
+
+  <script>
+    sap.ui.getCore().attachInit(async function () {
+      const config = await fetch("/api/config").then(r => r.json());
+      config.algoLiveStatus = {};
+      config.ngrokUrl = "";
+
+      const model = new sap.ui.model.json.JSONModel(config);
+      sap.ui.getCore().setModel(model);
+
+      async function refreshConfig() {
+        const fresh = await fetch("/api/config").then(r => r.json());
+        const currentData = model.getData();
+
+        fresh.algoLiveStatus = currentData.algoLiveStatus || {};
+        fresh.ngrokUrl = currentData.ngrokUrl || "";
+
+        model.setData(fresh);
+      }
+
+      async function refreshAlgoStatus() {
+        try {
+          const status = await fetch("/api/algo-status").then(r => r.json());
+          model.setProperty("/algoLiveStatus", status);
+        } catch (error) {
+          model.setProperty("/algoLiveStatus", {
+            running: false,
+            currentPosition: null,
+            lastSignal: "",
+            lastSignalTime: "",
+            message: "Algo server not reachable"
+          });
+        }
+      }
+
+      async function refreshNgrokUrl() {
+        try {
+          const result = await fetch("/api/ngrok-url").then(r => r.json());
+          model.setProperty("/ngrokUrl", result.url || "");
+        } catch (error) {
+          model.setProperty("/ngrokUrl", "");
+        }
+      }
+
+      async function saveConfig() {
+        const data = model.getData();
+
+        await fetch("/api/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ALLOW_BUY: data.ALLOW_BUY,
+            ALLOW_SELL: data.ALLOW_SELL,
+            PAPER_TRADE: data.PAPER_TRADE,
+            NO_TRADE_TODAY: data.NO_TRADE_TODAY,
+            MAX_DAILY_TRADES: data.MAX_DAILY_TRADES,
+            MAX_OPEN_POSITIONS: data.MAX_OPEN_POSITIONS,
+            NUMBER_OF_LOTS: data.NUMBER_OF_LOTS,
+            LOT_SIZE: data.LOT_SIZE,
+
+            TRADING_CAPITAL: data.TRADING_CAPITAL,
+            RISK_MODE: data.RISK_MODE,
+            RISK_PERCENT: data.RISK_PERCENT,
+            PLANNING_SL_POINTS: data.PLANNING_SL_POINTS,
+            MARKET_BIAS: data.MARKET_BIAS,
+          })
+        });
+
+        sap.m.MessageToast.show("Config saved. Restart algo server to apply.");
+        await refreshConfig();
+      }
+
+      async function postAction(url) {
+        const result = await fetch(url, { method: "POST" }).then(r => r.json());
+        sap.m.MessageToast.show(result.message);
+
+        await refreshConfig();
+        await refreshAlgoStatus();
+        await refreshNgrokUrl();
+      }
+
+      async function emergencyStop() {
+        const result = await fetch("/api/emergency-stop", {
+          method: "POST"
+        }).then(r => r.json());
+
+        sap.m.MessageToast.show(result.message);
+
+        await refreshConfig();
+        await refreshAlgoStatus();
+        await refreshNgrokUrl();
+      }
+
+      function createStatusTile(title, path, activeText, inactiveText) {
+        return new sap.m.VBox({
+          items: [
+            new sap.m.Text({ text: title }).addStyleClass("statusTitle"),
+            new sap.m.ObjectStatus({
+              text: {
+                path: path,
+                formatter: function(value) {
+                  if (value === "true") return activeText;
+                  if (value === "false") return inactiveText || "Off";
+                  if (typeof value === "boolean") return value ? activeText : (inactiveText || "Stopped");
+                  return value || "-";
+                }
+              },
+              state: {
+                path: path,
+                formatter: function(value) {
+                  return (value === true || value === "true") ? "Success" : "Error";
+                }
+              }
+            })
+          ]
+        }).addStyleClass("statusTile");
+      }
+
+      function createSwitchRow(label, onText, offText, path, infoText) {
+        const infoIcon = new sap.ui.core.Icon({
+          src: "sap-icon://hint"
+        }).addStyleClass("infoIcon");
+
+        const popover = new sap.m.Popover({
+          showHeader: false,
+          placement: "Right",
+          contentWidth: "260px",
+          content: [
+            new sap.m.Text({ text: infoText }).addStyleClass("infoText")
+          ]
+        });
+
+        infoIcon.attachBrowserEvent("mouseenter", function () {
+          popover.openBy(infoIcon);
+        });
+
+        infoIcon.attachBrowserEvent("mouseleave", function () {
+          popover.close();
+        });
+
+        return new sap.m.HBox({
+          alignItems: "Center",
+          items: [
+            new sap.m.Label({ text: label }).addStyleClass("flagLabel"),
+            infoIcon,
+            new sap.m.Switch({
+              customTextOn: onText,
+              customTextOff: offText,
+              state: {
+                path: "/" + path,
+                formatter: function(value) {
+                  if (path === "NO_TRADE_TODAY") {
+                    return value !== "true";
+                  }
+                  return value === "true";
+                }
+              },
+              change: function(e) {
+                if (path === "NO_TRADE_TODAY") {
+                  model.setProperty(
+                    "/" + path,
+                    e.getParameter("state") ? "false" : "true"
+                  );
+                } else {
+                  model.setProperty(
+                    "/" + path,
+                    e.getParameter("state") ? "true" : "false"
+                  );
+                }
+              }
+            }).addStyleClass("flagSwitch")
+          ]
+        }).addStyleClass("flagRow");
+      }
+
+ function createPermissionTile(label, onText, offText, path, infoText) {
+  const infoIcon = new sap.ui.core.Icon({
+    src: "sap-icon://hint",
+    tooltip: infoText
+  }).addStyleClass("permissionInfoIcon");
+
+  return new sap.m.VBox({
+    items: [
+      new sap.m.HBox({
+        alignItems: "Center",
+        justifyContent: "Center",
+        items: [
+          new sap.m.Label({ text: label }).addStyleClass("permissionLabel"),
+          infoIcon
+        ]
+      }),
+
+      new sap.m.Switch({
+        customTextOn: onText,
+        customTextOff: offText,
+        state: {
+          path: "/" + path,
+          formatter: function(value) {
+            return value === "true";
+          }
+        },
+        change: function(e) {
+          model.setProperty(
+            "/" + path,
+            e.getParameter("state") ? "true" : "false"
+          );
+        }
+      }).addStyleClass("permissionSwitch")
+    ]
+  }).addStyleClass("permissionTile");
+}
+
+      function calculateRisk() {
+
+  const data = model.getData();
+
+  const capital =
+    Number(data.TRADING_CAPITAL || 0);
+
+  const riskPercent =
+    Number(data.RISK_PERCENT || 1);
+
+  const sl =
+    Number(data.PLANNING_SL_POINTS || 0);
+
+  const lotSize =
+    Number(data.LOT_SIZE || 65);
+
+  const maxTrades =
+    Number(data.MAX_DAILY_TRADES || 1);
+
+
+  let riskAmount =
+    capital * riskPercent / 100;
+
+
+  let lossPerLot =
+    sl * lotSize;
+
+
+  let lots = 0;
+
+
+  if (lossPerLot > 0) {
+
+    lots =
+      Math.floor(
+        riskAmount / lossPerLot
+      );
+
+    if (data.RISK_MODE === "PER_DAY") {
+
+      lots =
+        Math.floor(
+          lots / maxTrades
+        );
+
+    }
+  }
+
+
+  let longLots = lots;
+  let shortLots = lots;
+
+
+if (data.MARKET_BIAS === "BULLISH") {
+
+  shortLots =
+    lots > 1
+      ? Math.max(1, Math.floor(lots / 2))
+      : lots;
+
+}
+
+
+if (data.MARKET_BIAS === "BEARISH") {
+
+  longLots =
+    lots > 1
+      ? Math.max(1, Math.floor(lots / 2))
+      : lots;
+
+}
+
+
+  model.setProperty(
+    "/CALC_RISK_AMOUNT",
+    riskAmount
+  );
+
+  model.setProperty(
+    "/CALC_LOSS_PER_LOT",
+    lossPerLot
+  );
+
+  model.setProperty(
+    "/CALC_LONG_LOTS",
+    longLots
+  );
+
+  model.setProperty(
+    "/CALC_SHORT_LOTS",
+    shortLots
+  );
+
+}
+
+function calculateRisk() {
+  const data = model.getData();
+
+  const capital = Number(data.TRADING_CAPITAL || 0);
+  const riskPercent = Number(data.RISK_PERCENT || 1);
+  const sl = Number(data.PLANNING_SL_POINTS || 0);
+  const lotSize = Number(data.LOT_SIZE || 65);
+  const maxTrades = Number(data.MAX_DAILY_TRADES || 1);
+
+  const riskAmount = capital * riskPercent / 100;
+  const lossPerLot = sl * lotSize;
+
+  let lots = 0;
+
+  if (lossPerLot > 0) {
+    lots = Math.floor(riskAmount / lossPerLot);
+
+    if (data.RISK_MODE === "PER_DAY") {
+      lots = Math.floor(lots / maxTrades);
+    }
+  }
+
+  let longLots = lots;
+  let shortLots = lots;
+
+  if (data.MARKET_BIAS === "BULLISH") {
+    shortLots = Math.floor(lots / 2);
+  }
+
+  if (data.MARKET_BIAS === "BEARISH") {
+    longLots = Math.floor(lots / 2);
+  }
+
+  model.setProperty("/CALC_RISK_AMOUNT", riskAmount);
+  model.setProperty("/CALC_LOSS_PER_LOT", lossPerLot);
+  model.setProperty("/CALC_LONG_LOTS", longLots);
+  model.setProperty("/CALC_SHORT_LOTS", shortLots);
+}
+
+      function createNumberField(label, path) {
+        return new sap.m.VBox({
+          items: [
+            new sap.m.Label({ text: label }).addStyleClass("fieldLabel"),
+            new sap.m.Input({
+              value: "{/" + path + "}",
+              type: "Number",
+              width: "220px"
+            })
+          ]
+        }).addStyleClass("riskField");
+      }
+
+      const page = new sap.m.Page({
+        title: "Algo Bot Control Center",
+        content: [
+          new sap.m.VBox({
+            items: [
+              new sap.m.VBox({
+                items: [
+                  new sap.m.Title({
+                    text: "Algo Bot Control Center",
+                    level: "H2"
+                  }).addStyleClass("heroTitle"),
+
+                  new sap.m.Text({
+                    text: "Local cockpit for server, ngrok, trading flags and risk settings."
+                  }).addStyleClass("heroText")
+                ]
+              }).addStyleClass("heroCard"),
+
+  
+
+
+              new sap.m.VBox({
+                items: [
+                  new sap.m.Title({
+                    text: "Live Trading Status",
+                    level: "H3"
+                  }).addStyleClass("sectionTitle"),
+
+                  new sap.m.HBox({
+                    items: [
+  
+
+                      new sap.m.VBox({
+                        items: [
+                          new sap.m.Text({ text: "Current Position" }).addStyleClass("statusTitle"),
+                          new sap.m.ObjectStatus({
+                            text: {
+                              path: "/algoLiveStatus/currentPosition",
+                              formatter: v => v || "NONE"
+                            },
+                            state: {
+                              path: "/algoLiveStatus/currentPosition",
+                              formatter: v => v ? "Warning" : "Success"
+                            }
+                          })
+                        ]
+                      }).addStyleClass("statusTile"),
+
+                      new sap.m.VBox({
+                        items: [
+                          new sap.m.Text({ text: "Last Signal" }).addStyleClass("statusTitle"),
+                          new sap.m.ObjectStatus({
+                            text: {
+                              path: "/algoLiveStatus/lastSignal",
+                              formatter: v => v || "-"
+                            },
+                            state: "Information"
+                          })
+                        ]
+                      }).addStyleClass("statusTile"),
+
+                      new sap.m.VBox({
+                        items: [
+                          new sap.m.Text({ text: "Last Signal Time" }).addStyleClass("statusTitle"),
+                          new sap.m.Text({
+                            text: {
+                              path: "/algoLiveStatus/lastSignalTime",
+                              formatter: v => v || "-"
+                            }
+                          })
+                        ]
+                      }).addStyleClass("statusTile")
+                    ]
+                  }).addStyleClass("statusGrid")
+                ]
+              }).addStyleClass("card"),
+
+              new sap.m.VBox({
+                items: [
+                  new sap.m.Title({
+                    text: "🚦 Readiness Center",
+                    level: "H3"
+                  }).addStyleClass("sectionTitle"),
+
+                  new sap.m.HBox({
+                    items: [
+new sap.m.VBox({
+  items: [
+
+    new sap.m.Text({
+      text: "Trade Today"
+    }).addStyleClass("statusTitle"),
+
+    new sap.m.Switch({
+      customTextOn: "YES",
+      customTextOff: "NO",
+
+      state: {
+        path: "/NO_TRADE_TODAY",
+        formatter: function(value) {
+          return value !== "true";
+        }
+      },
+
+      change: function(e) {
+        model.setProperty(
+          "/NO_TRADE_TODAY",
+          e.getParameter("state") ? "false" : "true"
+        );
+      }
+
+    })
+
+  ]
+}).addStyleClass("statusTile"),
+
+                    new sap.m.VBox({
+                        items: [
+                          new sap.m.Text({ text: "Algo Server" }).addStyleClass("statusTitle"),
+                          new sap.m.ObjectStatus({
+                            text: {
+                              path: "/algoLiveStatus/running",
+                              formatter: v => v ? "Running" : "Stopped"
+                            },
+                            state: {
+                              path: "/algoLiveStatus/running",
+                              formatter: v => v ? "Success" : "Error"
+                            }
+                          })
+                        ]
+                      }).addStyleClass("statusTile"),
+
+                      createStatusTile("Ngrok Tunnel", "/ngrokRunning", "Running", "Stopped"),
+                      createStatusTile("Trading Mode", "/PAPER_TRADE", "Paper", "Live"),
+                      createStatusTile("Trading Lock", "/NO_TRADE_TODAY", "Blocked", "Allowed")
+                    ]
+                  }).addStyleClass("statusGrid"),
+
+                  new sap.m.HBox({
+                    alignItems: "Center",
+                    items: [
+                      new sap.m.Label({
+                        text: "Webhook URL"
+                      }).addStyleClass("webhookLabel"),
+
+                      new sap.m.Input({
+                        value: "{/ngrokUrl}",
+                        editable: false,
+                        width: "520px"
+                      }).addStyleClass("webhookInput"),
+
+                      new sap.m.Button({
+                        icon: "sap-icon://copy",
+                        tooltip: "Copy Webhook URL",
+                        type: "Transparent",
+                        press: function () {
+                          const url = model.getProperty("/ngrokUrl");
+
+                          if (!url) {
+                            sap.m.MessageToast.show("No webhook URL available");
+                            return;
+                          }
+
+                          navigator.clipboard.writeText(url);
+                          sap.m.MessageToast.show("Webhook URL copied");
+                        }
+                      })
+                    ]
+                  }).addStyleClass("webhookBox")
+                ]
+              }).addStyleClass("card"),
+
+              new sap.m.VBox({
+                items: [
+                  new sap.m.Title({
+                    text: "Runtime Controls",
+                    level: "H3"
+                  }).addStyleClass("sectionTitle"),
+
+                  new sap.m.HBox({
+                    items: [
+                      new sap.m.Button({
+                        text: "Start Algo Server",
+                        type: "Accept",
+                        press: () => postAction("/api/start-server")
+                      }),
+
+                      new sap.m.Button({
+                        text: "Stop Algo Server",
+                        type: "Reject",
+                        press: () => postAction("/api/stop-server")
+                      }),
+
+                      new sap.m.Button({
+                        text: "Start Ngrok",
+                        type: "Emphasized",
+                        press: () => postAction("/api/start-ngrok")
+                      }),
+
+                      new sap.m.Button({
+                        text: "Stop Ngrok",
+                        press: () => postAction("/api/stop-ngrok")
+                      }),
+
+                      new sap.m.Button({
+                        text: "Emergency Stop",
+                        icon: "sap-icon://alert",
+                        type: "Reject",
+                        press: emergencyStop
+                      })
+                    ]
+                  }).addStyleClass("buttonRow")
+                ]
+              }).addStyleClass("card"),
+
+              new sap.m.VBox({
+
+items: [
+  new sap.m.Title({
+    text: "Trading Permissions",
+    level: "H3"
+  }).addStyleClass("sectionTitle"),
+
+new sap.m.HBox({
+  items: [
+
+    createPermissionTile(
+      "Allow Buy",
+      "ON",
+      "OFF",
+      "ALLOW_BUY",
+      "Allows bot to take BUY trades"
+    ),
+
+    createPermissionTile(
+      "Allow Sell",
+      "ON",
+      "OFF",
+      "ALLOW_SELL",
+      "Allows bot to take SELL trades"
+    ),
+
+    createPermissionTile(
+      "Paper Trade",
+      "PAPER",
+      "LIVE",
+      "PAPER_TRADE",
+      "Paper mode does not send real orders"
+    )
+
+  ]
+}).addStyleClass("permissionRow")
+]                
+
+              }).addStyleClass("card"),
+
+ new sap.m.VBox({
+  items: [
+    new sap.m.Title({
+      text: "📊 Today's Trading Plan",
+      level: "H3"
+    }).addStyleClass("sectionTitle"),
+
+    new sap.m.FlexBox({
+      wrap: "Wrap",
+      items: [
+        createNumberField("Trading Capital", "TRADING_CAPITAL"),
+        createNumberField("Risk %", "RISK_PERCENT"),
+        createNumberField("Planning SL Points", "PLANNING_SL_POINTS"),
+        createNumberField("Max Trades Per Day", "MAX_DAILY_TRADES"),
+        createNumberField("Lot Size", "LOT_SIZE")
+      ]
+    }).addStyleClass("riskGrid"),
+
+    new sap.m.Label({ text: "Risk Mode" }).addStyleClass("fieldLabel"),
+
+    new sap.m.SegmentedButton({
+      selectedKey: "{/RISK_MODE}",
+      items: [
+        new sap.m.SegmentedButtonItem({
+          text: "Per Trade",
+          key: "PER_TRADE"
+        }),
+        new sap.m.SegmentedButtonItem({
+          text: "Per Day",
+          key: "PER_DAY"
+        })
+      ]
+    }),
+
+    new sap.m.Label({ text: "Market Bias" }).addStyleClass("fieldLabel"),
+
+    new sap.m.SegmentedButton({
+      selectedKey: "{/MARKET_BIAS}",
+      items: [
+        new sap.m.SegmentedButtonItem({
+          text: "Bullish",
+          key: "BULLISH"
+        }),
+        new sap.m.SegmentedButtonItem({
+          text: "Neutral",
+          key: "NEUTRAL"
+        }),
+        new sap.m.SegmentedButtonItem({
+          text: "Bearish",
+          key: "BEARISH"
+        })
+      ]
+    }),
+
+    new sap.m.Button({
+      text: "Calculate Lots",
+      type: "Accept",
+      press: calculateRisk
+    }).addStyleClass("sapUiSmallMarginTop"),
+
+    new sap.m.HBox({
+      items: [
+        createStatusTile("Risk Amount", "/CALC_RISK_AMOUNT", "", ""),
+        createStatusTile("Loss Per Lot", "/CALC_LOSS_PER_LOT", "", ""),
+        createStatusTile("LONG Lots", "/CALC_LONG_LOTS", "", ""),
+        createStatusTile("SHORT Lots", "/CALC_SHORT_LOTS", "", "")
+      ]
+    }).addStyleClass("statusGrid"),
+
+    new sap.m.Button({
+      text: "Save Config",
+      type: "Emphasized",
+      press: saveConfig
+    }).addStyleClass("saveButton")
+  ]
+}).addStyleClass("card")
+
+            ]
+          }).addStyleClass("dashboardShell")
+        ]
+      });
+
+      await refreshAlgoStatus();
+      await refreshNgrokUrl();
+
+      setInterval(refreshAlgoStatus, 5000);
+      setInterval(refreshNgrokUrl, 5000);
+
+      new sap.m.App({ pages: [page] }).placeAt("content");
+    });
+  </script>
+</head>
+
+<body class="sapUiBody" id="content"></body>
+</html>

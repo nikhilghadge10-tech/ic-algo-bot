@@ -50,8 +50,11 @@ function writeEnv(updates) {
   fs.writeFileSync(envPath, updatedLines.join("\n"));
 }
 
-app.get("/api/config", (req, res) => {
+app.get("/api/config", async (req, res) => {
   const env = readEnv();
+
+  const algoRunning = await isAlgoActuallyRunning();
+  const ngrokHealth = await getNgrokHealth();
 
   res.json({
     ALLOW_BUY: env.ALLOW_BUY,
@@ -71,10 +74,43 @@ app.get("/api/config", (req, res) => {
     PLANNING_SL_POINTS: env.PLANNING_SL_POINTS,
     MARKET_BIAS: env.MARKET_BIAS,
 
-    algoRunning: !!algoProcess,
-    ngrokRunning: !!ngrokProcess,
+    algoRunning,
+    ngrokRunning: ngrokHealth.running,
+    ngrokUrl: ngrokHealth.url,
   });
 });
+
+async function isAlgoActuallyRunning() {
+  try {
+    await axios.get("http://localhost:3000/status", {
+      timeout: 1500,
+    });
+
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function getNgrokHealth() {
+  try {
+    const response = await axios.get("http://127.0.0.1:4040/api/tunnels", {
+      timeout: 1500,
+    });
+
+    const tunnel = response.data.tunnels.find((t) => t.proto === "https");
+
+    return {
+      running: !!tunnel,
+      url: tunnel ? tunnel.public_url + "/webhook" : "",
+    };
+  } catch (error) {
+    return {
+      running: false,
+      url: "",
+    };
+  }
+}
 
 app.post("/api/config", (req, res) => {
   writeEnv(req.body);
@@ -110,9 +146,14 @@ app.post("/api/stop-server", (req, res) => {
   res.json({ success: true, message: "Algo server stopped" });
 });
 
-app.post("/api/start-ngrok", (req, res) => {
-  if (ngrokProcess) {
-    return res.json({ success: true, message: "Ngrok already running" });
+app.post("/api/start-ngrok", async (req, res) => {
+  const health = await getNgrokHealth();
+
+  if (health.running) {
+    return res.json({
+      success: true,
+      message: "Ngrok already running",
+    });
   }
 
   ngrokProcess = spawn("ngrok", ["http", "3000"], {
@@ -124,7 +165,10 @@ app.post("/api/start-ngrok", (req, res) => {
     ngrokProcess = null;
   });
 
-  res.json({ success: true, message: "Ngrok started" });
+  res.json({
+    success: true,
+    message: "Ngrok started",
+  });
 });
 
 app.post("/api/stop-ngrok", (req, res) => {
@@ -190,6 +234,72 @@ app.post("/api/emergency-stop", (req, res) => {
     success: true,
     message: "🚨 Emergency stop activated. Trading disabled.",
   });
+});
+
+app.post("/api/test-signal", async (req, res) => {
+  try {
+    const payload = req.body;
+
+    const response = await axios.post(
+      "http://localhost:3000/webhook",
+      payload,
+      {
+        timeout: 5000,
+      },
+    );
+
+    res.json({
+      success: true,
+      message: `Test signal sent: ${payload.signal}`,
+      response: response.data,
+    });
+  } catch (error) {
+    res.json({
+      success: false,
+      message: "Test signal failed. Is algo server running?",
+      error: error.message,
+    });
+  }
+});
+
+app.get("/api/logs", (req, res) => {
+  try {
+    const logPath = path.join(__dirname, "..", "logs", "app.log");
+
+    if (!fs.existsSync(logPath)) {
+      return res.json({
+        success: true,
+        logs: "No log file found yet.",
+      });
+    }
+
+    const content = fs.readFileSync(logPath, "utf8");
+    const lines = content.trim().split("\n");
+    const lastLines = lines
+      .slice(-80)
+      .map((line) => {
+        return line.replace(
+          /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g,
+          (match) => {
+            return new Date(match).toLocaleString("en-IN", {
+              timeZone: "Asia/Kolkata",
+              hour12: true,
+            });
+          },
+        );
+      })
+      .join("\n");
+
+    res.json({
+      success: true,
+      logs: lastLines,
+    });
+  } catch (error) {
+    res.json({
+      success: false,
+      logs: error.message,
+    });
+  }
 });
 
 app.listen(PORT, () => {

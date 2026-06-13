@@ -16,7 +16,7 @@ const {
   loadInstruments,
   getNiftyOption,
 } = require("./services/instrumentService");
-const { calculateLots } = require("./services/riskService");
+//const { calculateLots } = require("./services/riskService");
 
 const positionData = loadPosition();
 
@@ -141,7 +141,7 @@ Price : ${price}
 No order placed.`,
       );
 
-      return res.status(200).send("Trading disabled");
+      return res.status(200).send("Trading disabled\n");
     }
 
     const emoji = getSignalEmoji(signal);
@@ -198,38 +198,9 @@ No order placed.`,
             return res.status(200).send("Contract not found");
           }
 
-          const childRange = contract ? childHigh - childLow : 0;
-          const riskPoints =
-            childRange > 0
-              ? childRange / 2
-              : Number(process.env.PLANNING_SL_POINTS || 20);
-
-          const riskResult = calculateLots({
-            signal,
-            riskPoints,
-          });
-
-          console.log("RISK RESULT");
-          console.log(riskResult);
-
-          if (riskResult.finalLots < 1) {
-            await sendTelegram(
-              `⚠️ LONG_ENTRY ignored
-
-Reason:
-Risk calculation returned 0 lots.
-
-Risk Points : ${riskPoints}
-Loss/Lot    : ${riskResult.lossPerLot}
-Risk Amount : ${riskResult.riskAmount}
-
-No order placed.`,
-            );
-
-            return res.status(200).send("Risk blocked trade");
-          }
-
-          quantity = riskResult.quantity;
+          quantity =
+            Number(process.env.LOT_SIZE) *
+            Number(process.env.NUMBER_OF_LOTS || 1);
 
           securityId = contract.SEM_SMST_SECURITY_ID;
           optionSymbol = contract.SEM_CUSTOM_SYMBOL;
@@ -258,7 +229,7 @@ ${JSON.stringify(orderResult.error, null, 2)}
 Position NOT changed.`,
             );
 
-            return res.status(200).send("LONG_ENTRY failed");
+            return res.status(200).send("LONG_ENTRY failed\n");
           }
 
           currentPosition = "LONG";
@@ -382,7 +353,7 @@ ${JSON.stringify(orderResult.error, null, 2)}
 Position NOT changed.`,
             );
 
-            return res.status(200).send("LONG_ENTRY failed");
+            return res.status(200).send("SHORT_ENTRY failed\n");
           }
 
           currentPosition = "SHORT";
@@ -537,7 +508,7 @@ No order placed.`,
 
     console.log(`Current Position = ${currentPosition}`);
 
-    res.status(200).send("Webhook processed");
+    res.status(200).send("Webhook processed\n");
   } catch (error) {
     logger.error(error.message);
 

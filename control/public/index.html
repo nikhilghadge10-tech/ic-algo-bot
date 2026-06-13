@@ -26,10 +26,12 @@
         const fresh = await fetch("/api/config").then(r => r.json());
         const currentData = model.getData();
 
-        fresh.algoLiveStatus = currentData.algoLiveStatus || {};
-        fresh.ngrokUrl = currentData.ngrokUrl || "";
+fresh.algoLiveStatus = {};
+fresh.ngrokUrl = currentData.ngrokUrl || "";
+model.setData(fresh);
 
-        model.setData(fresh);
+await refreshAlgoStatus();
+
       }
 
       async function refreshAlgoStatus() {
@@ -47,6 +49,19 @@
         }
       }
 
+      async function refreshLogs() {
+
+  const result =
+    await fetch("/api/logs")
+      .then(r => r.json());
+
+  model.setProperty(
+    "/LIVE_LOGS",
+    result.logs
+  );
+
+}
+      
       async function refreshNgrokUrl() {
         try {
           const result = await fetch("/api/ngrok-url").then(r => r.json());
@@ -84,14 +99,43 @@
         await refreshConfig();
       }
 
-      async function postAction(url) {
-        const result = await fetch(url, { method: "POST" }).then(r => r.json());
-        sap.m.MessageToast.show(result.message);
+async function postAction(url) {
+  const result = await fetch(url, { method: "POST" }).then(r => r.json());
+  sap.m.MessageToast.show(result.message);
 
-        await refreshConfig();
-        await refreshAlgoStatus();
-        await refreshNgrokUrl();
-      }
+  await refreshConfig();
+  await refreshAlgoStatus();
+  await refreshNgrokUrl();
+
+  if (url === "/api/start-server" || url === "/api/start-ngrok") {
+    setTimeout(async function () {
+      await refreshConfig();
+      await refreshAlgoStatus();
+      await refreshNgrokUrl();
+    }, 3000);
+  }
+}
+
+      async function sendTestSignal(signal) {
+  const data = model.getData();
+
+  const payload = {
+    signal,
+    symbol: "NIFTY",
+    price: Number(data.TEST_PRICE || 23500),
+    time: new Date().toISOString()
+  };
+
+  const result = await fetch("/api/test-signal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  }).then(r => r.json());
+
+  sap.m.MessageToast.show(result.message);
+
+  await refreshAlgoStatus();
+}
 
       async function emergencyStop() {
         const result = await fetch("/api/emergency-stop", {
@@ -186,6 +230,8 @@
           ]
         }).addStyleClass("flagRow");
       }
+
+
 
  function createPermissionTile(label, onText, offText, path, infoText) {
   const infoIcon = new sap.ui.core.Icon({
@@ -438,7 +484,14 @@ function calculateRisk() {
                           new sap.m.Text({
                             text: {
                               path: "/algoLiveStatus/lastSignalTime",
-                              formatter: v => v || "-"
+                              formatter: function(v) {
+                                  if (!v) return "-";
+
+                                  return new Date(v).toLocaleString("en-IN", {
+                                    timeZone: "Asia/Kolkata",
+                                    hour12: true
+                                  });
+                                }
                             }
                           })
                         ]
@@ -457,6 +510,9 @@ function calculateRisk() {
 
                   new sap.m.HBox({
                     items: [
+
+
+
 new sap.m.VBox({
   items: [
 
@@ -627,6 +683,89 @@ new sap.m.HBox({
 
               }).addStyleClass("card"),
 
+              new sap.m.VBox({
+  items: [
+    new sap.m.Title({
+      text: "🧪 Test Center",
+      level: "H3"
+    }).addStyleClass("sectionTitle"),
+
+    new sap.m.HBox({
+      alignItems: "Center",
+      items: [
+        new sap.m.Label({
+          text: "Test Price"
+        }).addStyleClass("webhookLabel"),
+
+        new sap.m.Input({
+          value: "{/TEST_PRICE}",
+          type: "Number",
+          width: "160px",
+          placeholder: "23500"
+        })
+      ]
+    }).addStyleClass("webhookBox"),
+
+    new sap.m.HBox({
+      items: [
+        new sap.m.Button({
+          text: "LONG ENTRY",
+          type: "Accept",
+          press: () => sendTestSignal("LONG_ENTRY")
+        }),
+
+        new sap.m.Button({
+          text: "LONG EXIT",
+          press: () => sendTestSignal("LONG_EXIT")
+        }),
+
+        new sap.m.Button({
+          text: "SHORT ENTRY",
+          type: "Reject",
+          press: () => sendTestSignal("SHORT_ENTRY")
+        }),
+
+        new sap.m.Button({
+          text: "SHORT EXIT",
+          press: () => sendTestSignal("SHORT_EXIT")
+        }),
+
+        new sap.m.Button({
+          text: "UNKNOWN",
+          press: () => sendTestSignal("RANDOM_SIGNAL")
+        })
+      ]
+    }).addStyleClass("buttonRow")
+  ]
+}).addStyleClass("card"),
+
+
+new sap.m.VBox({
+  items: [
+
+    new sap.m.Title({
+      text: "📜 Activity Logs",
+      level: "H3"
+    }).addStyleClass("sectionTitle"),
+
+
+    new sap.m.TextArea({
+      value: "{/LIVE_LOGS}",
+      rows: 15,
+      width: "100%",
+      editable: false
+    }),
+
+
+    new sap.m.Button({
+      text: "Refresh Logs",
+      icon: "sap-icon://refresh",
+      press: refreshLogs
+    }).addStyleClass("sapUiSmallMarginTop")
+
+  ]
+}).addStyleClass("card"),
+
  new sap.m.VBox({
   items: [
     new sap.m.Title({
@@ -711,10 +850,11 @@ new sap.m.HBox({
 
       await refreshAlgoStatus();
       await refreshNgrokUrl();
+      await refreshLogs();
 
       setInterval(refreshAlgoStatus, 5000);
       setInterval(refreshNgrokUrl, 5000);
-
+      setInterval(refreshLogs, 5000);
       new sap.m.App({ pages: [page] }).placeAt("content");
     });
   </script>

@@ -47,7 +47,30 @@ async function placeOrder(orderData) {
   }
 }
 
+async function checkDhanHealth() {
+  try {
+    const response = await axios.get("https://api.dhan.co/v2/profile", {
+      headers: {
+        "access-token": process.env.DHAN_ACCESS_TOKEN,
+      },
+      timeout: 5000,
+    });
+
+    return {
+      connected: true,
+      clientId: response.data.dhanClientId,
+      message: "Connected",
+    };
+  } catch (error) {
+    return {
+      connected: false,
+      message: error.response?.data?.errorMessage || error.message,
+    };
+  }
+}
+
 module.exports = {
   getProfile,
   placeOrder,
+  checkDhanHealth,
 };

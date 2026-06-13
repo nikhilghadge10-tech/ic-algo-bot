@@ -74,6 +74,8 @@ app.get("/api/config", async (req, res) => {
     PLANNING_SL_POINTS: env.PLANNING_SL_POINTS,
     MARKET_BIAS: env.MARKET_BIAS,
 
+    DHAN_TOKEN_UPDATED_AT: env.DHAN_TOKEN_UPDATED_AT,
+
     algoRunning,
     ngrokRunning: ngrokHealth.running,
     ngrokUrl: ngrokHealth.url,
@@ -171,15 +173,28 @@ app.post("/api/start-ngrok", async (req, res) => {
   });
 });
 
-app.post("/api/stop-ngrok", (req, res) => {
-  if (!ngrokProcess) {
-    return res.json({ success: true, message: "Ngrok not running" });
+app.post("/api/stop-ngrok", async (req, res) => {
+  try {
+    if (ngrokProcess) {
+      ngrokProcess.kill();
+      ngrokProcess = null;
+    }
+
+    // kill any existing ngrok process
+    spawn("pkill", ["ngrok"], {
+      shell: true,
+    });
+
+    res.json({
+      success: true,
+      message: "Ngrok stopped",
+    });
+  } catch (error) {
+    res.json({
+      success: false,
+      message: error.message,
+    });
   }
-
-  ngrokProcess.kill();
-  ngrokProcess = null;
-
-  res.json({ success: true, message: "Ngrok stopped" });
 });
 
 app.get("/api/algo-status", async (req, res) => {
@@ -301,6 +316,65 @@ app.get("/api/logs", (req, res) => {
     });
   }
 });
+
+app.get("/api/dhan-health", async (req, res) => {
+  try {
+    const response = await axios.get("http://localhost:3000/dhan-health", {
+      timeout: 5000,
+    });
+
+    res.json(response.data);
+  } catch (error) {
+    res.json({
+      connected: false,
+      message: "Algo server not reachable",
+    });
+  }
+});
+
+app.post("/api/update-dhan-token", (req, res) => {
+  const { token } = req.body;
+
+  if (!token) {
+    return res.status(400).json({
+      success: false,
+      message: "Token is required",
+    });
+  }
+
+  writeEnv({
+    DHAN_ACCESS_TOKEN: token,
+    DHAN_TOKEN_UPDATED_AT: new Date().toISOString(),
+  });
+
+  res.json({
+    success: true,
+    message: "Dhan token updated. Restart algo server.",
+  });
+});
+
+app.post("/api/update-dhan-token", (req, res) => {
+  const { token } = req.body;
+
+  if (!token) {
+    return res.status(400).json({
+      success: false,
+      message: "Token is required",
+    });
+  }
+
+  writeEnv({
+    DHAN_ACCESS_TOKEN: token,
+    DHAN_TOKEN_UPDATED_AT: new Date().toISOString(),
+  });
+
+  res.json({
+    success: true,
+    message: "Dhan token updated. Restart algo server.",
+  });
+});
+
+console.log("TOKEN UPDATE ROUTE LOADED");
 
 app.listen(PORT, () => {
   console.log(`Control dashboard running at http://localhost:${PORT}`);

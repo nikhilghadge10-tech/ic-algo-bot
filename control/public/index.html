@@ -1,581 +1,598 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-  <meta charset="UTF-8" />
-  <title>Algo Bot Control Center</title>
-  <link rel="stylesheet" href="style.css">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Algo Bot Control Center</title>
+    <link rel="stylesheet" href="style.css" />
 
-  <script
-    id="sap-ui-bootstrap"
-    src="https://sdk.openui5.org/resources/sap-ui-core.js"
-    data-sap-ui-theme="sap_horizon"
-    data-sap-ui-libs="sap.m"
-    data-sap-ui-async="true">
-  </script>
+    <script
+      id="sap-ui-bootstrap"
+      src="https://sdk.openui5.org/resources/sap-ui-core.js"
+      data-sap-ui-theme="sap_horizon"
+      data-sap-ui-libs="sap.m"
+      data-sap-ui-async="true"
+    ></script>
 
-  <script>
-    sap.ui.getCore().attachInit(async function () {
-      const config = await fetch("/api/config").then(r => r.json());
-      config.algoLiveStatus = {};
-      config.ngrokUrl = "";
+    <script>
+      sap.ui.getCore().attachInit(async function () {
+        const config = await fetch("/api/config").then((r) => r.json());
+        config.algoLiveStatus = {};
+        config.ngrokUrl = config.ngrokUrl || "";
+        config.dhanHealth = null;
+        config.LIVE_LOGS = "";
 
-      const model = new sap.ui.model.json.JSONModel(config);
-      sap.ui.getCore().setModel(model);
+        const model = new sap.ui.model.json.JSONModel(config);
+        sap.ui.getCore().setModel(model);
 
-      async function refreshConfig() {
-        const fresh = await fetch("/api/config").then(r => r.json());
-        const currentData = model.getData();
+        async function refreshConfig() {
+          const fresh = await fetch("/api/config").then((r) => r.json());
+          const currentData = model.getData();
 
-fresh.algoLiveStatus = {};
-fresh.ngrokUrl = currentData.ngrokUrl || "";
-model.setData(fresh);
+          fresh.algoLiveStatus = currentData.algoLiveStatus || {};
+          fresh.ngrokUrl = fresh.ngrokUrl || currentData.ngrokUrl || "";
+          fresh.dhanHealth = currentData.dhanHealth || null;
+          fresh.LIVE_LOGS = currentData.LIVE_LOGS || "";
+          fresh.TEST_PRICE = currentData.TEST_PRICE || "";
+          fresh.CALC_RISK_AMOUNT = currentData.CALC_RISK_AMOUNT;
+          fresh.CALC_LOSS_PER_LOT = currentData.CALC_LOSS_PER_LOT;
+          fresh.CALC_LONG_LOTS = currentData.CALC_LONG_LOTS;
+          fresh.CALC_SHORT_LOTS = currentData.CALC_SHORT_LOTS;
 
-await refreshAlgoStatus();
-
-      }
-
-      async function refreshAlgoStatus() {
-        try {
-          const status = await fetch("/api/algo-status").then(r => r.json());
-          model.setProperty("/algoLiveStatus", status);
-        } catch (error) {
-          model.setProperty("/algoLiveStatus", {
-            running: false,
-            currentPosition: null,
-            lastSignal: "",
-            lastSignalTime: "",
-            message: "Algo server not reachable"
-          });
+          model.setData(fresh);
         }
-      }
 
-      async function refreshLogs() {
-
-  const result =
-    await fetch("/api/logs")
-      .then(r => r.json());
-
-  model.setProperty(
-    "/LIVE_LOGS",
-    result.logs
-  );
-
-}
-      
-      async function refreshNgrokUrl() {
-        try {
-          const result = await fetch("/api/ngrok-url").then(r => r.json());
-          model.setProperty("/ngrokUrl", result.url || "");
-        } catch (error) {
-          model.setProperty("/ngrokUrl", "");
-        }
-      }
-
-      async function saveConfig() {
-        const data = model.getData();
-
-        await fetch("/api/config", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ALLOW_BUY: data.ALLOW_BUY,
-            ALLOW_SELL: data.ALLOW_SELL,
-            PAPER_TRADE: data.PAPER_TRADE,
-            NO_TRADE_TODAY: data.NO_TRADE_TODAY,
-            MAX_DAILY_TRADES: data.MAX_DAILY_TRADES,
-            MAX_OPEN_POSITIONS: data.MAX_OPEN_POSITIONS,
-            NUMBER_OF_LOTS: data.NUMBER_OF_LOTS,
-            LOT_SIZE: data.LOT_SIZE,
-
-            TRADING_CAPITAL: data.TRADING_CAPITAL,
-            RISK_MODE: data.RISK_MODE,
-            RISK_PERCENT: data.RISK_PERCENT,
-            PLANNING_SL_POINTS: data.PLANNING_SL_POINTS,
-            MARKET_BIAS: data.MARKET_BIAS,
-          })
-        });
-
-        sap.m.MessageToast.show("Config saved. Restart algo server to apply.");
-        await refreshConfig();
-      }
-
-async function postAction(url) {
-  const result = await fetch(url, { method: "POST" }).then(r => r.json());
-  sap.m.MessageToast.show(result.message);
-
-  await refreshConfig();
-  await refreshAlgoStatus();
-  await refreshNgrokUrl();
-
-  if (url === "/api/start-server" || url === "/api/start-ngrok") {
-    setTimeout(async function () {
-      await refreshConfig();
-      await refreshAlgoStatus();
-      await refreshNgrokUrl();
-    }, 3000);
-  }
-}
-
-      async function sendTestSignal(signal) {
-  const data = model.getData();
-
-  const payload = {
-    signal,
-    symbol: "NIFTY",
-    price: Number(data.TEST_PRICE || 23500),
-    time: new Date().toISOString()
-  };
-
-  const result = await fetch("/api/test-signal", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  }).then(r => r.json());
-
-  sap.m.MessageToast.show(result.message);
-
-  await refreshAlgoStatus();
-}
-
-      async function emergencyStop() {
-        const result = await fetch("/api/emergency-stop", {
-          method: "POST"
-        }).then(r => r.json());
-
-        sap.m.MessageToast.show(result.message);
-
-        await refreshConfig();
-        await refreshAlgoStatus();
-        await refreshNgrokUrl();
-      }
-
-      function createStatusTile(title, path, activeText, inactiveText) {
-        return new sap.m.VBox({
-          items: [
-            new sap.m.Text({ text: title }).addStyleClass("statusTitle"),
-            new sap.m.ObjectStatus({
-              text: {
-                path: path,
-                formatter: function(value) {
-                  if (value === "true") return activeText;
-                  if (value === "false") return inactiveText || "Off";
-                  if (typeof value === "boolean") return value ? activeText : (inactiveText || "Stopped");
-                  return value || "-";
-                }
-              },
-              state: {
-                path: path,
-                formatter: function(value) {
-                  return (value === true || value === "true") ? "Success" : "Error";
-                }
-              }
-            })
-          ]
-        }).addStyleClass("statusTile");
-      }
-
-      function createSwitchRow(label, onText, offText, path, infoText) {
-        const infoIcon = new sap.ui.core.Icon({
-          src: "sap-icon://hint"
-        }).addStyleClass("infoIcon");
-
-        const popover = new sap.m.Popover({
-          showHeader: false,
-          placement: "Right",
-          contentWidth: "260px",
-          content: [
-            new sap.m.Text({ text: infoText }).addStyleClass("infoText")
-          ]
-        });
-
-        infoIcon.attachBrowserEvent("mouseenter", function () {
-          popover.openBy(infoIcon);
-        });
-
-        infoIcon.attachBrowserEvent("mouseleave", function () {
-          popover.close();
-        });
-
-        return new sap.m.HBox({
-          alignItems: "Center",
-          items: [
-            new sap.m.Label({ text: label }).addStyleClass("flagLabel"),
-            infoIcon,
-            new sap.m.Switch({
-              customTextOn: onText,
-              customTextOff: offText,
-              state: {
-                path: "/" + path,
-                formatter: function(value) {
-                  if (path === "NO_TRADE_TODAY") {
-                    return value !== "true";
-                  }
-                  return value === "true";
-                }
-              },
-              change: function(e) {
-                if (path === "NO_TRADE_TODAY") {
-                  model.setProperty(
-                    "/" + path,
-                    e.getParameter("state") ? "false" : "true"
-                  );
-                } else {
-                  model.setProperty(
-                    "/" + path,
-                    e.getParameter("state") ? "true" : "false"
-                  );
-                }
-              }
-            }).addStyleClass("flagSwitch")
-          ]
-        }).addStyleClass("flagRow");
-      }
-
-
-
- function createPermissionTile(label, onText, offText, path, infoText) {
-  const infoIcon = new sap.ui.core.Icon({
-    src: "sap-icon://hint",
-    tooltip: infoText
-  }).addStyleClass("permissionInfoIcon");
-
-  return new sap.m.VBox({
-    items: [
-      new sap.m.HBox({
-        alignItems: "Center",
-        justifyContent: "Center",
-        items: [
-          new sap.m.Label({ text: label }).addStyleClass("permissionLabel"),
-          infoIcon
-        ]
-      }),
-
-      new sap.m.Switch({
-        customTextOn: onText,
-        customTextOff: offText,
-        state: {
-          path: "/" + path,
-          formatter: function(value) {
-            return value === "true";
+        async function refreshAlgoStatus() {
+          try {
+            const status = await fetch("/api/algo-status").then((r) =>
+              r.json(),
+            );
+            model.setProperty("/algoLiveStatus", status);
+          } catch (error) {
+            model.setProperty("/algoLiveStatus", {
+              running: false,
+              currentPosition: null,
+              lastSignal: "",
+              lastSignalTime: "",
+              message: "Algo server not reachable",
+            });
           }
-        },
-        change: function(e) {
-          model.setProperty(
-            "/" + path,
-            e.getParameter("state") ? "true" : "false"
+        }
+
+        async function refreshNgrokUrl() {
+          try {
+            const result = await fetch("/api/ngrok-url").then((r) => r.json());
+            model.setProperty("/ngrokUrl", result.url || "");
+          } catch (error) {
+            model.setProperty("/ngrokUrl", "");
+          }
+        }
+
+        async function refreshDhanHealth() {
+          try {
+            const result = await fetch("/api/dhan-health").then((r) =>
+              r.json(),
+            );
+            model.setProperty("/dhanHealth", result);
+          } catch (error) {
+            model.setProperty("/dhanHealth", {
+              connected: false,
+              message: "Dhan health check failed",
+            });
+          }
+        }
+
+        function getDhanTokenCountdown(updatedAt) {
+          if (!updatedAt) {
+            return "Token update time missing";
+          }
+
+          const updated = new Date(updatedAt).getTime();
+
+          const expires = updated + 24 * 60 * 60 * 1000;
+
+          const remaining = expires - Date.now();
+
+          if (remaining <= 0) {
+            return "Token expired";
+          }
+
+          const hours = Math.floor(remaining / (1000 * 60 * 60));
+
+          const minutes = Math.floor(
+            (remaining % (1000 * 60 * 60)) / (1000 * 60),
           );
+
+          return `Expires in ${hours}h ${minutes}m`;
         }
-      }).addStyleClass("permissionSwitch")
-    ]
-  }).addStyleClass("permissionTile");
-}
 
-      function calculateRisk() {
+        async function updateDhanToken() {
+          const token = window.prompt("Paste new Dhan access token:");
 
-  const data = model.getData();
+          if (!token) {
+            sap.m.MessageToast.show("Token update cancelled");
+            return;
+          }
 
-  const capital =
-    Number(data.TRADING_CAPITAL || 0);
+          const result = await fetch("/api/update-dhan-token", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              token: token.trim(),
+            }),
+          }).then((r) => r.json());
 
-  const riskPercent =
-    Number(data.RISK_PERCENT || 1);
+          sap.m.MessageToast.show(result.message);
 
-  const sl =
-    Number(data.PLANNING_SL_POINTS || 0);
+          await refreshConfig();
+          await refreshDhanHealth();
+        }
 
-  const lotSize =
-    Number(data.LOT_SIZE || 65);
+        async function refreshLogs() {
+          const result = await fetch("/api/logs").then((r) => r.json());
+          model.setProperty("/LIVE_LOGS", result.logs || "");
+        }
 
-  const maxTrades =
-    Number(data.MAX_DAILY_TRADES || 1);
+        async function saveConfig() {
+          const data = model.getData();
 
+          await fetch("/api/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ALLOW_BUY: data.ALLOW_BUY,
+              ALLOW_SELL: data.ALLOW_SELL,
+              PAPER_TRADE: data.PAPER_TRADE,
+              NO_TRADE_TODAY: data.NO_TRADE_TODAY,
+              MAX_DAILY_TRADES: data.MAX_DAILY_TRADES,
+              MAX_OPEN_POSITIONS: data.MAX_OPEN_POSITIONS,
+              NUMBER_OF_LOTS: data.NUMBER_OF_LOTS,
+              LOT_SIZE: data.LOT_SIZE,
+              TRADING_CAPITAL: data.TRADING_CAPITAL,
+              RISK_MODE: data.RISK_MODE,
+              RISK_PERCENT: data.RISK_PERCENT,
+              PLANNING_SL_POINTS: data.PLANNING_SL_POINTS,
+              MARKET_BIAS: data.MARKET_BIAS,
+            }),
+          });
 
-  let riskAmount =
-    capital * riskPercent / 100;
+          sap.m.MessageToast.show(
+            "Config saved. Restart algo server to apply.",
+          );
+          await refreshConfig();
+        }
 
+        async function postAction(url) {
+          const result = await fetch(url, { method: "POST" }).then((r) =>
+            r.json(),
+          );
+          sap.m.MessageToast.show(result.message);
 
-  let lossPerLot =
-    sl * lotSize;
+          await refreshConfig();
+          await refreshAlgoStatus();
+          await refreshNgrokUrl();
+          await refreshDhanHealth();
+          await refreshDhanTokenCountdown();
 
+          if (url === "/api/start-server" || url === "/api/start-ngrok") {
+            setTimeout(async function () {
+              await refreshConfig();
+              await refreshAlgoStatus();
+              await refreshNgrokUrl();
+              await refreshDhanHealth();
+            }, 3000);
+          }
+        }
 
-  let lots = 0;
+        async function sendTestSignal(signal) {
+          const data = model.getData();
 
+          const payload = {
+            signal,
+            symbol: "NIFTY",
+            price: Number(data.TEST_PRICE || 23500),
+            time: new Date().toISOString(),
+          };
 
-  if (lossPerLot > 0) {
+          const result = await fetch("/api/test-signal", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          }).then((r) => r.json());
 
-    lots =
-      Math.floor(
-        riskAmount / lossPerLot
-      );
+          sap.m.MessageToast.show(result.message);
+          await refreshAlgoStatus();
+          await refreshLogs();
+        }
 
-    if (data.RISK_MODE === "PER_DAY") {
+        async function emergencyStop() {
+          const result = await fetch("/api/emergency-stop", {
+            method: "POST",
+          }).then((r) => r.json());
 
-      lots =
-        Math.floor(
-          lots / maxTrades
-        );
+          sap.m.MessageToast.show(result.message);
 
-    }
-  }
+          await refreshConfig();
+          await refreshAlgoStatus();
+          await refreshNgrokUrl();
+        }
 
-
-  let longLots = lots;
-  let shortLots = lots;
-
-
-if (data.MARKET_BIAS === "BULLISH") {
-
-  shortLots =
-    lots > 1
-      ? Math.max(1, Math.floor(lots / 2))
-      : lots;
-
-}
-
-
-if (data.MARKET_BIAS === "BEARISH") {
-
-  longLots =
-    lots > 1
-      ? Math.max(1, Math.floor(lots / 2))
-      : lots;
-
-}
-
-
-  model.setProperty(
-    "/CALC_RISK_AMOUNT",
-    riskAmount
-  );
-
-  model.setProperty(
-    "/CALC_LOSS_PER_LOT",
-    lossPerLot
-  );
-
-  model.setProperty(
-    "/CALC_LONG_LOTS",
-    longLots
-  );
-
-  model.setProperty(
-    "/CALC_SHORT_LOTS",
-    shortLots
-  );
-
-}
-
-function calculateRisk() {
-  const data = model.getData();
-
-  const capital = Number(data.TRADING_CAPITAL || 0);
-  const riskPercent = Number(data.RISK_PERCENT || 1);
-  const sl = Number(data.PLANNING_SL_POINTS || 0);
-  const lotSize = Number(data.LOT_SIZE || 65);
-  const maxTrades = Number(data.MAX_DAILY_TRADES || 1);
-
-  const riskAmount = capital * riskPercent / 100;
-  const lossPerLot = sl * lotSize;
-
-  let lots = 0;
-
-  if (lossPerLot > 0) {
-    lots = Math.floor(riskAmount / lossPerLot);
-
-    if (data.RISK_MODE === "PER_DAY") {
-      lots = Math.floor(lots / maxTrades);
-    }
-  }
-
-  let longLots = lots;
-  let shortLots = lots;
-
-  if (data.MARKET_BIAS === "BULLISH") {
-    shortLots = Math.floor(lots / 2);
-  }
-
-  if (data.MARKET_BIAS === "BEARISH") {
-    longLots = Math.floor(lots / 2);
-  }
-
-  model.setProperty("/CALC_RISK_AMOUNT", riskAmount);
-  model.setProperty("/CALC_LOSS_PER_LOT", lossPerLot);
-  model.setProperty("/CALC_LONG_LOTS", longLots);
-  model.setProperty("/CALC_SHORT_LOTS", shortLots);
-}
-
-      function createNumberField(label, path) {
-        return new sap.m.VBox({
-          items: [
-            new sap.m.Label({ text: label }).addStyleClass("fieldLabel"),
-            new sap.m.Input({
-              value: "{/" + path + "}",
-              type: "Number",
-              width: "220px"
-            })
-          ]
-        }).addStyleClass("riskField");
-      }
-
-      const page = new sap.m.Page({
-        title: "Algo Bot Control Center",
-        content: [
-          new sap.m.VBox({
+        function createStatusTile(title, path, activeText, inactiveText) {
+          return new sap.m.VBox({
             items: [
-              new sap.m.VBox({
-                items: [
-                  new sap.m.Title({
-                    text: "Algo Bot Control Center",
-                    level: "H2"
-                  }).addStyleClass("heroTitle"),
-
-                  new sap.m.Text({
-                    text: "Local cockpit for server, ngrok, trading flags and risk settings."
-                  }).addStyleClass("heroText")
-                ]
-              }).addStyleClass("heroCard"),
-
-  
-
-
-              new sap.m.VBox({
-                items: [
-                  new sap.m.Title({
-                    text: "Live Trading Status",
-                    level: "H3"
-                  }).addStyleClass("sectionTitle"),
-
-                  new sap.m.HBox({
-                    items: [
-  
-
-                      new sap.m.VBox({
-                        items: [
-                          new sap.m.Text({ text: "Current Position" }).addStyleClass("statusTitle"),
-                          new sap.m.ObjectStatus({
-                            text: {
-                              path: "/algoLiveStatus/currentPosition",
-                              formatter: v => v || "NONE"
-                            },
-                            state: {
-                              path: "/algoLiveStatus/currentPosition",
-                              formatter: v => v ? "Warning" : "Success"
-                            }
-                          })
-                        ]
-                      }).addStyleClass("statusTile"),
-
-                      new sap.m.VBox({
-                        items: [
-                          new sap.m.Text({ text: "Last Signal" }).addStyleClass("statusTitle"),
-                          new sap.m.ObjectStatus({
-                            text: {
-                              path: "/algoLiveStatus/lastSignal",
-                              formatter: v => v || "-"
-                            },
-                            state: "Information"
-                          })
-                        ]
-                      }).addStyleClass("statusTile"),
-
-                      new sap.m.VBox({
-                        items: [
-                          new sap.m.Text({ text: "Last Signal Time" }).addStyleClass("statusTitle"),
-                          new sap.m.Text({
-                            text: {
-                              path: "/algoLiveStatus/lastSignalTime",
-                              formatter: function(v) {
-                                  if (!v) return "-";
-
-                                  return new Date(v).toLocaleString("en-IN", {
-                                    timeZone: "Asia/Kolkata",
-                                    hour12: true
-                                  });
-                                }
-                            }
-                          })
-                        ]
-                      }).addStyleClass("statusTile")
-                    ]
-                  }).addStyleClass("statusGrid")
-                ]
-              }).addStyleClass("card"),
-
-              new sap.m.VBox({
-                items: [
-                  new sap.m.Title({
-                    text: "🚦 Readiness Center",
-                    level: "H3"
-                  }).addStyleClass("sectionTitle"),
-
-                  new sap.m.HBox({
-                    items: [
-
-
-
-new sap.m.VBox({
-  items: [
-
-    new sap.m.Text({
-      text: "Trade Today"
-    }).addStyleClass("statusTitle"),
-
-    new sap.m.Switch({
-      customTextOn: "YES",
-      customTextOff: "NO",
-
-      state: {
-        path: "/NO_TRADE_TODAY",
-        formatter: function(value) {
-          return value !== "true";
+              new sap.m.Text({ text: title }).addStyleClass("statusTitle"),
+              new sap.m.ObjectStatus({
+                text: {
+                  path: path,
+                  formatter: function (value) {
+                    if (value === "true") return activeText;
+                    if (value === "false") return inactiveText || "Off";
+                    if (typeof value === "boolean")
+                      return value ? activeText : inactiveText || "Stopped";
+                    return value || "-";
+                  },
+                },
+                state: {
+                  path: path,
+                  formatter: function (value) {
+                    return value === true || value === "true"
+                      ? "Success"
+                      : "Error";
+                  },
+                },
+              }),
+            ],
+          }).addStyleClass("statusTile");
         }
-      },
 
-      change: function(e) {
-        model.setProperty(
-          "/NO_TRADE_TODAY",
-          e.getParameter("state") ? "false" : "true"
-        );
-      }
+        function createInfoIcon(infoText, className) {
+          return new sap.ui.core.Icon({
+            src: "sap-icon://hint",
+            tooltip: infoText,
+          }).addStyleClass(className || "infoIcon");
+        }
 
-    })
+        function createPermissionTile(label, onText, offText, path, infoText) {
+          return new sap.m.VBox({
+            items: [
+              new sap.m.HBox({
+                alignItems: "Center",
+                justifyContent: "Center",
+                items: [
+                  new sap.m.Label({ text: label }).addStyleClass(
+                    "permissionLabel",
+                  ),
+                  createInfoIcon(infoText, "permissionInfoIcon"),
+                ],
+              }),
+              new sap.m.Switch({
+                customTextOn: onText,
+                customTextOff: offText,
+                state: {
+                  path: "/" + path,
+                  formatter: function (value) {
+                    return value === "true";
+                  },
+                },
+                change: function (e) {
+                  model.setProperty(
+                    "/" + path,
+                    e.getParameter("state") ? "true" : "false",
+                  );
+                },
+              }).addStyleClass("permissionSwitch"),
+            ],
+          }).addStyleClass("permissionTile");
+        }
 
-  ]
-}).addStyleClass("statusTile"),
+        function createNumberField(label, path) {
+          return new sap.m.VBox({
+            items: [
+              new sap.m.Label({ text: label }).addStyleClass("fieldLabel"),
+              new sap.m.Input({
+                value: "/" + path,
+                type: "Number",
+                width: "220px",
+              }).bindProperty("value", "/" + path),
+            ],
+          }).addStyleClass("riskField");
+        }
 
-                    new sap.m.VBox({
+        function createCompactNumberField(label, path) {
+          return new sap.m.VBox({
+            items: [
+              new sap.m.Label({
+                text: label,
+              }).addStyleClass("fieldLabel"),
+
+              new sap.m.Input({
+                value: "{/" + path + "}",
+                type: "Number",
+                width: "145px",
+              }),
+            ],
+          }).addStyleClass("compactRiskField");
+        }
+
+        function calculateRisk() {
+          const data = model.getData();
+
+          const capital = Number(data.TRADING_CAPITAL || 0);
+          const riskPercent = Number(data.RISK_PERCENT || 1);
+          const sl = Number(data.PLANNING_SL_POINTS || 0);
+          const lotSize = Number(data.LOT_SIZE || 65);
+          const maxTrades = Number(data.MAX_DAILY_TRADES || 1);
+
+          const riskAmount = (capital * riskPercent) / 100;
+          const lossPerLot = sl * lotSize;
+
+          let lots = 0;
+
+          if (lossPerLot > 0) {
+            lots = Math.floor(riskAmount / lossPerLot);
+
+            if (data.RISK_MODE === "PER_DAY") {
+              lots = Math.floor(lots / maxTrades);
+            }
+          }
+
+          let longLots = lots;
+          let shortLots = lots;
+
+          if (data.MARKET_BIAS === "BULLISH") {
+            shortLots = lots > 1 ? Math.max(1, Math.floor(lots / 2)) : lots;
+          }
+
+          if (data.MARKET_BIAS === "BEARISH") {
+            longLots = lots > 1 ? Math.max(1, Math.floor(lots / 2)) : lots;
+          }
+
+          model.setProperty("/CALC_RISK_AMOUNT", riskAmount);
+          model.setProperty("/CALC_LOSS_PER_LOT", lossPerLot);
+          model.setProperty("/CALC_LONG_LOTS", longLots);
+          model.setProperty("/CALC_SHORT_LOTS", shortLots);
+        }
+
+        function liveTradingStatusCard() {
+          return new sap.m.VBox({
+            items: [
+              new sap.m.Title({
+                text: "Live Trading Status",
+                level: "H3",
+              }).addStyleClass("sectionTitle"),
+
+              new sap.m.HBox({
+                items: [
+                  new sap.m.VBox({
+                    items: [
+                      new sap.m.Text({
+                        text: "Current Position",
+                      }).addStyleClass("statusTitle"),
+                      new sap.m.ObjectStatus({
+                        text: {
+                          path: "/algoLiveStatus/currentPosition",
+                          formatter: (v) => v || "NONE",
+                        },
+                        state: {
+                          path: "/algoLiveStatus/currentPosition",
+                          formatter: (v) => (v ? "Warning" : "Success"),
+                        },
+                      }),
+                    ],
+                  }).addStyleClass("statusTile"),
+
+                  new sap.m.VBox({
+                    items: [
+                      new sap.m.Text({ text: "Last Signal" }).addStyleClass(
+                        "statusTitle",
+                      ),
+                      new sap.m.ObjectStatus({
+                        text: {
+                          path: "/algoLiveStatus/lastSignal",
+                          formatter: (v) => v || "-",
+                        },
+                        state: "Information",
+                      }),
+                    ],
+                  }).addStyleClass("statusTile"),
+
+                  new sap.m.VBox({
+                    items: [
+                      new sap.m.Text({
+                        text: "Last Signal Time",
+                      }).addStyleClass("statusTitle"),
+                      new sap.m.Text({
+                        text: {
+                          path: "/algoLiveStatus/lastSignalTime",
+                          formatter: function (v) {
+                            if (!v) return "-";
+
+                            return new Date(v).toLocaleString("en-IN", {
+                              timeZone: "Asia/Kolkata",
+                              hour12: true,
+                            });
+                          },
+                        },
+                      }),
+                    ],
+                  }).addStyleClass("statusTile"),
+
+                  new sap.m.VBox({
+                    items: [
+                      new sap.m.Text({
+                        text: "Trade Today",
+                      }).addStyleClass("statusTitle"),
+
+                      new sap.m.Switch({
+                        customTextOn: "YES",
+                        customTextOff: "NO",
+
+                        state: {
+                          path: "/NO_TRADE_TODAY",
+                          formatter: function (value) {
+                            return value !== "true";
+                          },
+                        },
+
+                        change: function (e) {
+                          model.setProperty(
+                            "/NO_TRADE_TODAY",
+                            e.getParameter("state") ? "false" : "true",
+                          );
+                        },
+                      }),
+                    ],
+                  }).addStyleClass("statusTile"),
+                ],
+              }).addStyleClass("statusGrid"),
+            ],
+          }).addStyleClass("card");
+        }
+
+        function readinessCenterCard() {
+          return new sap.m.VBox({
+            items: [
+              new sap.m.Title({
+                text: "🚦 Readiness Center",
+                level: "H3",
+              }).addStyleClass("sectionTitle"),
+
+              new sap.m.HBox({
+                items: [
+                  new sap.m.VBox({
+                    items: [
+                      new sap.m.Text({ text: "Algo Server" }).addStyleClass(
+                        "statusTitle",
+                      ),
+
+                      new sap.m.ObjectStatus({
+                        text: {
+                          path: "/algoLiveStatus/running",
+                          formatter: (v) => (v ? "Running" : "Stopped"),
+                        },
+                        state: {
+                          path: "/algoLiveStatus/running",
+                          formatter: (v) => (v ? "Success" : "Error"),
+                        },
+                      }),
+
+                      new sap.m.HBox({
                         items: [
-                          new sap.m.Text({ text: "Algo Server" }).addStyleClass("statusTitle"),
-                          new sap.m.ObjectStatus({
-                            text: {
-                              path: "/algoLiveStatus/running",
-                              formatter: v => v ? "Running" : "Stopped"
-                            },
-                            state: {
-                              path: "/algoLiveStatus/running",
-                              formatter: v => v ? "Success" : "Error"
-                            }
-                          })
-                        ]
-                      }).addStyleClass("statusTile"),
+                          new sap.m.Button({
+                            text: "Start",
+                            type: "Accept",
+                            press: () => postAction("/api/start-server"),
+                          }),
 
-                      createStatusTile("Ngrok Tunnel", "/ngrokRunning", "Running", "Stopped"),
-                      createStatusTile("Trading Mode", "/PAPER_TRADE", "Paper", "Live"),
-                      createStatusTile("Trading Lock", "/NO_TRADE_TODAY", "Blocked", "Allowed")
-                    ]
-                  }).addStyleClass("statusGrid"),
+                          new sap.m.Button({
+                            text: "Stop",
+                            type: "Reject",
+                            press: () => postAction("/api/stop-server"),
+                          }),
+                        ],
+                      }).addStyleClass("tileButtonRow"),
+                    ],
+                  }).addStyleClass("statusTile"),
 
+                  new sap.m.VBox({
+                    items: [
+                      new sap.m.Text({ text: "Ngrok Tunnel" }).addStyleClass(
+                        "statusTitle",
+                      ),
+
+                      new sap.m.ObjectStatus({
+                        text: {
+                          path: "/ngrokRunning",
+                          formatter: (v) => (v ? "Running" : "Stopped"),
+                        },
+                        state: {
+                          path: "/ngrokRunning",
+                          formatter: (v) => (v ? "Success" : "Error"),
+                        },
+                      }),
+
+                      new sap.m.HBox({
+                        items: [
+                          new sap.m.Button({
+                            text: "Start",
+                            type: "Accept",
+                            press: () => postAction("/api/start-ngrok"),
+                          }),
+
+                          new sap.m.Button({
+                            text: "Stop",
+                            type: "Reject",
+                            press: () => postAction("/api/stop-ngrok"),
+                          }),
+                        ],
+                      }).addStyleClass("tileButtonRow"),
+                    ],
+                  }).addStyleClass("statusTile"),
+
+                  new sap.m.VBox({
+                    items: [
+                      new sap.m.HBox({
+                        alignItems: "Center",
+                        items: [
+                          new sap.m.Text({
+                            text: "Dhan Broker",
+                          }).addStyleClass("statusTitle"),
+                        ],
+                      }),
+
+                      new sap.m.ObjectStatus({
+                        text: {
+                          path: "/dhanHealth",
+                          formatter: (v) => (v ? "Connected" : "Disconnected"),
+                        },
+                        state: {
+                          path: "/dhanHealth/connected",
+                          formatter: (v) => (v ? "Success" : "Error"),
+                        },
+                      }),
+
+                      new sap.m.HBox({
+                        items: [
+                          new sap.m.Button({
+                            text: "Update",
+                            icon: "sap-icon://key",
+                            press: updateDhanToken,
+                          }),
+                        ],
+                      }).addStyleClass("tileButtonRow"),
+
+                      new sap.m.Text({
+                        text: {
+                          path: "/DHAN_TOKEN_UPDATED_AT",
+                          formatter: getDhanTokenCountdown,
+                        },
+                      }).addStyleClass("tokenCountdown"),
+                    ],
+                  }).addStyleClass("statusTile brokerTile"),
+
+                  createStatusTile(
+                    "Trading Mode",
+                    "/PAPER_TRADE",
+                    "Paper",
+                    "Live",
+                  ),
+                ],
+              }).addStyleClass("statusGrid"),
+
+              new sap.m.HBox({
+                alignItems: "Center",
+                justifyContent: "SpaceBetween",
+                items: [
                   new sap.m.HBox({
                     alignItems: "Center",
                     items: [
                       new sap.m.Label({
-                        text: "Webhook URL"
+                        text: "Webhook URL",
                       }).addStyleClass("webhookLabel"),
 
                       new sap.m.Input({
                         value: "{/ngrokUrl}",
                         editable: false,
-                        width: "520px"
+                        width: "350px",
                       }).addStyleClass("webhookInput"),
 
                       new sap.m.Button({
@@ -592,273 +609,350 @@ new sap.m.VBox({
 
                           navigator.clipboard.writeText(url);
                           sap.m.MessageToast.show("Webhook URL copied");
-                        }
-                      })
-                    ]
-                  }).addStyleClass("webhookBox")
-                ]
-              }).addStyleClass("card"),
+                        },
+                      }),
 
-              new sap.m.VBox({
+                      new sap.m.Button({
+                        text: "🚨 Emergency Stop",
+                        type: "Reject",
+                        press: emergencyStop,
+                      }).addStyleClass("sapUiLargeMarginBegin"),
+                    ],
+                  }),
+                ],
+              }).addStyleClass("readinessActionRow"),
+            ],
+          }).addStyleClass("card");
+        }
+
+        function tradingPermissionsCard() {
+          return new sap.m.VBox({
+            items: [
+              new sap.m.Title({
+                text: "Trading Permissions",
+                level: "H3",
+              }).addStyleClass("sectionTitle"),
+
+              new sap.m.HBox({
                 items: [
-                  new sap.m.Title({
-                    text: "Runtime Controls",
-                    level: "H3"
-                  }).addStyleClass("sectionTitle"),
+                  createPermissionTile(
+                    "Allow Buy",
+                    "ON",
+                    "OFF",
+                    "ALLOW_BUY",
+                    "Allows bot to take BUY trades",
+                  ),
 
-                  new sap.m.HBox({
+                  createPermissionTile(
+                    "Allow Sell",
+                    "ON",
+                    "OFF",
+                    "ALLOW_SELL",
+                    "Allows bot to take SELL trades",
+                  ),
+
+                  createPermissionTile(
+                    "Paper Trade",
+                    "ON",
+                    "LIVE",
+                    "PAPER_TRADE",
+                    "Paper mode does not send real orders",
+                  ),
+
+                  new sap.m.VBox({
+                    alignItems: "Center",
+                    justifyContent: "End",
                     items: [
                       new sap.m.Button({
-                        text: "Start Algo Server",
-                        type: "Accept",
-                        press: () => postAction("/api/start-server")
-                      }),
-
-                      new sap.m.Button({
-                        text: "Stop Algo Server",
-                        type: "Reject",
-                        press: () => postAction("/api/stop-server")
-                      }),
-
-                      new sap.m.Button({
-                        text: "Start Ngrok",
+                        text: "Save Config",
                         type: "Emphasized",
-                        press: () => postAction("/api/start-ngrok")
+                        press: saveConfig,
+                      }).addStyleClass("saveButton"),
+                    ],
+                  }).addStyleClass("permissionSaveTile"),
+                ],
+              }).addStyleClass("permissionRow"),
+            ],
+          }).addStyleClass("card");
+        }
+
+        function planningCard() {
+          return new sap.m.VBox({
+            items: [
+              new sap.m.Title({
+                text: "📊 Today's Trading Plan",
+                level: "H3",
+              }).addStyleClass("sectionTitle sapUiMediumMarginBottom"),
+
+              new sap.m.FlexBox({
+                wrap: "Wrap",
+                items: [
+                  createCompactNumberField("Capital", "TRADING_CAPITAL"),
+                  createCompactNumberField("Risk %", "RISK_PERCENT"),
+                  createCompactNumberField("Planning SL", "PLANNING_SL_POINTS"),
+                  createCompactNumberField("Max Trades", "MAX_DAILY_TRADES"),
+                  createCompactNumberField("Lot Size", "LOT_SIZE"),
+                ],
+              }).addStyleClass("riskInputRow"),
+
+              new sap.m.HBox({
+                alignItems: "End",
+                justifyContent: "SpaceBetween",
+                items: [
+                  new sap.m.VBox({
+                    items: [
+                      new sap.m.Label({ text: "Risk Mode" }).addStyleClass(
+                        "fieldLabel",
+                      ),
+
+                      new sap.m.SegmentedButton({
+                        selectedKey: "{/RISK_MODE}",
+                        width: "240px",
+                        items: [
+                          new sap.m.SegmentedButtonItem({
+                            text: "Per Trade",
+                            key: "PER_TRADE",
+                            width: "120px",
+                          }),
+                          new sap.m.SegmentedButtonItem({
+                            text: "Per Day",
+                            key: "PER_DAY",
+                            width: "120px",
+                          }),
+                        ],
                       }),
+                    ],
+                  }),
+                  new sap.m.VBox({
+                    items: [
+                      new sap.m.Label({ text: "Market Bias" }).addStyleClass(
+                        "fieldLabel",
+                      ),
 
-                      new sap.m.Button({
-                        text: "Stop Ngrok",
-                        press: () => postAction("/api/stop-ngrok")
+                      new sap.m.SegmentedButton({
+                        selectedKey: "{/MARKET_BIAS}",
+                        width: "300px",
+                        items: [
+                          new sap.m.SegmentedButtonItem({
+                            text: "Bullish",
+                            key: "BULLISH",
+                            width: "100px",
+                          }),
+                          new sap.m.SegmentedButtonItem({
+                            text: "Neutral",
+                            key: "NEUTRAL",
+                            width: "100px",
+                          }),
+                          new sap.m.SegmentedButtonItem({
+                            text: "Bearish",
+                            key: "BEARISH",
+                            width: "100px",
+                          }),
+                        ],
                       }),
+                    ],
+                  }),
 
-                      new sap.m.Button({
-                        text: "Emergency Stop",
-                        icon: "sap-icon://alert",
-                        type: "Reject",
-                        press: emergencyStop
-                      })
-                    ]
-                  }).addStyleClass("buttonRow")
-                ]
-              }).addStyleClass("card"),
+                  new sap.m.Button({
+                    text: "Calculate Lots",
+                    icon: "sap-icon://simulate",
+                    type: "Accept",
+                    press: calculateRisk,
+                  }).addStyleClass("calculateLotsButton"),
+                ],
+              }).addStyleClass("riskControlRow"),
 
-              new sap.m.VBox({
+              new sap.m.HBox({
+                items: [
+                  createStatusTile("Risk Amount", "/CALC_RISK_AMOUNT", "", ""),
+                  createStatusTile(
+                    "Loss Per Lot",
+                    "/CALC_LOSS_PER_LOT",
+                    "",
+                    "",
+                  ),
+                  createStatusTile("LONG Lots", "/CALC_LONG_LOTS", "", ""),
+                  createStatusTile("SHORT Lots", "/CALC_SHORT_LOTS", "", ""),
+                ],
+              }).addStyleClass("statusGrid"),
 
-items: [
-  new sap.m.Title({
-    text: "Trading Permissions",
-    level: "H3"
-  }).addStyleClass("sectionTitle"),
+              new sap.m.HBox({
+                justifyContent: "Center",
+                items: [
+                  new sap.m.Button({
+                    text: "Save Config",
+                    type: "Emphasized",
+                    press: saveConfig,
+                  }).addStyleClass("saveButton"),
+                ],
+              }),
+            ],
+          }).addStyleClass("card");
+        }
 
-new sap.m.HBox({
-  items: [
+        function monitoringCard() {
+          return new sap.m.VBox({
+            items: [
+              new sap.m.Title({
+                text: "📜 Activity Logs",
+                level: "H3",
+              }).addStyleClass("sectionTitle"),
 
-    createPermissionTile(
-      "Allow Buy",
-      "ON",
-      "OFF",
-      "ALLOW_BUY",
-      "Allows bot to take BUY trades"
-    ),
+              new sap.m.TextArea({
+                value: "{/LIVE_LOGS}",
+                rows: 18,
+                width: "100%",
+                editable: false,
+              }),
 
-    createPermissionTile(
-      "Allow Sell",
-      "ON",
-      "OFF",
-      "ALLOW_SELL",
-      "Allows bot to take SELL trades"
-    ),
+              new sap.m.Button({
+                text: "Refresh Logs",
+                icon: "sap-icon://refresh",
+                press: refreshLogs,
+              }).addStyleClass("sapUiSmallMarginTop"),
+            ],
+          }).addStyleClass("card");
+        }
 
-    createPermissionTile(
-      "Paper Trade",
-      "PAPER",
-      "LIVE",
-      "PAPER_TRADE",
-      "Paper mode does not send real orders"
-    )
+        function testCenterCard() {
+          return new sap.m.VBox({
+            items: [
+              new sap.m.Title({
+                text: "🧪 Test Center",
+                level: "H3",
+              }).addStyleClass("sectionTitle"),
 
-  ]
-}).addStyleClass("permissionRow")
-]                
+              new sap.m.HBox({
+                alignItems: "Center",
+                items: [
+                  new sap.m.Label({
+                    text: "Test Price",
+                  }).addStyleClass("webhookLabel"),
 
-              }).addStyleClass("card"),
+                  new sap.m.Input({
+                    value: "{/TEST_PRICE}",
+                    type: "Number",
+                    width: "160px",
+                    placeholder: "23500",
+                  }),
+                ],
+              }).addStyleClass("webhookBox"),
 
-              new sap.m.VBox({
-  items: [
-    new sap.m.Title({
-      text: "🧪 Test Center",
-      level: "H3"
-    }).addStyleClass("sectionTitle"),
+              new sap.m.HBox({
+                items: [
+                  new sap.m.Button({
+                    text: "LONG ENTRY",
+                    type: "Accept",
+                    press: () => sendTestSignal("LONG_ENTRY"),
+                  }),
 
-    new sap.m.HBox({
-      alignItems: "Center",
-      items: [
-        new sap.m.Label({
-          text: "Test Price"
-        }).addStyleClass("webhookLabel"),
+                  new sap.m.Button({
+                    text: "LONG EXIT",
+                    press: () => sendTestSignal("LONG_EXIT"),
+                  }),
 
-        new sap.m.Input({
-          value: "{/TEST_PRICE}",
-          type: "Number",
-          width: "160px",
-          placeholder: "23500"
-        })
-      ]
-    }).addStyleClass("webhookBox"),
+                  new sap.m.Button({
+                    text: "SHORT ENTRY",
+                    type: "Reject",
+                    press: () => sendTestSignal("SHORT_ENTRY"),
+                  }),
 
-    new sap.m.HBox({
-      items: [
-        new sap.m.Button({
-          text: "LONG ENTRY",
-          type: "Accept",
-          press: () => sendTestSignal("LONG_ENTRY")
-        }),
+                  new sap.m.Button({
+                    text: "SHORT EXIT",
+                    press: () => sendTestSignal("SHORT_EXIT"),
+                  }),
 
-        new sap.m.Button({
-          text: "LONG EXIT",
-          press: () => sendTestSignal("LONG_EXIT")
-        }),
+                  new sap.m.Button({
+                    text: "UNKNOWN",
+                    press: () => sendTestSignal("RANDOM_SIGNAL"),
+                  }),
+                ],
+              }).addStyleClass("buttonRow"),
+            ],
+          }).addStyleClass("card");
+        }
 
-        new sap.m.Button({
-          text: "SHORT ENTRY",
-          type: "Reject",
-          press: () => sendTestSignal("SHORT_ENTRY")
-        }),
+        const page = new sap.m.Page({
+          title: "Algo Bot Control Center",
+          content: [
+            new sap.m.VBox({
+              items: [
+                new sap.m.HBox({
+                  alignItems: "Center",
+                  items: [
+                    new sap.m.Avatar({
+                      src: "images/algo-bot.jpg",
+                      displaySize: "XL",
+                      displayShape: "Circle",
+                    }).addStyleClass("botAvatar"),
 
-        new sap.m.Button({
-          text: "SHORT EXIT",
-          press: () => sendTestSignal("SHORT_EXIT")
-        }),
+                    new sap.m.VBox({
+                      items: [
+                        new sap.m.Title({
+                          text: "Nikhil Algo Trading Cockpit",
+                          level: "H2",
+                        }).addStyleClass("heroTitle"),
 
-        new sap.m.Button({
-          text: "UNKNOWN",
-          press: () => sendTestSignal("RANDOM_SIGNAL")
-        })
-      ]
-    }).addStyleClass("buttonRow")
-  ]
-}).addStyleClass("card"),
+                        new sap.m.Text({
+                          text: "Inside Candle Strategy Automation • Risk Management • Broker Monitoring",
+                        }).addStyleClass("heroText"),
+                      ],
+                    }),
+                  ],
+                }).addStyleClass("heroCard"),
 
+                new sap.m.IconTabBar({
+                  expanded: true,
+                  items: [
+                    new sap.m.IconTabFilter({
+                      text: "Trading Desk",
+                      icon: "sap-icon://monitor-payments",
+                      content: [
+                        liveTradingStatusCard(),
+                        readinessCenterCard(),
+                        tradingPermissionsCard(),
+                      ],
+                    }),
 
-new sap.m.VBox({
-  items: [
+                    new sap.m.IconTabFilter({
+                      text: "Planning",
+                      icon: "sap-icon://business-objects-experience",
+                      content: [planningCard()],
+                    }),
 
-    new sap.m.Title({
-      text: "📜 Activity Logs",
-      level: "H3"
-    }).addStyleClass("sectionTitle"),
+                    new sap.m.IconTabFilter({
+                      text: "Monitoring",
+                      icon: "sap-icon://activity-items",
+                      content: [monitoringCard()],
+                    }),
 
+                    new sap.m.IconTabFilter({
+                      text: "Testing",
+                      icon: "sap-icon://lab",
+                      content: [testCenterCard()],
+                    }),
+                  ],
+                }).addStyleClass("cockpitTabs"),
+              ],
+            }).addStyleClass("dashboardShell"),
+          ],
+        });
 
-    new sap.m.TextArea({
-      value: "{/LIVE_LOGS}",
-      rows: 15,
-      width: "100%",
-      editable: false
-    }),
+        await refreshConfig();
+        await refreshAlgoStatus();
+        await refreshNgrokUrl();
+        await refreshLogs();
+        await refreshDhanHealth();
 
+        setInterval(refreshAlgoStatus, 5000);
+        setInterval(refreshNgrokUrl, 5000);
+        setInterval(refreshLogs, 5000);
+        setInterval(refreshDhanHealth, 60000);
 
-    new sap.m.Button({
-      text: "Refresh Logs",
-      icon: "sap-icon://refresh",
-      press: refreshLogs
-    }).addStyleClass("sapUiSmallMarginTop")
-
-  ]
-}).addStyleClass("card"),
-
- new sap.m.VBox({
-  items: [
-    new sap.m.Title({
-      text: "📊 Today's Trading Plan",
-      level: "H3"
-    }).addStyleClass("sectionTitle"),
-
-    new sap.m.FlexBox({
-      wrap: "Wrap",
-      items: [
-        createNumberField("Trading Capital", "TRADING_CAPITAL"),
-        createNumberField("Risk %", "RISK_PERCENT"),
-        createNumberField("Planning SL Points", "PLANNING_SL_POINTS"),
-        createNumberField("Max Trades Per Day", "MAX_DAILY_TRADES"),
-        createNumberField("Lot Size", "LOT_SIZE")
-      ]
-    }).addStyleClass("riskGrid"),
-
-    new sap.m.Label({ text: "Risk Mode" }).addStyleClass("fieldLabel"),
-
-    new sap.m.SegmentedButton({
-      selectedKey: "{/RISK_MODE}",
-      items: [
-        new sap.m.SegmentedButtonItem({
-          text: "Per Trade",
-          key: "PER_TRADE"
-        }),
-        new sap.m.SegmentedButtonItem({
-          text: "Per Day",
-          key: "PER_DAY"
-        })
-      ]
-    }),
-
-    new sap.m.Label({ text: "Market Bias" }).addStyleClass("fieldLabel"),
-
-    new sap.m.SegmentedButton({
-      selectedKey: "{/MARKET_BIAS}",
-      items: [
-        new sap.m.SegmentedButtonItem({
-          text: "Bullish",
-          key: "BULLISH"
-        }),
-        new sap.m.SegmentedButtonItem({
-          text: "Neutral",
-          key: "NEUTRAL"
-        }),
-        new sap.m.SegmentedButtonItem({
-          text: "Bearish",
-          key: "BEARISH"
-        })
-      ]
-    }),
-
-    new sap.m.Button({
-      text: "Calculate Lots",
-      type: "Accept",
-      press: calculateRisk
-    }).addStyleClass("sapUiSmallMarginTop"),
-
-    new sap.m.HBox({
-      items: [
-        createStatusTile("Risk Amount", "/CALC_RISK_AMOUNT", "", ""),
-        createStatusTile("Loss Per Lot", "/CALC_LOSS_PER_LOT", "", ""),
-        createStatusTile("LONG Lots", "/CALC_LONG_LOTS", "", ""),
-        createStatusTile("SHORT Lots", "/CALC_SHORT_LOTS", "", "")
-      ]
-    }).addStyleClass("statusGrid"),
-
-    new sap.m.Button({
-      text: "Save Config",
-      type: "Emphasized",
-      press: saveConfig
-    }).addStyleClass("saveButton")
-  ]
-}).addStyleClass("card")
-
-            ]
-          }).addStyleClass("dashboardShell")
-        ]
+        new sap.m.App({ pages: [page] }).placeAt("content");
       });
+    </script>
+  </head>
 
-      await refreshAlgoStatus();
-      await refreshNgrokUrl();
-      await refreshLogs();
-
-      setInterval(refreshAlgoStatus, 5000);
-      setInterval(refreshNgrokUrl, 5000);
-      setInterval(refreshLogs, 5000);
-      new sap.m.App({ pages: [page] }).placeAt("content");
-    });
-  </script>
-</head>
-
-<body class="sapUiBody" id="content"></body>
+  <body class="sapUiBody" id="content"></body>
 </html>

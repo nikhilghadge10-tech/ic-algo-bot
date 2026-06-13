@@ -56,9 +56,6 @@
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
 }
 
-.sectionTitle {
-  margin-bottom: 16px;
-}
 
 .buttonRow {
   display: flex;
@@ -164,5 +161,89 @@
 }
 
 .permissionSwitch {
+  margin-top: 10px;
+}
+
+.permissionSaveTile {
+  width: 150px;
+  padding-top: 34px;
+}
+
+.riskInputRow {
+  display: flex;
+  gap: 24px;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.compactRiskField {
+  width: 145px;
+}
+
+.riskInputRow .riskField {
+  width: 220px;
+}
+
+.riskControlRow {
+  margin-top: 8px;
+  margin-bottom: 20px;
+  gap: 40px;
+  align-items: flex-end;
+}
+
+.calculateLotsButton {
+  min-width: 180px;
+  margin-bottom: 2px;
+}
+
+.botAvatar {
+  margin-right: 20px;
+}
+
+.heroCard {
+  padding: 24px;
+}
+
+.tileButtonRow {
+  margin-top: 12px;
+  gap: 8px;
+}
+
+.tileButtonRow .sapMBtn {
+  min-width: 64px;
+}
+
+.readinessActionRow {
+  margin-top: 22px;
+  gap: 40px;
+}
+
+.tokenCountdown {
+  margin-top: 8px;
+  font-size: 0.85rem;
+}
+
+.brokerTile {
+  min-width: 180px;
+}
+
+.brokerIcon {
+  margin-right: 8px;
+  color: #2563eb;
+}
+
+.brokerStatus {
+  margin-top: 10px;
+  font-weight: 600;
+}
+
+.tokenCountdown {
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: #475569;
+}
+
+.tokenButton {
   margin-top: 10px;
 }

@@ -11,7 +11,8 @@ const {
   placeMarketSellOrder,
 } = require("./services/dhanOrderService");
 
-const { placeOrder } = require("./services/dhanService");
+const { placeOrder, checkDhanHealth } = require("./services/dhanService");
+
 const {
   loadInstruments,
   getNiftyOption,
@@ -514,6 +515,15 @@ No order placed.`,
 
     res.status(500).send("Webhook failed");
   }
+});
+
+app.get("/dhan-health", async (req, res) => {
+  const health = await checkDhanHealth();
+
+  res.json({
+    ...health,
+    checkedAt: new Date().toISOString(),
+  });
 });
 
 app.listen(PORT, () => {

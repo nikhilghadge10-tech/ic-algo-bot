@@ -16,6 +16,7 @@ const {
   loadInstruments,
   getNiftyOption,
 } = require("./services/instrumentService");
+const { calculateLots } = require("./services/riskService");
 
 const positionData = loadPosition();
 
@@ -197,9 +198,38 @@ No order placed.`,
             return res.status(200).send("Contract not found");
           }
 
-          quantity =
-            Number(process.env.LOT_SIZE) *
-            Number(process.env.NUMBER_OF_LOTS || 1);
+          const childRange = contract ? childHigh - childLow : 0;
+          const riskPoints =
+            childRange > 0
+              ? childRange / 2
+              : Number(process.env.PLANNING_SL_POINTS || 20);
+
+          const riskResult = calculateLots({
+            signal,
+            riskPoints,
+          });
+
+          console.log("RISK RESULT");
+          console.log(riskResult);
+
+          if (riskResult.finalLots < 1) {
+            await sendTelegram(
+              `⚠️ LONG_ENTRY ignored
+
+Reason:
+Risk calculation returned 0 lots.
+
+Risk Points : ${riskPoints}
+Loss/Lot    : ${riskResult.lossPerLot}
+Risk Amount : ${riskResult.riskAmount}
+
+No order placed.`,
+            );
+
+            return res.status(200).send("Risk blocked trade");
+          }
+
+          quantity = riskResult.quantity;
 
           securityId = contract.SEM_SMST_SECURITY_ID;
           optionSymbol = contract.SEM_CUSTOM_SYMBOL;

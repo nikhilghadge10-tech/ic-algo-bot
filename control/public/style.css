@@ -1,3 +1,12 @@
+/*
+ * Styles for the local Algo Bot Control Center.
+ * These classes shape the OpenUI5 dashboard shell, status cards, trading
+ * permission controls, planning form, readiness widgets, and broker/token
+ * indicators. OpenUI5 provides base controls; this file adds spacing, color,
+ * sizing, and dashboard-specific visual polish.
+ */
+
+/* Page shell and hero area. */
 .sapUiBody {
   background: #f4f6f8 !important;
 }
@@ -26,6 +35,7 @@
   opacity: 0.9;
 }
 
+/* Reusable status grid and card styles. */
 .statusGrid {
   display: flex;
   gap: 14px;
@@ -48,6 +58,14 @@
   margin-bottom: 8px;
 }
 
+.lastSignalTimeText,
+.lastTradeLine {
+  display: block;
+  margin-top: 6px;
+  color: #475569;
+  font-size: 0.85rem;
+}
+
 .card {
   background: white;
   border-radius: 18px;
@@ -57,6 +75,7 @@
 }
 
 
+/* General action rows and older risk form helpers. */
 .buttonRow {
   display: flex;
   gap: 12px;
@@ -95,10 +114,22 @@
   font-weight: 600;
 }
 
+.labelInfoRow {
+  gap: 6px;
+  align-items: center;
+}
+
+.labelInfoRow .fieldLabel,
+.labelInfoRow .statusTitle,
+.labelInfoRow .webhookLabel {
+  margin-bottom: 0;
+}
+
 .saveButton {
   margin-top: 8px;
 }
 
+/* Tooltip and webhook URL layout. */
 .infoIcon {
   margin-left: 8px;
   color: #64748b;
@@ -137,9 +168,11 @@
   width: 520px;
 }
 
+/* Trading permission switch tiles. */
 .permissionRow {
   display: flex;
-  gap: 48px;
+  gap: 24px;
+  flex-wrap: wrap;
   margin-top: 12px;
   align-items: flex-start;
 }
@@ -156,8 +189,10 @@
 }
 
 .permissionInfoIcon {
+  margin-left: 4px;
   color: #64748b;
   cursor: help;
+  line-height: 1;
 }
 
 .permissionSwitch {
@@ -169,6 +204,7 @@
   padding-top: 34px;
 }
 
+/* Planning and lot-sizing controls. */
 .riskInputRow {
   display: flex;
   gap: 24px;
@@ -197,6 +233,7 @@
   margin-bottom: 2px;
 }
 
+/* Readiness-center and broker-status details. */
 .botAvatar {
   margin-right: 20px;
 }
@@ -246,4 +283,22 @@
 
 .tokenButton {
   margin-top: 10px;
+}
+
+.manualSpotStatus {
+  display: block;
+  margin: 2px 0 8px 122px;
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+/* Dhan token update dialog. */
+.tokenDialogContent {
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.tokenDialogLabel {
+  margin-top: 8px;
+  font-weight: 600;
 }

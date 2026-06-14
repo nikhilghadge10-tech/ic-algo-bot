@@ -1,4 +1,10 @@
 <!doctype html>
+<!--
+  Local browser dashboard for operating the algo bot.
+  It shows bot/broker/ngrok status, edits trading settings, sends test signals,
+  updates the Dhan token, and displays recent logs.
+  The UI is built with OpenUI5 and talks to control/controlServer.js APIs.
+-->
 <html>
   <head>
     <meta charset="UTF-8" />
@@ -15,15 +21,19 @@
 
     <script>
       sap.ui.getCore().attachInit(async function () {
+        // Load dashboard config first; it becomes the single UI model.
         const config = await fetch("/api/config").then((r) => r.json());
         config.algoLiveStatus = {};
         config.ngrokUrl = config.ngrokUrl || "";
         config.dhanHealth = null;
         config.LIVE_LOGS = "";
+        config.NIFTY_SPOT_LOADING = false;
+        config.NIFTY_SPOT_ERROR = "";
 
         const model = new sap.ui.model.json.JSONModel(config);
         sap.ui.getCore().setModel(model);
 
+        // Refresh .env-backed config while preserving transient UI-only values.
         async function refreshConfig() {
           const fresh = await fetch("/api/config").then((r) => r.json());
           const currentData = model.getData();
@@ -33,6 +43,10 @@
           fresh.dhanHealth = currentData.dhanHealth || null;
           fresh.LIVE_LOGS = currentData.LIVE_LOGS || "";
           fresh.TEST_PRICE = currentData.TEST_PRICE || "";
+          fresh.NIFTY_SPOT_LTP = currentData.NIFTY_SPOT_LTP;
+          fresh.NIFTY_SPOT_CHECKED_AT = currentData.NIFTY_SPOT_CHECKED_AT;
+          fresh.NIFTY_SPOT_LOADING = currentData.NIFTY_SPOT_LOADING || false;
+          fresh.NIFTY_SPOT_ERROR = currentData.NIFTY_SPOT_ERROR || "";
           fresh.CALC_RISK_AMOUNT = currentData.CALC_RISK_AMOUNT;
           fresh.CALC_LOSS_PER_LOT = currentData.CALC_LOSS_PER_LOT;
           fresh.CALC_LONG_LOTS = currentData.CALC_LONG_LOTS;
@@ -41,6 +55,7 @@
           model.setData(fresh);
         }
 
+        // Pull live position and last-signal state from the algo server.
         async function refreshAlgoStatus() {
           try {
             const status = await fetch("/api/algo-status").then((r) =>
@@ -53,20 +68,26 @@
               currentPosition: null,
               lastSignal: "",
               lastSignalTime: "",
+              lastTrades: [],
               message: "Algo server not reachable",
             });
           }
         }
 
+        // Refresh the public TradingView webhook URL exposed by ngrok.
         async function refreshNgrokUrl() {
           try {
             const result = await fetch("/api/ngrok-url").then((r) => r.json());
+
+            model.setProperty("/ngrokRunning", !!result.running);
             model.setProperty("/ngrokUrl", result.url || "");
           } catch (error) {
+            model.setProperty("/ngrokRunning", false);
             model.setProperty("/ngrokUrl", "");
           }
         }
 
+        // Ask the algo server whether the Dhan access token is currently valid.
         async function refreshDhanHealth() {
           try {
             const result = await fetch("/api/dhan-health").then((r) =>
@@ -81,6 +102,33 @@
           }
         }
 
+        async function refreshNiftySpotPrice() {
+          model.setProperty("/NIFTY_SPOT_LOADING", true);
+          model.setProperty("/NIFTY_SPOT_ERROR", "");
+
+          try {
+            const result = await fetch("/api/nifty-spot").then((r) => r.json());
+
+            if (!result.success) {
+              const message = result.message || "NIFTY spot unavailable";
+
+              model.setProperty("/NIFTY_SPOT_ERROR", message);
+              sap.m.MessageToast.show(message);
+              return;
+            }
+
+            model.setProperty("/TEST_PRICE", result.ltp);
+            model.setProperty("/NIFTY_SPOT_LTP", result.ltp);
+            model.setProperty("/NIFTY_SPOT_CHECKED_AT", result.checkedAt);
+          } catch (error) {
+            model.setProperty("/NIFTY_SPOT_ERROR", "NIFTY spot price unavailable");
+            sap.m.MessageToast.show("NIFTY spot price unavailable");
+          } finally {
+            model.setProperty("/NIFTY_SPOT_LOADING", false);
+          }
+        }
+
+        // Dhan access tokens are short-lived, so show a simple expiry countdown.
         function getDhanTokenCountdown(updatedAt) {
           if (!updatedAt) {
             return "Token update time missing";
@@ -105,33 +153,124 @@
           return `Expires in ${hours}h ${minutes}m`;
         }
 
+        // Open a proper SAP UI5 dialog for updating the Dhan token.
         async function updateDhanToken() {
-          const token = window.prompt("Paste new Dhan access token:");
+          const tokenInput = new sap.m.Input({
+            type: "Password",
+            width: "100%",
+            placeholder: "Paste new Dhan access token",
+            liveChange: function (e) {
+              const hasToken = !!e.getParameter("value").trim();
 
-          if (!token) {
-            sap.m.MessageToast.show("Token update cancelled");
-            return;
-          }
+              updateButton.setEnabled(hasToken);
+              tokenInput.setValueState(hasToken ? "None" : "Error");
+            },
+            submit: function () {
+              if (updateButton.getEnabled()) {
+                updateButton.firePress();
+              }
+            },
+          });
 
-          const result = await fetch("/api/update-dhan-token", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              token: token.trim(),
+          const updateButton = new sap.m.Button({
+            text: "Update Token",
+            icon: "sap-icon://key",
+            type: "Emphasized",
+            enabled: false,
+            press: async function () {
+              const token = tokenInput.getValue().trim();
+
+              if (!token) {
+                tokenInput.setValueState("Error");
+                tokenInput.setValueStateText("Token is required");
+                tokenInput.focus();
+                return;
+              }
+
+              dialog.setBusy(true);
+              updateButton.setEnabled(false);
+
+              try {
+                const result = await fetch("/api/update-dhan-token", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    token,
+                  }),
+                }).then((r) => r.json());
+
+                sap.m.MessageToast.show(result.message);
+
+                await refreshConfig();
+                await refreshDhanHealth();
+
+                if (result.success) {
+                  dialog.close();
+                }
+              } catch (error) {
+                sap.m.MessageToast.show("Token update failed");
+              } finally {
+                dialog.setBusy(false);
+                updateButton.setEnabled(!!tokenInput.getValue().trim());
+              }
+            },
+          });
+
+          const dialog = new sap.m.Dialog({
+            title: "Update Dhan Token",
+            contentWidth: "480px",
+            draggable: true,
+            resizable: true,
+            content: [
+              new sap.m.VBox({
+                items: [
+                  new sap.m.MessageStrip({
+                    text: "The token is saved locally in .env. Restart the algo server after updating so live broker calls use the new token.",
+                    type: "Information",
+                    showIcon: true,
+                  }),
+
+                  new sap.m.Label({
+                    text: "Access Token",
+                    labelFor: tokenInput,
+                  }).addStyleClass("tokenDialogLabel"),
+
+                  tokenInput,
+
+                  new sap.m.Text({
+                    text: {
+                      path: "/DHAN_TOKEN_UPDATED_AT",
+                      formatter: getDhanTokenCountdown,
+                    },
+                  }).addStyleClass("tokenCountdown"),
+                ],
+              }).addStyleClass("tokenDialogContent"),
+            ],
+            beginButton: updateButton,
+            endButton: new sap.m.Button({
+              text: "Cancel",
+              press: function () {
+                dialog.close();
+              },
             }),
-          }).then((r) => r.json());
+            afterClose: function () {
+              dialog.destroy();
+            },
+          });
 
-          sap.m.MessageToast.show(result.message);
-
-          await refreshConfig();
-          await refreshDhanHealth();
+          dialog.open();
+          setTimeout(function () {
+            tokenInput.focus();
+          }, 0);
         }
 
+        // Pull recent logs from the backend; the backend already sorts newest-first.
         async function refreshLogs() {
           const result = await fetch("/api/logs").then((r) => r.json());
           model.setProperty("/LIVE_LOGS", result.logs || "");
         }
 
+        // Save dashboard settings to .env.
         async function saveConfig() {
           const data = model.getData();
 
@@ -143,6 +282,8 @@
               ALLOW_SELL: data.ALLOW_SELL,
               PAPER_TRADE: data.PAPER_TRADE,
               NO_TRADE_TODAY: data.NO_TRADE_TODAY,
+              AUTO_PREMIUM_SL: data.AUTO_PREMIUM_SL,
+              PREMIUM_SL_INTERVAL: data.PREMIUM_SL_INTERVAL,
               MAX_DAILY_TRADES: data.MAX_DAILY_TRADES,
               MAX_OPEN_POSITIONS: data.MAX_OPEN_POSITIONS,
               NUMBER_OF_LOTS: data.NUMBER_OF_LOTS,
@@ -156,11 +297,13 @@
           });
 
           sap.m.MessageToast.show(
-            "Config saved. Restart algo server to apply.",
+            "Config saved. Trading permissions apply immediately.",
           );
           await refreshConfig();
+          calculateRisk();
         }
 
+        // Shared helper for start/stop/emergency dashboard actions.
         async function postAction(url) {
           const result = await fetch(url, { method: "POST" }).then((r) =>
             r.json(),
@@ -183,6 +326,7 @@
           }
         }
 
+        // Send a manual LONG/SHORT entry/exit signal to the local webhook.
         async function sendTestSignal(signal) {
           const data = model.getData();
 
@@ -204,6 +348,7 @@
           await refreshLogs();
         }
 
+        // Safety button that disables trading and entry permissions together.
         async function emergencyStop() {
           const result = await fetch("/api/emergency-stop", {
             method: "POST",
@@ -216,6 +361,7 @@
           await refreshNgrokUrl();
         }
 
+        // Compact status tile with text and color driven by model value.
         function createStatusTile(title, path, activeText, inactiveText) {
           return new sap.m.VBox({
             items: [
@@ -244,6 +390,7 @@
           }).addStyleClass("statusTile");
         }
 
+        // Reusable tooltip icon for settings that need explanation.
         function createInfoIcon(infoText, className) {
           return new sap.ui.core.Icon({
             src: "sap-icon://hint",
@@ -251,6 +398,19 @@
           }).addStyleClass(className || "infoIcon");
         }
 
+        function createLabelWithInfo(label, infoText, className) {
+          return new sap.m.HBox({
+            alignItems: "Center",
+            items: [
+              new sap.m.Label({ text: label }).addStyleClass(
+                className || "fieldLabel",
+              ),
+              createInfoIcon(infoText, "permissionInfoIcon"),
+            ],
+          }).addStyleClass("labelInfoRow");
+        }
+
+        // Permission switch tile used for BUY, SELL, and paper/live controls.
         function createPermissionTile(label, onText, offText, path, infoText) {
           return new sap.m.VBox({
             items: [
@@ -284,6 +444,7 @@
           }).addStyleClass("permissionTile");
         }
 
+        // Standard numeric input row for larger risk forms.
         function createNumberField(label, path) {
           return new sap.m.VBox({
             items: [
@@ -297,6 +458,7 @@
           }).addStyleClass("riskField");
         }
 
+        // Compact numeric input used in the daily trading plan card.
         function createCompactNumberField(label, path) {
           return new sap.m.VBox({
             items: [
@@ -313,6 +475,7 @@
           }).addStyleClass("compactRiskField");
         }
 
+        // Frontend copy of the lot sizing math for quick planning.
         function calculateRisk() {
           const data = model.getData();
 
@@ -352,6 +515,7 @@
           model.setProperty("/CALC_SHORT_LOTS", shortLots);
         }
 
+        // Shows live position state and the trade/no-trade toggle.
         function liveTradingStatusCard() {
           return new sap.m.VBox({
             items: [
@@ -382,34 +546,58 @@
 
                   new sap.m.VBox({
                     items: [
-                      new sap.m.Text({ text: "Last Signal" }).addStyleClass(
+                      new sap.m.Text({ text: "Last Trades" }).addStyleClass(
                         "statusTitle",
                       ),
-                      new sap.m.ObjectStatus({
+                      new sap.m.Text({
                         text: {
-                          path: "/algoLiveStatus/lastSignal",
-                          formatter: (v) => v || "-",
+                          path: "/algoLiveStatus/lastTrades/0",
+                          formatter: function (trade) {
+                            if (!trade) return "-";
+                            return `${trade.label}: ${trade.displayStatus}`;
+                          },
                         },
-                        state: "Information",
-                      }),
+                      }).addStyleClass("lastTradeLine"),
+                      new sap.m.Text({
+                        text: {
+                          path: "/algoLiveStatus/lastTrades/1",
+                          formatter: function (trade) {
+                            if (!trade) return "";
+                            return `${trade.label}: ${trade.displayStatus}`;
+                          },
+                        },
+                      }).addStyleClass("lastTradeLine"),
+                      new sap.m.Text({
+                        text: {
+                          path: "/algoLiveStatus/lastTrades/2",
+                          formatter: function (trade) {
+                            if (!trade) return "";
+                            return `${trade.label}: ${trade.displayStatus}`;
+                          },
+                        },
+                      }).addStyleClass("lastTradeLine"),
                     ],
                   }).addStyleClass("statusTile"),
 
                   new sap.m.VBox({
                     items: [
                       new sap.m.Text({
-                        text: "Last Signal Time",
+                        text: "Trades Today",
                       }).addStyleClass("statusTitle"),
-                      new sap.m.Text({
+                      new sap.m.ObjectStatus({
                         text: {
-                          path: "/algoLiveStatus/lastSignalTime",
+                          path: "/algoLiveStatus/dailyTradeLimit",
                           formatter: function (v) {
                             if (!v) return "-";
-
-                            return new Date(v).toLocaleString("en-IN", {
-                              timeZone: "Asia/Kolkata",
-                              hour12: true,
-                            });
+                            if (!v.limit) return `${v.entryCount} / No limit`;
+                            return `${v.entryCount} / ${v.limit}`;
+                          },
+                        },
+                        state: {
+                          path: "/algoLiveStatus/dailyTradeLimit",
+                          formatter: function (v) {
+                            if (!v || !v.limit) return "Success";
+                            return v.allowed ? "Success" : "Error";
                           },
                         },
                       }),
@@ -418,9 +606,18 @@
 
                   new sap.m.VBox({
                     items: [
-                      new sap.m.Text({
-                        text: "Trade Today",
-                      }).addStyleClass("statusTitle"),
+                      new sap.m.HBox({
+                        alignItems: "Center",
+                        items: [
+                          new sap.m.Text({
+                            text: "Trade Today",
+                          }).addStyleClass("statusTitle"),
+                          createInfoIcon(
+                            "OFF sets NO_TRADE_TODAY=true and blocks all webhook/manual trading signals. ON allows signals to be processed if other limits allow them.",
+                            "permissionInfoIcon",
+                          ),
+                        ],
+                      }),
 
                       new sap.m.Switch({
                         customTextOn: "YES",
@@ -448,6 +645,7 @@
           }).addStyleClass("card");
         }
 
+        // Operational card for algo server, ngrok, webhook, and emergency stop.
         function readinessCenterCard() {
           return new sap.m.VBox({
             items: [
@@ -625,6 +823,7 @@
           }).addStyleClass("card");
         }
 
+        // Toggle card for the trading permissions that the webhook enforces.
         function tradingPermissionsCard() {
           return new sap.m.VBox({
             items: [
@@ -659,6 +858,14 @@
                     "Paper mode does not send real orders",
                   ),
 
+                  createPermissionTile(
+                    "Auto Premium SL",
+                    "ON",
+                    "OFF",
+                    "AUTO_PREMIUM_SL",
+                    "Places a protective SL-M order from the previous premium candle",
+                  ),
+
                   new sap.m.VBox({
                     alignItems: "Center",
                     justifyContent: "End",
@@ -676,6 +883,7 @@
           }).addStyleClass("card");
         }
 
+        // Planning card for capital/risk inputs and estimated lot sizing.
         function planningCard() {
           return new sap.m.VBox({
             items: [
@@ -690,6 +898,7 @@
                   createCompactNumberField("Capital", "TRADING_CAPITAL"),
                   createCompactNumberField("Risk %", "RISK_PERCENT"),
                   createCompactNumberField("Planning SL", "PLANNING_SL_POINTS"),
+                  createCompactNumberField("SL Interval", "PREMIUM_SL_INTERVAL"),
                   createCompactNumberField("Max Trades", "MAX_DAILY_TRADES"),
                   createCompactNumberField("Lot Size", "LOT_SIZE"),
                 ],
@@ -701,8 +910,9 @@
                 items: [
                   new sap.m.VBox({
                     items: [
-                      new sap.m.Label({ text: "Risk Mode" }).addStyleClass(
-                        "fieldLabel",
+                      createLabelWithInfo(
+                        "Risk Mode",
+                        "Per Trade applies risk to each planned trade. Per Day divides the risk budget across max daily trades.",
                       ),
 
                       new sap.m.SegmentedButton({
@@ -725,8 +935,9 @@
                   }),
                   new sap.m.VBox({
                     items: [
-                      new sap.m.Label({ text: "Market Bias" }).addStyleClass(
-                        "fieldLabel",
+                      createLabelWithInfo(
+                        "Market Bias",
+                        "Bias reduces suggested lots for counter-bias trades. Bullish reduces SHORT lots; Bearish reduces LONG lots.",
                       ),
 
                       new sap.m.SegmentedButton({
@@ -790,6 +1001,7 @@
           }).addStyleClass("card");
         }
 
+        // Log viewer card. The API returns recent entries first.
         function monitoringCard() {
           return new sap.m.VBox({
             items: [
@@ -814,20 +1026,29 @@
           }).addStyleClass("card");
         }
 
+        // Manual signal sender. In live mode, these buttons can place real orders.
         function testCenterCard() {
           return new sap.m.VBox({
             items: [
               new sap.m.Title({
-                text: "🧪 Test Center",
+                text: "Manual Signal Center",
                 level: "H3",
               }).addStyleClass("sectionTitle"),
+
+              new sap.m.MessageStrip({
+                text: "These buttons send real webhook signals into the bot. If Paper Trade is LIVE, they can place live Dhan orders.",
+                type: "Warning",
+                showIcon: true,
+              }).addStyleClass("sapUiSmallMarginBottom"),
 
               new sap.m.HBox({
                 alignItems: "Center",
                 items: [
-                  new sap.m.Label({
-                    text: "Test Price",
-                  }).addStyleClass("webhookLabel"),
+                  createLabelWithInfo(
+                    "NIFTY Spot",
+                    "Fetched from Dhan LTP when this tab is opened. The bot uses this spot price to round and select the nearest ATM option contract for manual entry signals.",
+                    "webhookLabel",
+                  ),
 
                   new sap.m.Input({
                     value: "{/TEST_PRICE}",
@@ -835,8 +1056,42 @@
                     width: "160px",
                     placeholder: "23500",
                   }),
+
+                  new sap.m.Button({
+                    icon: "sap-icon://refresh",
+                    tooltip: "Refresh NIFTY spot from Dhan",
+                    type: "Transparent",
+                    press: refreshNiftySpotPrice,
+                    enabled: {
+                      path: "/NIFTY_SPOT_LOADING",
+                      formatter: (v) => !v,
+                    },
+                  }),
                 ],
               }).addStyleClass("webhookBox"),
+
+              new sap.m.Text({
+                text: {
+                  parts: [
+                    { path: "/NIFTY_SPOT_ERROR" },
+                    { path: "/NIFTY_SPOT_LTP" },
+                    { path: "/NIFTY_SPOT_CHECKED_AT" },
+                  ],
+                  formatter: function (error, ltp, checkedAt) {
+                    if (error) return error;
+                    if (!ltp) return "NIFTY spot will load when this tab opens.";
+
+                    const checkedText = checkedAt
+                      ? new Date(checkedAt).toLocaleString("en-IN", {
+                          timeZone: "Asia/Kolkata",
+                          hour12: true,
+                        })
+                      : "-";
+
+                    return `Fetched from Dhan: ${ltp} at ${checkedText}`;
+                  },
+                },
+              }).addStyleClass("manualSpotStatus"),
 
               new sap.m.HBox({
                 items: [
@@ -872,6 +1127,7 @@
           }).addStyleClass("card");
         }
 
+        // Assemble the dashboard page and group cards into tabs.
         const page = new sap.m.Page({
           title: "Algo Bot Control Center",
           content: [
@@ -903,8 +1159,20 @@
 
                 new sap.m.IconTabBar({
                   expanded: true,
+                  select: function (e) {
+                    const selectedKey = e.getParameter("key");
+
+                    if (selectedKey === "planning") {
+                      calculateRisk();
+                    }
+
+                    if (selectedKey === "manualSignals") {
+                      refreshNiftySpotPrice();
+                    }
+                  },
                   items: [
                     new sap.m.IconTabFilter({
+                      key: "tradingDesk",
                       text: "Trading Desk",
                       icon: "sap-icon://monitor-payments",
                       content: [
@@ -915,20 +1183,23 @@
                     }),
 
                     new sap.m.IconTabFilter({
+                      key: "planning",
                       text: "Planning",
                       icon: "sap-icon://business-objects-experience",
                       content: [planningCard()],
                     }),
 
                     new sap.m.IconTabFilter({
+                      key: "monitoring",
                       text: "Monitoring",
                       icon: "sap-icon://activity-items",
                       content: [monitoringCard()],
                     }),
 
                     new sap.m.IconTabFilter({
-                      text: "Testing",
-                      icon: "sap-icon://lab",
+                      key: "manualSignals",
+                      text: "Manual Signals",
+                      icon: "sap-icon://action",
                       content: [testCenterCard()],
                     }),
                   ],
@@ -938,17 +1209,20 @@
           ],
         });
 
+        // Initial data load before the app is placed on screen.
         await refreshConfig();
         await refreshAlgoStatus();
         await refreshNgrokUrl();
         await refreshLogs();
         await refreshDhanHealth();
 
+        // Keep operational status fresh while the dashboard stays open.
         setInterval(refreshAlgoStatus, 5000);
         setInterval(refreshNgrokUrl, 5000);
         setInterval(refreshLogs, 5000);
         setInterval(refreshDhanHealth, 60000);
 
+        // Render the OpenUI5 app into the body placeholder.
         new sap.m.App({ pages: [page] }).placeAt("content");
       });
     </script>

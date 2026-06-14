@@ -2,4 +2,6 @@ node_modules/
 .env
 logs/
 src/data/position.json
+src/data/tradeHistory.json
+src/data/tradeState.json
 *.log

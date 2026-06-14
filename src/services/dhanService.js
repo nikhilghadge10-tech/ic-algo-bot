@@ -1,10 +1,18 @@
+/*
+ * Contains small Dhan API helper calls used outside the main order service.
+ * The control panel uses the health check to show broker connectivity.
+ * The profile route is useful for manually verifying the access token.
+ * placeOrder is a legacy generic helper; active trades use dhanOrderService.
+ */
 const axios = require("axios");
 
+// Shared headers for simple Dhan GET calls.
 const headers = {
   "access-token": process.env.DHAN_ACCESS_TOKEN,
   "client-id": process.env.DHAN_CLIENT_ID,
 };
 
+// Fetches the Dhan profile to prove the configured credentials are accepted.
 async function getProfile() {
   try {
     const response = await axios.get("https://api.dhan.co/v2/profile", {
@@ -19,6 +27,7 @@ async function getProfile() {
   }
 }
 
+// Generic order helper kept for compatibility; specific order helpers are preferred.
 async function placeOrder(orderData) {
   try {
     const response = await axios.post(url, payload, {
@@ -47,6 +56,7 @@ async function placeOrder(orderData) {
   }
 }
 
+// Lightweight broker connectivity check shown in the dashboard.
 async function checkDhanHealth() {
   try {
     const response = await axios.get("https://api.dhan.co/v2/profile", {

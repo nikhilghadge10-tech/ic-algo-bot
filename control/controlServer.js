@@ -1,3 +1,9 @@
+/*
+ * Backend for the local control dashboard.
+ * Serves the OpenUI5 control panel, reads/writes .env settings, starts/stops
+ * the algo server and ngrok tunnel, proxies health checks, and exposes recent
+ * logs. This server is for local operations, not broker order placement.
+ */
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
@@ -13,9 +19,11 @@ let algoProcess = null;
 let ngrokProcess = null;
 let ngrokUrl = "";
 
+// Accept JSON API requests and serve the dashboard assets from control/public.
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
+// Parse .env into a simple key/value object for the dashboard model.
 function readEnv() {
   const content = fs.readFileSync(envPath, "utf8");
   const result = {};
@@ -31,6 +39,7 @@ function readEnv() {
   return result;
 }
 
+// Update existing .env keys while preserving comments and unrelated lines.
 function writeEnv(updates) {
   const lines = fs.readFileSync(envPath, "utf8").split("\n");
 
@@ -50,6 +59,15 @@ function writeEnv(updates) {
   fs.writeFileSync(envPath, updatedLines.join("\n"));
 }
 
+// Store token update time as readable IST while keeping it Date-parseable.
+function getIstIsoString(date = new Date()) {
+  const istOffsetMs = 5.5 * 60 * 60 * 1000;
+  const istDate = new Date(date.getTime() + istOffsetMs);
+
+  return `${istDate.toISOString().slice(0, 19)}+05:30`;
+}
+
+// Dashboard bootstrap endpoint: config plus live process/tunnel status.
 app.get("/api/config", async (req, res) => {
   const env = readEnv();
 
@@ -61,6 +79,8 @@ app.get("/api/config", async (req, res) => {
     ALLOW_SELL: env.ALLOW_SELL,
     PAPER_TRADE: env.PAPER_TRADE,
     NO_TRADE_TODAY: env.NO_TRADE_TODAY,
+    AUTO_PREMIUM_SL: env.AUTO_PREMIUM_SL,
+    PREMIUM_SL_INTERVAL: env.PREMIUM_SL_INTERVAL,
 
     MAX_DAILY_TRADES: env.MAX_DAILY_TRADES,
     MAX_OPEN_POSITIONS: env.MAX_OPEN_POSITIONS,
@@ -82,6 +102,7 @@ app.get("/api/config", async (req, res) => {
   });
 });
 
+// Check whether the algo server is responding on its status endpoint.
 async function isAlgoActuallyRunning() {
   try {
     await axios.get("http://localhost:3000/status", {
@@ -94,6 +115,7 @@ async function isAlgoActuallyRunning() {
   }
 }
 
+// Ask ngrok's local API for the current public HTTPS tunnel.
 async function getNgrokHealth() {
   try {
     const response = await axios.get("http://127.0.0.1:4040/api/tunnels", {
@@ -114,11 +136,13 @@ async function getNgrokHealth() {
   }
 }
 
+// Save dashboard-edited settings back to .env.
 app.post("/api/config", (req, res) => {
   writeEnv(req.body);
   res.json({ success: true });
 });
 
+// Start the algo webhook server as a child process.
 app.post("/api/start-server", (req, res) => {
   if (algoProcess) {
     return res.json({ success: true, message: "Algo server already running" });
@@ -137,6 +161,7 @@ app.post("/api/start-server", (req, res) => {
   res.json({ success: true, message: "Algo server started" });
 });
 
+// Stop the child algo server if this dashboard started it.
 app.post("/api/stop-server", (req, res) => {
   if (!algoProcess) {
     return res.json({ success: true, message: "Algo server not running" });
@@ -148,6 +173,7 @@ app.post("/api/stop-server", (req, res) => {
   res.json({ success: true, message: "Algo server stopped" });
 });
 
+// Start ngrok so TradingView can reach the local webhook.
 app.post("/api/start-ngrok", async (req, res) => {
   const health = await getNgrokHealth();
 
@@ -173,6 +199,7 @@ app.post("/api/start-ngrok", async (req, res) => {
   });
 });
 
+// Stop ngrok, including any process that may have been started separately.
 app.post("/api/stop-ngrok", async (req, res) => {
   try {
     if (ngrokProcess) {
@@ -197,6 +224,7 @@ app.post("/api/stop-ngrok", async (req, res) => {
   }
 });
 
+// Proxy the algo server status into the dashboard.
 app.get("/api/algo-status", async (req, res) => {
   try {
     const response = await axios.get("http://localhost:3000/status", {
@@ -213,31 +241,32 @@ app.get("/api/algo-status", async (req, res) => {
       currentPosition: null,
       lastSignal: "",
       lastSignalTime: "",
+      lastTrades: [],
       message: "Algo server not reachable",
     });
   }
 });
 
+// Return the current public webhook URL from ngrok's local API.
 app.get("/api/ngrok-url", async (req, res) => {
   try {
-    const response = await axios.get("http://127.0.0.1:4040/api/tunnels");
-
-    const tunnel = response.data.tunnels.find((t) => t.proto === "https");
-
-    const url = tunnel ? tunnel.public_url + "/webhook" : "";
+    const health = await getNgrokHealth();
 
     res.json({
       success: true,
-      url,
+      running: health.running,
+      url: health.url,
     });
   } catch (error) {
     res.json({
       success: false,
+      running: false,
       url: "",
     });
   }
 });
 
+// Hard safety action: disable entries and block all trading for the day.
 app.post("/api/emergency-stop", (req, res) => {
   writeEnv({
     ALLOW_BUY: "false",
@@ -251,6 +280,7 @@ app.post("/api/emergency-stop", (req, res) => {
   });
 });
 
+// Send a dashboard-generated signal to the algo webhook for manual testing.
 app.post("/api/test-signal", async (req, res) => {
   try {
     const payload = req.body;
@@ -277,6 +307,7 @@ app.post("/api/test-signal", async (req, res) => {
   }
 });
 
+// Return recent log entries newest-first for the dashboard log viewer.
 app.get("/api/logs", (req, res) => {
   try {
     const logPath = path.join(__dirname, "..", "logs", "app.log");
@@ -290,8 +321,10 @@ app.get("/api/logs", (req, res) => {
 
     const content = fs.readFileSync(logPath, "utf8");
     const lines = content.trim().split("\n");
+    // Keep the response small and show the latest activity first.
     const lastLines = lines
       .slice(-80)
+      .reverse()
       .map((line) => {
         return line.replace(
           /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g,
@@ -317,6 +350,7 @@ app.get("/api/logs", (req, res) => {
   }
 });
 
+// Proxy Dhan health from the algo server so the dashboard has one API host.
 app.get("/api/dhan-health", async (req, res) => {
   try {
     const response = await axios.get("http://localhost:3000/dhan-health", {
@@ -332,6 +366,24 @@ app.get("/api/dhan-health", async (req, res) => {
   }
 });
 
+// Fetch NIFTY spot LTP through the algo server for manual signal price prefill.
+app.get("/api/nifty-spot", async (req, res) => {
+  try {
+    const response = await axios.get("http://localhost:3000/nifty-spot", {
+      timeout: 5000,
+    });
+
+    res.json(response.data);
+  } catch (error) {
+    res.json({
+      success: false,
+      message: "NIFTY spot price unavailable",
+      error: error.response?.data || error.message,
+    });
+  }
+});
+
+// Store a refreshed Dhan token and timestamp in .env.
 app.post("/api/update-dhan-token", (req, res) => {
   const { token } = req.body;
 
@@ -344,7 +396,7 @@ app.post("/api/update-dhan-token", (req, res) => {
 
   writeEnv({
     DHAN_ACCESS_TOKEN: token,
-    DHAN_TOKEN_UPDATED_AT: new Date().toISOString(),
+    DHAN_TOKEN_UPDATED_AT: getIstIsoString(),
   });
 
   res.json({
@@ -353,29 +405,7 @@ app.post("/api/update-dhan-token", (req, res) => {
   });
 });
 
-app.post("/api/update-dhan-token", (req, res) => {
-  const { token } = req.body;
-
-  if (!token) {
-    return res.status(400).json({
-      success: false,
-      message: "Token is required",
-    });
-  }
-
-  writeEnv({
-    DHAN_ACCESS_TOKEN: token,
-    DHAN_TOKEN_UPDATED_AT: new Date().toISOString(),
-  });
-
-  res.json({
-    success: true,
-    message: "Dhan token updated. Restart algo server.",
-  });
-});
-
-console.log("TOKEN UPDATE ROUTE LOADED");
-
+// Start the local dashboard server.
 app.listen(PORT, () => {
   console.log(`Control dashboard running at http://localhost:${PORT}`);
 });

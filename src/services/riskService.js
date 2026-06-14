@@ -1,17 +1,25 @@
-function calculateLots({ signal, riskPoints }) {
-  const capital = Number(process.env.TRADING_CAPITAL || 0);
-  const riskPercent = Number(process.env.RISK_PERCENT || 1);
-  const lotSize = Number(process.env.LOT_SIZE || 65);
-  const maxTrades = Number(process.env.MAX_DAILY_TRADES || 1);
+/*
+ * Calculates suggested lot size from capital, risk percent, stop-loss points,
+ * lot size, daily trade limits, and directional market bias.
+ * The dashboard and live entry path use this same calculation.
+ * Returned values include the intermediate math for dashboard display/debugging.
+ */
+function calculateLots({ signal, riskPoints, settings = process.env }) {
+  // Pull numeric risk settings from environment with conservative defaults.
+  const capital = Number(settings.TRADING_CAPITAL || 0);
+  const riskPercent = Number(settings.RISK_PERCENT || 1);
+  const lotSize = Number(settings.LOT_SIZE || 65);
+  const maxTrades = Number(settings.MAX_DAILY_TRADES || 1);
 
-  const riskMode = process.env.RISK_MODE || "PER_TRADE";
-  const marketBias = process.env.MARKET_BIAS || "NEUTRAL";
+  const riskMode = settings.RISK_MODE || "PER_TRADE";
+  const marketBias = settings.MARKET_BIAS || "NEUTRAL";
 
   const riskAmount = (capital * riskPercent) / 100;
   const lossPerLot = Number(riskPoints || 0) * lotSize;
 
   let lots = 0;
 
+  // Convert rupee risk into lots; PER_DAY spreads risk across max daily trades.
   if (lossPerLot > 0) {
     lots = Math.floor(riskAmount / lossPerLot);
 
@@ -22,6 +30,7 @@ function calculateLots({ signal, riskPoints }) {
 
   let finalLots = lots;
 
+  // Reduce counter-bias trades, but keep at least one lot when possible.
   if (marketBias === "BULLISH" && signal === "SHORT_ENTRY") {
     finalLots = lots > 1 ? Math.max(1, Math.floor(lots / 2)) : lots;
   }
@@ -32,6 +41,7 @@ function calculateLots({ signal, riskPoints }) {
 
   const quantity = finalLots * lotSize;
 
+  // Return both the decision and supporting numbers for transparency.
   return {
     capital,
     riskPercent,

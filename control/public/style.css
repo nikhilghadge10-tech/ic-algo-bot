@@ -1,122 +1,517 @@
 /*
  * Styles for the local Algo Bot Control Center.
- * These classes shape the OpenUI5 dashboard shell, status cards, trading
- * permission controls, planning form, readiness widgets, and broker/token
- * indicators. OpenUI5 provides base controls; this file adds spacing, color,
- * sizing, and dashboard-specific visual polish.
+ * OpenUI5 provides the base controls; this file turns them into a compact
+ * trading cockpit with clearer hierarchy, status scanning, and responsive
+ * layouts for day-to-day operation.
  */
 
-/* Page shell and hero area. */
+:root {
+  --page-bg: #eef2f6;
+  --panel: #ffffff;
+  --panel-soft: #f8fafc;
+  --ink: #172033;
+  --muted: #667085;
+  --line: #d9e2ec;
+  --line-strong: #c3ced9;
+  --blue: #1f5eff;
+  --teal: #008c7a;
+  --green: #16803c;
+  --amber: #b56a00;
+  --red: #c33131;
+  --shadow: 0 14px 34px rgba(24, 36, 56, 0.1);
+  --radius: 8px;
+}
+
+/* Page shell and app chrome. */
 .sapUiBody {
-  background: #f4f6f8 !important;
+  background:
+    linear-gradient(180deg, #f8fafc 0%, var(--page-bg) 48%, #e9eef5 100%)
+      !important;
+  color: var(--ink);
+}
+
+.sapMPage,
+.sapMPageEnableScrolling {
+  background: transparent !important;
 }
 
 .dashboardShell {
-  max-width: 980px;
-  margin: 28px auto;
-  padding: 0 18px 32px 18px;
+  width: min(1180px, calc(100vw - 32px));
+  margin: 20px auto 36px;
 }
 
 .heroCard {
-  background: linear-gradient(135deg, #0f172a, #1d4ed8);
-  border-radius: 22px;
-  padding: 28px;
-  margin-bottom: 18px;
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.22);
+  position: relative;
+  overflow: hidden;
+  min-height: 128px;
+  padding: 22px 24px;
+  margin-bottom: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(120deg, rgba(12, 21, 38, 0.94), rgba(19, 55, 96, 0.88)),
+    url("images/algo-bot.jpg") center / cover;
+  box-shadow: var(--shadow);
+}
+
+.heroCard::after {
+  position: absolute;
+  inset: auto 24px 18px auto;
+  width: 210px;
+  height: 3px;
+  background: linear-gradient(90deg, var(--teal), #f5b84b, var(--red));
+  content: "";
+  opacity: 0.9;
+}
+
+.botAvatar {
+  margin-right: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.72);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+}
+
+.heroTitle .sapMTitleStyleAuto {
+  color: #ffffff !important;
+  font-weight: 700;
+  letter-spacing: 0;
 }
 
 .heroTitle,
 .heroText {
-  color: white !important;
+  color: #ffffff !important;
 }
 
 .heroText {
-  margin-top: 8px;
-  opacity: 0.9;
+  display: block;
+  margin-top: 7px;
+  color: rgba(255, 255, 255, 0.82) !important;
+  font-size: 0.96rem;
 }
 
-/* Reusable status grid and card styles. */
+.cockpitTabs {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: var(--shadow);
+}
+
+.cockpitTabs .sapMITBHead {
+  padding: 6px 14px 0;
+  border-bottom: 1px solid var(--line);
+  background: #ffffff;
+}
+
+.cockpitTabs .sapMITBContent {
+  padding: 18px;
+  border: 0;
+  background: transparent;
+}
+
+/* Cards and section hierarchy. */
+.card {
+  margin-bottom: 14px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: 0 8px 22px rgba(28, 39, 55, 0.06);
+}
+
+.sectionTitle {
+  display: block;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sectionTitle .sapMTitleStyleAuto {
+  color: var(--ink);
+  font-size: 1.06rem;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+/* Reusable status grid and tiles. */
 .statusGrid {
-  display: flex;
-  gap: 14px;
-  flex-wrap: wrap;
-  margin-bottom: 18px;
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
+  gap: 12px;
+  width: 100%;
+  margin-bottom: 16px;
+}
+
+.statusGrid > .sapMFlexItem,
+.permissionRow > .sapMFlexItem,
+.riskInputRow > .sapMFlexItem,
+.riskControlRow > .sapMFlexItem {
+  min-width: 0;
+  width: 100%;
+}
+
+.statusTile,
+.permissionTile {
+  width: auto;
+  min-height: 96px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #ffffff, var(--panel-soft));
 }
 
 .statusTile {
-  background: white;
-  border-radius: 16px;
-  padding: 16px 18px;
-  min-width: 170px;
-  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+  justify-content: space-between;
 }
 
 .statusTitle {
   display: block;
-  color: #64748b;
-  font-size: 13px;
   margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.77rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.statusTile .sapMObjStatusText,
+.statusTile .sapMText {
+  font-weight: 600;
+}
+
+.sapMObjStatusSuccess .sapMObjStatusText {
+  color: var(--green) !important;
+}
+
+.sapMObjStatusError .sapMObjStatusText {
+  color: var(--red) !important;
+}
+
+.sapMObjStatusWarning .sapMObjStatusText {
+  color: var(--amber) !important;
 }
 
 .lastSignalTimeText,
 .lastTradeLine {
   display: block;
   margin-top: 6px;
-  color: #475569;
-  font-size: 0.85rem;
+  color: #4d5b6d;
+  font-size: 0.84rem;
+  font-weight: 500 !important;
 }
 
-.card {
-  background: white;
-  border-radius: 18px;
-  padding: 22px;
-  margin-bottom: 18px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+/* Buttons, inputs, and OpenUI5 control polish. */
+.sapMBtnInner {
+  border-radius: 6px !important;
+  font-weight: 700;
 }
 
+.sapMInputBaseContentWrapper,
+.sapMSegB,
+.sapMTextArea .sapMInputBaseContentWrapper {
+  border-radius: 6px !important;
+}
 
-/* General action rows and older risk form helpers. */
+.sapMInputBaseInner {
+  font-weight: 600;
+}
+
+.sapMTextAreaInner {
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.buttonRow,
+.tileButtonRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .buttonRow {
+  margin-top: 4px;
+}
+
+.tileButtonRow {
+  margin-top: 12px;
+}
+
+.tileButtonRow .sapMBtn {
+  min-width: 70px;
+}
+
+/* Tooltip and webhook URL layout. */
+.infoIcon,
+.permissionInfoIcon {
+  color: var(--muted);
+  cursor: help;
+}
+
+.infoIcon {
+  margin-left: 8px;
+}
+
+.permissionInfoIcon {
+  margin-left: 5px;
+  line-height: 1;
+}
+
+.infoIcon:hover,
+.permissionInfoIcon:hover {
+  color: var(--blue);
+}
+
+.infoText {
+  padding: 12px;
+}
+
+.webhookBox,
+.readinessActionRow {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
 }
 
-.flagRow {
-  width: 340px;
-  min-height: 46px;
-  border-bottom: 1px solid #eef2f7;
+.webhookBox {
+  margin-top: 16px;
 }
 
-.flagLabel {
-  width: 170px;
-  color: #334155;
+.readinessActionRow {
+  margin-top: 4px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfcfe;
 }
 
-.flagSwitch {
-  margin-left: 12px;
+.readinessActionRow > .sapMFlexItem,
+.readinessActionRow .sapMFlexBox {
+  min-width: 0;
+  width: 100%;
 }
 
-.riskGrid {
-  display: flex;
-  gap: 18px;
+.webhookLabel {
+  width: 118px;
+  color: #344054;
+  font-weight: 700;
 }
 
-.riskField {
-  width: 240px;
+.webhookInput {
+  width: min(520px, 46vw);
+}
+
+/* Trading permission switch tiles. */
+.permissionRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  width: 100%;
+  margin-top: 4px;
+  align-items: stretch;
+}
+
+.permissionTile {
+  width: auto;
+  min-height: 104px;
+  text-align: center;
+}
+
+.permissionLabel {
+  margin-right: 4px;
+  color: #2d3748;
+  font-weight: 700;
+}
+
+.permissionSwitch {
+  margin-top: 10px;
+}
+
+.permissionSaveRow {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.saveButton {
+  margin-top: 8px;
+}
+
+.tradingModeTile {
+  gap: 8px;
+}
+
+.tradingModeEmergencyButton {
+  margin-top: 10px;
+}
+
+/* Planning and lot-sizing controls. */
+.planningRiskLayout,
+.planningKeyMetricsRow {
+  display: grid !important;
+  gap: 12px;
+  width: 100%;
   margin-bottom: 16px;
+}
+
+.planningRiskLayout {
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
+  align-items: stretch;
+}
+
+.planningKeyMetricsRow {
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+}
+
+.planningRiskLayout > .sapMFlexItem,
+.planningKeyMetricsRow > .sapMFlexItem,
+.planningFieldsRow > .sapMFlexItem,
+.planningModeFieldsRow > .sapMFlexItem {
+  min-width: 0;
+}
+
+.planningInputStack,
+.planningMetricStack {
+  display: flex !important;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.planningMetricStack > .sapMFlexItem,
+.planningInputStack > .sapMFlexItem {
+  min-width: 0;
+  width: 100%;
+}
+
+.planningMetricStack .planningInlineMetricTile {
+  align-self: stretch;
+  width: 100% !important;
+  min-width: 100%;
+  max-width: 100%;
+  flex: 1 1 100% !important;
+}
+
+.planningMetricStack {
+  justify-content: stretch;
+}
+
+.planningCalcGroup,
+.planningMetricTile,
+.planningInlineMetricTile,
+.planningEmbeddedMetricTile,
+.planningKeyMetricTile {
+  min-height: 104px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #ffffff, var(--panel-soft));
+}
+
+.planningGroupTitle {
+  display: block;
+  margin-bottom: 12px;
+  color: var(--ink);
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.planningFieldsRow {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.planningSlFieldsRow {
+  grid-template-columns: repeat(4, minmax(112px, 1fr));
+}
+
+.planningModeBox {
+  margin-bottom: 16px;
+}
+
+.planningModeFieldsRow {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(240px, 1fr));
+  gap: 12px;
+  width: 100%;
+  align-items: end;
+}
+
+.planningMetricTile,
+.planningInlineMetricTile,
+.planningEmbeddedMetricTile,
+.planningKeyMetricTile {
+  justify-content: center;
+}
+
+.planningMetricValue {
+  color: var(--ink);
+  font-size: 1.45rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.planningKeyMetricTile {
+  min-height: 116px;
+  border-color: var(--line-strong);
+  background: #ffffff;
+}
+
+.planningKeyMetricTile .planningMetricValue {
+  font-size: 2rem;
+}
+
+.planningInlineMetricTile {
+  min-height: 72px;
+}
+
+.planningInlineMetricTile .planningMetricValue {
+  font-size: 1.25rem;
+}
+
+.planningEmbeddedMetricTile {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.planningEmbeddedMetricTile .planningMetricValue {
+  font-size: 1.1rem;
+}
+
+.riskInputRow {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  gap: 12px;
+  width: 100%;
+  margin-bottom: 16px;
+}
+
+.compactRiskField,
+.riskField {
+  width: auto;
+  min-width: 0;
+}
+
+.compactRiskField .sapMInputBase,
+.riskField .sapMInputBase {
+  width: 100% !important;
 }
 
 .fieldLabel {
   display: block;
   margin-bottom: 6px;
-  color: #334155;
-  font-weight: 600;
+  color: #344054;
+  font-size: 0.86rem;
+  font-weight: 700;
 }
 
 .labelInfoRow {
-  gap: 6px;
+  gap: 5px;
   align-items: center;
+  margin-bottom: 6px;
 }
 
 .labelInfoRow .fieldLabel,
@@ -125,160 +520,39 @@
   margin-bottom: 0;
 }
 
-.saveButton {
-  margin-top: 8px;
-}
-
-/* Tooltip and webhook URL layout. */
-.infoIcon {
-  margin-left: 8px;
-  color: #64748b;
-  cursor: help;
-}
-
-.infoIcon:hover {
-  color: #1d4ed8;
-}
-
-.infoIcon {
-  margin-left: 8px;
-  color: #64748b;
-  cursor: help;
-}
-
-.infoIcon:hover {
-  color: #1d4ed8;
-}
-
-.infoText {
-  padding: 12px;
-}
-
-.webhookBox {
-  margin-top: 18px;
-  gap: 12px;
-}
-
-.webhookLabel {
-  width: 110px;
-  font-weight: 600;
-}
-
-.webhookInput {
-  width: 520px;
-}
-
-/* Trading permission switch tiles. */
-.permissionRow {
-  display: flex;
-  gap: 24px;
-  flex-wrap: wrap;
-  margin-top: 12px;
-  align-items: flex-start;
-}
-
-.permissionTile {
-  width: 170px;
-  padding: 6px 0;
-  text-align: center;
-}
-
-.permissionLabel {
-  font-weight: 600;
-  margin-right: 6px;
-}
-
-.permissionInfoIcon {
-  margin-left: 4px;
-  color: #64748b;
-  cursor: help;
-  line-height: 1;
-}
-
-.permissionSwitch {
-  margin-top: 10px;
-}
-
-.permissionSaveTile {
-  width: 150px;
-  padding-top: 34px;
-}
-
-/* Planning and lot-sizing controls. */
-.riskInputRow {
-  display: flex;
-  gap: 24px;
-  flex-wrap: nowrap;
-  align-items: flex-start;
-  margin-bottom: 20px;
-}
-
-.compactRiskField {
-  width: 145px;
-}
-
-.riskInputRow .riskField {
-  width: 220px;
-}
-
 .riskControlRow {
-  margin-top: 8px;
-  margin-bottom: 20px;
-  gap: 40px;
-  align-items: flex-end;
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+  width: 100%;
+  margin-bottom: 16px;
+  align-items: end;
 }
 
 .calculateLotsButton {
   min-width: 180px;
-  margin-bottom: 2px;
 }
 
 /* Readiness-center and broker-status details. */
-.botAvatar {
-  margin-right: 20px;
-}
-
-.heroCard {
-  padding: 24px;
-}
-
-.tileButtonRow {
-  margin-top: 12px;
-  gap: 8px;
-}
-
-.tileButtonRow .sapMBtn {
-  min-width: 64px;
-}
-
-.readinessActionRow {
-  margin-top: 22px;
-  gap: 40px;
-}
-
-.tokenCountdown {
-  margin-top: 8px;
-  font-size: 0.85rem;
-}
-
 .brokerTile {
-  min-width: 180px;
+  min-width: 0;
 }
 
 .brokerIcon {
   margin-right: 8px;
-  color: #2563eb;
+  color: var(--blue);
 }
 
 .brokerStatus {
   margin-top: 10px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .tokenCountdown {
+  display: block;
   margin-top: 8px;
-  font-size: 0.85rem;
-  color: #475569;
+  color: var(--muted);
+  font-size: 0.84rem;
 }
 
 .tokenButton {
@@ -287,9 +561,9 @@
 
 .manualSpotStatus {
   display: block;
-  margin: 2px 0 8px 122px;
-  color: #64748b;
-  font-size: 0.85rem;
+  margin: 2px 0 12px 130px;
+  color: var(--muted);
+  font-size: 0.84rem;
 }
 
 /* Dhan token update dialog. */
@@ -300,5 +574,54 @@
 
 .tokenDialogLabel {
   margin-top: 8px;
-  font-weight: 600;
+  font-weight: 700;
+}
+
+@media (max-width: 760px) {
+  .dashboardShell {
+    width: min(100vw - 18px, 620px);
+    margin-top: 10px;
+  }
+
+  .heroCard {
+    padding: 18px;
+  }
+
+  .heroCard::after {
+    left: 18px;
+    right: 18px;
+    width: auto;
+  }
+
+  .botAvatar {
+    display: none;
+  }
+
+  .cockpitTabs .sapMITBContent,
+  .card {
+    padding: 12px;
+  }
+
+  .statusGrid,
+  .permissionRow,
+  .planningRiskLayout,
+  .planningSlFieldsRow,
+  .planningModeFieldsRow,
+  .planningKeyMetricsRow,
+  .riskInputRow,
+  .riskControlRow {
+    grid-template-columns: 1fr;
+  }
+
+  .webhookLabel {
+    width: 100%;
+  }
+
+  .webhookInput {
+    width: min(100%, 520px);
+  }
+
+  .manualSpotStatus {
+    margin-left: 0;
+  }
 }

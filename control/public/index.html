@@ -9,6 +9,8 @@
   <head>
     <meta charset="UTF-8" />
     <title>Algo Bot Control Center</title>
+    <link rel="icon" type="image/jpeg" href="images/favicon_bot1.jpeg" />
+    <link rel="apple-touch-icon" href="images/favicon_bot1.jpeg" />
     <link rel="stylesheet" href="style.css" />
 
     <script
@@ -49,6 +51,7 @@
           fresh.NIFTY_SPOT_ERROR = currentData.NIFTY_SPOT_ERROR || "";
           fresh.CALC_RISK_AMOUNT = currentData.CALC_RISK_AMOUNT;
           fresh.CALC_LOSS_PER_LOT = currentData.CALC_LOSS_PER_LOT;
+          fresh.CALC_ACTUAL_RISK = currentData.CALC_ACTUAL_RISK;
           fresh.CALC_LONG_LOTS = currentData.CALC_LONG_LOTS;
           fresh.CALC_SHORT_LOTS = currentData.CALC_SHORT_LOTS;
 
@@ -283,7 +286,6 @@
               PAPER_TRADE: data.PAPER_TRADE,
               NO_TRADE_TODAY: data.NO_TRADE_TODAY,
               AUTO_PREMIUM_SL: data.AUTO_PREMIUM_SL,
-              PREMIUM_SL_INTERVAL: data.PREMIUM_SL_INTERVAL,
               MAX_DAILY_TRADES: data.MAX_DAILY_TRADES,
               MAX_OPEN_POSITIONS: data.MAX_OPEN_POSITIONS,
               NUMBER_OF_LOTS: data.NUMBER_OF_LOTS,
@@ -459,20 +461,90 @@
         }
 
         // Compact numeric input used in the daily trading plan card.
-        function createCompactNumberField(label, path) {
+        function formatIndianNumber(value) {
+          const number = Number(String(value ?? "").replace(/,/g, ""));
+
+          if (!Number.isFinite(number)) {
+            return value || "";
+          }
+
+          return number.toLocaleString("en-IN", {
+            maximumFractionDigits: 2,
+          });
+        }
+
+        function createCompactNumberField(
+          label,
+          path,
+          editable = true,
+          options = {},
+        ) {
+          const input = new sap.m.Input({
+            value: {
+              path: "/" + path,
+              formatter: options.formatIndian ? formatIndianNumber : undefined,
+            },
+            type: options.formatIndian ? "Text" : "Number",
+            editable,
+            width: "145px",
+            liveChange: function (e) {
+              model.setProperty(
+                "/" + path,
+                String(e.getParameter("value")).replace(/,/g, ""),
+              );
+              calculateRisk();
+            },
+            change: function (e) {
+              const value = String(e.getParameter("value")).replace(/,/g, "");
+
+              model.setProperty("/" + path, value);
+
+              if (options.formatIndian) {
+                input.setValue(formatIndianNumber(value));
+              }
+
+              calculateRisk();
+            },
+          });
+
           return new sap.m.VBox({
             items: [
               new sap.m.Label({
                 text: label,
               }).addStyleClass("fieldLabel"),
 
-              new sap.m.Input({
-                value: "{/" + path + "}",
-                type: "Number",
-                width: "145px",
-              }),
+              input,
             ],
           }).addStyleClass("compactRiskField");
+        }
+
+        function createPlanningMetricTile(label, path, className) {
+          return new sap.m.VBox({
+            width: "100%",
+            items: [
+              new sap.m.Text({ text: label }).addStyleClass("statusTitle"),
+              new sap.m.Text({
+                text: {
+                  path: "/" + path,
+                  formatter: function (value) {
+                    if (value === undefined || value === null || value === "") {
+                      return "-";
+                    }
+
+                    const number = Number(value);
+
+                    if (!Number.isFinite(number)) {
+                      return value;
+                    }
+
+                    return number.toLocaleString("en-IN", {
+                      maximumFractionDigits: 2,
+                    });
+                  },
+                },
+              }).addStyleClass("planningMetricValue"),
+            ],
+          }).addStyleClass(className || "planningMetricTile");
         }
 
         // Frontend copy of the lot sizing math for quick planning.
@@ -487,6 +559,7 @@
 
           const riskAmount = (capital * riskPercent) / 100;
           const lossPerLot = sl * lotSize;
+          const actualRisk = lossPerLot * maxTrades;
 
           let lots = 0;
 
@@ -511,6 +584,7 @@
 
           model.setProperty("/CALC_RISK_AMOUNT", riskAmount);
           model.setProperty("/CALC_LOSS_PER_LOT", lossPerLot);
+          model.setProperty("/CALC_ACTUAL_RISK", actualRisk);
           model.setProperty("/CALC_LONG_LOTS", longLots);
           model.setProperty("/CALC_SHORT_LOTS", shortLots);
         }
@@ -650,7 +724,7 @@
           return new sap.m.VBox({
             items: [
               new sap.m.Title({
-                text: "🚦 Readiness Center",
+                text: "Readiness Center",
                 level: "H3",
               }).addStyleClass("sectionTitle"),
 
@@ -751,7 +825,7 @@
                       new sap.m.HBox({
                         items: [
                           new sap.m.Button({
-                            text: "Update",
+                            text: "Update Token",
                             icon: "sap-icon://key",
                             press: updateDhanToken,
                           }),
@@ -767,12 +841,31 @@
                     ],
                   }).addStyleClass("statusTile brokerTile"),
 
-                  createStatusTile(
-                    "Trading Mode",
-                    "/PAPER_TRADE",
-                    "Paper",
-                    "Live",
-                  ),
+                  new sap.m.VBox({
+                    items: [
+                      new sap.m.Text({ text: "Trading Mode" }).addStyleClass(
+                        "statusTitle",
+                      ),
+
+                      new sap.m.ObjectStatus({
+                        text: {
+                          path: "/PAPER_TRADE",
+                          formatter: (v) => (v === "true" ? "Paper" : "Live"),
+                        },
+                        state: {
+                          path: "/PAPER_TRADE",
+                          formatter: (v) => (v === "true" ? "Success" : "Error"),
+                        },
+                      }),
+
+                      new sap.m.Button({
+                        text: "Emergency Stop",
+                        icon: "sap-icon://alert",
+                        type: "Reject",
+                        press: emergencyStop,
+                      }).addStyleClass("tradingModeEmergencyButton"),
+                    ],
+                  }).addStyleClass("statusTile tradingModeTile"),
                 ],
               }).addStyleClass("statusGrid"),
 
@@ -809,12 +902,6 @@
                           sap.m.MessageToast.show("Webhook URL copied");
                         },
                       }),
-
-                      new sap.m.Button({
-                        text: "🚨 Emergency Stop",
-                        type: "Reject",
-                        press: emergencyStop,
-                      }).addStyleClass("sapUiLargeMarginBegin"),
                     ],
                   }),
                 ],
@@ -865,20 +952,19 @@
                     "AUTO_PREMIUM_SL",
                     "Places a protective SL-M order from the previous premium candle",
                   ),
-
-                  new sap.m.VBox({
-                    alignItems: "Center",
-                    justifyContent: "End",
-                    items: [
-                      new sap.m.Button({
-                        text: "Save Config",
-                        type: "Emphasized",
-                        press: saveConfig,
-                      }).addStyleClass("saveButton"),
-                    ],
-                  }).addStyleClass("permissionSaveTile"),
                 ],
               }).addStyleClass("permissionRow"),
+
+              new sap.m.HBox({
+                justifyContent: "Center",
+                items: [
+                  new sap.m.Button({
+                    text: "Save Config",
+                    type: "Emphasized",
+                    press: saveConfig,
+                  }).addStyleClass("saveButton"),
+                ],
+              }).addStyleClass("permissionSaveRow"),
             ],
           }).addStyleClass("card");
         }
@@ -888,104 +974,174 @@
           return new sap.m.VBox({
             items: [
               new sap.m.Title({
-                text: "📊 Today's Trading Plan",
+                text: "Today's Trading Plan",
                 level: "H3",
               }).addStyleClass("sectionTitle sapUiMediumMarginBottom"),
 
-              new sap.m.FlexBox({
-                wrap: "Wrap",
-                items: [
-                  createCompactNumberField("Capital", "TRADING_CAPITAL"),
-                  createCompactNumberField("Risk %", "RISK_PERCENT"),
-                  createCompactNumberField("Planning SL", "PLANNING_SL_POINTS"),
-                  createCompactNumberField("SL Interval", "PREMIUM_SL_INTERVAL"),
-                  createCompactNumberField("Max Trades", "MAX_DAILY_TRADES"),
-                  createCompactNumberField("Lot Size", "LOT_SIZE"),
-                ],
-              }).addStyleClass("riskInputRow"),
-
               new sap.m.HBox({
-                alignItems: "End",
-                justifyContent: "SpaceBetween",
                 items: [
                   new sap.m.VBox({
                     items: [
-                      createLabelWithInfo(
-                        "Risk Mode",
-                        "Per Trade applies risk to each planned trade. Per Day divides the risk budget across max daily trades.",
-                      ),
-
-                      new sap.m.SegmentedButton({
-                        selectedKey: "{/RISK_MODE}",
-                        width: "240px",
+                      new sap.m.VBox({
                         items: [
-                          new sap.m.SegmentedButtonItem({
-                            text: "Per Trade",
-                            key: "PER_TRADE",
-                            width: "120px",
+                          new sap.m.HBox({
+                            items: [
+                              createCompactNumberField(
+                                "Capital",
+                                "TRADING_CAPITAL",
+                                true,
+                                { formatIndian: true },
+                              ),
+                              createCompactNumberField("Risk %", "RISK_PERCENT"),
+                            ],
+                          }).addStyleClass("planningFieldsRow"),
+                        ],
+                      }).addStyleClass("planningCalcGroup"),
+
+                      new sap.m.VBox({
+                        items: [
+                          new sap.m.HBox({
+                            items: [
+                              createCompactNumberField(
+                                "Tentative SL",
+                                "PLANNING_SL_POINTS",
+                              ),
+                              createCompactNumberField("Lot Size", "LOT_SIZE", false),
+                              createPlanningMetricTile(
+                                "Loss Per Lot",
+                                "CALC_LOSS_PER_LOT",
+                                "planningEmbeddedMetricTile",
+                              ),
+                              createCompactNumberField(
+                                "Max Trades",
+                                "MAX_DAILY_TRADES",
+                              ),
+                            ],
+                          }).addStyleClass("planningFieldsRow planningSlFieldsRow"),
+                        ],
+                      }).addStyleClass("planningCalcGroup"),
+                    ],
+                  }).addStyleClass("planningInputStack"),
+
+                  new sap.m.VBox({
+                    items: [
+                      createPlanningMetricTile(
+                        "Planned Risk",
+                        "CALC_RISK_AMOUNT",
+                        "planningInlineMetricTile",
+                      ),
+                      createPlanningMetricTile(
+                        "Actual Risk",
+                        "CALC_ACTUAL_RISK",
+                        "planningInlineMetricTile",
+                      ),
+                    ],
+                  }).addStyleClass("planningMetricStack"),
+                ],
+              }).addStyleClass("planningRiskLayout"),
+
+              new sap.m.VBox({
+                items: [
+                  new sap.m.HBox({
+                    alignItems: "End",
+                    items: [
+                      new sap.m.VBox({
+                        items: [
+                          createLabelWithInfo(
+                            "Risk Mode",
+                            "Per Trade applies risk to each planned trade. Per Day divides the risk budget across max daily trades.",
+                          ),
+
+                          new sap.m.SegmentedButton({
+                            selectedKey: "{/RISK_MODE}",
+                            width: "240px",
+                            selectionChange: function (e) {
+                              const item = e.getParameter("item");
+
+                              model.setProperty(
+                                "/RISK_MODE",
+                                item
+                                  ? item.getKey()
+                                  : e.getSource().getSelectedKey(),
+                              );
+                              calculateRisk();
+                            },
+                            items: [
+                              new sap.m.SegmentedButtonItem({
+                                text: "Per Trade",
+                                key: "PER_TRADE",
+                                width: "120px",
+                              }),
+                              new sap.m.SegmentedButtonItem({
+                                text: "Per Day",
+                                key: "PER_DAY",
+                                width: "120px",
+                              }),
+                            ],
                           }),
-                          new sap.m.SegmentedButtonItem({
-                            text: "Per Day",
-                            key: "PER_DAY",
-                            width: "120px",
+                        ],
+                      }),
+
+                      new sap.m.VBox({
+                        items: [
+                          createLabelWithInfo(
+                            "Market Bias",
+                            "Bias reduces suggested lots for counter-bias trades. Bullish reduces SHORT lots; Bearish reduces LONG lots.",
+                          ),
+
+                          new sap.m.SegmentedButton({
+                            selectedKey: "{/MARKET_BIAS}",
+                            width: "300px",
+                            selectionChange: function (e) {
+                              const item = e.getParameter("item");
+
+                              model.setProperty(
+                                "/MARKET_BIAS",
+                                item
+                                  ? item.getKey()
+                                  : e.getSource().getSelectedKey(),
+                              );
+                              calculateRisk();
+                            },
+                            items: [
+                              new sap.m.SegmentedButtonItem({
+                                text: "Bullish",
+                                key: "BULLISH",
+                                width: "100px",
+                              }),
+                              new sap.m.SegmentedButtonItem({
+                                text: "Neutral",
+                                key: "NEUTRAL",
+                                width: "100px",
+                              }),
+                              new sap.m.SegmentedButtonItem({
+                                text: "Bearish",
+                                key: "BEARISH",
+                                width: "100px",
+                              }),
+                            ],
                           }),
                         ],
                       }),
                     ],
-                  }),
-                  new sap.m.VBox({
-                    items: [
-                      createLabelWithInfo(
-                        "Market Bias",
-                        "Bias reduces suggested lots for counter-bias trades. Bullish reduces SHORT lots; Bearish reduces LONG lots.",
-                      ),
-
-                      new sap.m.SegmentedButton({
-                        selectedKey: "{/MARKET_BIAS}",
-                        width: "300px",
-                        items: [
-                          new sap.m.SegmentedButtonItem({
-                            text: "Bullish",
-                            key: "BULLISH",
-                            width: "100px",
-                          }),
-                          new sap.m.SegmentedButtonItem({
-                            text: "Neutral",
-                            key: "NEUTRAL",
-                            width: "100px",
-                          }),
-                          new sap.m.SegmentedButtonItem({
-                            text: "Bearish",
-                            key: "BEARISH",
-                            width: "100px",
-                          }),
-                        ],
-                      }),
-                    ],
-                  }),
-
-                  new sap.m.Button({
-                    text: "Calculate Lots",
-                    icon: "sap-icon://simulate",
-                    type: "Accept",
-                    press: calculateRisk,
-                  }).addStyleClass("calculateLotsButton"),
+                  }).addStyleClass("planningModeFieldsRow"),
                 ],
-              }).addStyleClass("riskControlRow"),
+              }).addStyleClass("planningCalcGroup planningModeBox"),
 
               new sap.m.HBox({
                 items: [
-                  createStatusTile("Risk Amount", "/CALC_RISK_AMOUNT", "", ""),
-                  createStatusTile(
-                    "Loss Per Lot",
-                    "/CALC_LOSS_PER_LOT",
-                    "",
-                    "",
+                  createPlanningMetricTile(
+                    "LONG Lots",
+                    "CALC_LONG_LOTS",
+                    "planningKeyMetricTile",
                   ),
-                  createStatusTile("LONG Lots", "/CALC_LONG_LOTS", "", ""),
-                  createStatusTile("SHORT Lots", "/CALC_SHORT_LOTS", "", ""),
+                  createPlanningMetricTile(
+                    "SHORT Lots",
+                    "CALC_SHORT_LOTS",
+                    "planningKeyMetricTile",
+                  ),
                 ],
-              }).addStyleClass("statusGrid"),
+              }).addStyleClass("planningKeyMetricsRow"),
 
               new sap.m.HBox({
                 justifyContent: "Center",
@@ -1006,7 +1162,7 @@
           return new sap.m.VBox({
             items: [
               new sap.m.Title({
-                text: "📜 Activity Logs",
+                text: "Activity Logs",
                 level: "H3",
               }).addStyleClass("sectionTitle"),
 
@@ -1130,6 +1286,7 @@
         // Assemble the dashboard page and group cards into tabs.
         const page = new sap.m.Page({
           title: "Algo Bot Control Center",
+          showHeader: false,
           content: [
             new sap.m.VBox({
               items: [

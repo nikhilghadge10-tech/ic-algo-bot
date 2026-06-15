@@ -147,6 +147,47 @@ function isEnabled(value) {
   return String(value).toLowerCase() === "true";
 }
 
+function isAllowedUnderlyingSymbol(symbol) {
+  const normalized = String(symbol || "")
+    .toUpperCase()
+    .replace(/^.*:/, "")
+    .replace(/[^A-Z0-9]/g, "");
+
+  return normalized === "NIFTY" || normalized === "NIFTY50";
+}
+
+function normalizeAlertIntervalMinutes(value, fallback = 15) {
+  if (value === undefined || value === null || value === "") {
+    return Number(fallback || 15);
+  }
+
+  const text = String(value).trim().toLowerCase();
+  const numeric = Number(text);
+
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric;
+  }
+
+  const match = text.match(/^(\d+(?:\.\d+)?)(m|min|minute|minutes|h|hr|hour|hours)$/);
+
+  if (!match) {
+    return Number(fallback || 15);
+  }
+
+  const amount = Number(match[1]);
+  const unit = match[2];
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return Number(fallback || 15);
+  }
+
+  if (["h", "hr", "hour", "hours"].includes(unit)) {
+    return amount * 60;
+  }
+
+  return amount;
+}
+
 // Shared response for disabled BUY/SELL permission gates.
 async function rejectDisabledEntry(res, signal, symbol, price, permissionName) {
   logger.warn(`${signal} ignored because ${permissionName} is disabled`);
@@ -278,12 +319,20 @@ function roundToTick(price, tickSize) {
   return Number((Math.round(Number(price) / tick) * tick).toFixed(2));
 }
 
-async function getPremiumStopLossPlan(contract, config, referenceTime) {
+async function getPremiumStopLossPlan(
+  contract,
+  config,
+  referenceTime,
+  alertInterval,
+) {
   if (!isEnabled(config.AUTO_PREMIUM_SL)) {
     return null;
   }
 
-  const interval = Number(config.PREMIUM_SL_INTERVAL || 15);
+  const interval = normalizeAlertIntervalMinutes(
+    alertInterval,
+    config.PREMIUM_SL_INTERVAL || 15,
+  );
   const result = await getPreviousCompletedIntradayCandle(
     contract,
     interval,
@@ -480,6 +529,17 @@ function getSignalEmoji(signal) {
   }
 }
 
+function getTradeModeLabel(config, action) {
+  const mode = isEnabled(config.PAPER_TRADE) ? "PAPER" : "LIVE";
+  return `${mode} ${action}`;
+}
+
+function getOrderPlacementNote(config) {
+  return isEnabled(config.PAPER_TRADE)
+    ? "No real order placed."
+    : "Real order placed on Dhan.";
+}
+
 // Main trading webhook. Signals are validated, gated, converted to contracts,
 // sent to Dhan, and then reflected in local position state only after success.
 app.post("/webhook", async (req, res) => {
@@ -488,7 +548,8 @@ app.post("/webhook", async (req, res) => {
   try {
     logger.info(`Webhook received: ${JSON.stringify(req.body)}`);
 
-    const { signal, symbol, price, time } = req.body;
+    const { signal, symbol, price, time, interval, timeframe } = req.body;
+    const alertInterval = interval || timeframe;
 
     // Reject malformed signals before any trading logic can run.
     if (!signal || !symbol || !price) {
@@ -504,6 +565,24 @@ No order placed.`,
       );
 
       return res.status(400).send("Invalid payload");
+    }
+
+    if (!isAllowedUnderlyingSymbol(symbol)) {
+      logger.warn(`Webhook ignored because symbol is not NIFTY: ${symbol}`);
+
+      await sendTelegram(
+        `⚠️ Non-NIFTY Signal Ignored
+
+Signal : ${signal}
+Symbol : ${symbol}
+Price  : ${price}
+
+Only NIFTY alerts are allowed.
+
+No order placed.`,
+      );
+
+      return res.status(200).send("Non-NIFTY symbol ignored\n");
     }
 
     lastSignal = signal;
@@ -608,6 +687,7 @@ No order placed.`,
             contract,
             config,
             time,
+            alertInterval,
           );
 
           if (stopLossPlan && !stopLossPlan.success) {
@@ -723,7 +803,7 @@ Position is OPEN but UNPROTECTED.`,
           const tradeLimitStatus = recordSuccessfulEntry();
 
           await sendTelegram(
-            `${emoji} PAPER TRADE
+            `${emoji} ${getTradeModeLabel(config, "TRADE")}
 
 Signal : LONG_ENTRY
 
@@ -750,7 +830,7 @@ SL Order ID : ${stopLossOrderId || "-"}
 
 Trades Today : ${tradeLimitStatus.entryCount}
 
-No real order placed.`,
+${getOrderPlacementNote(config)}`,
           );
 
           break;
@@ -817,6 +897,7 @@ No order placed.`,
             contract,
             config,
             time,
+            alertInterval,
           );
 
           if (stopLossPlan && !stopLossPlan.success) {
@@ -932,7 +1013,7 @@ Position is OPEN but UNPROTECTED.`,
           const tradeLimitStatus = recordSuccessfulEntry();
 
           await sendTelegram(
-            `${emoji} PAPER TRADE
+            `${emoji} ${getTradeModeLabel(config, "TRADE")}
 
 Signal : SHORT_ENTRY
 
@@ -959,7 +1040,7 @@ SL Order ID : ${stopLossOrderId || "-"}
 
 Trades Today : ${tradeLimitStatus.entryCount}
 
-No real order placed.`,
+${getOrderPlacementNote(config)}`,
           );
 
           break;
@@ -1039,7 +1120,7 @@ Position still marked OPEN.`,
         clearOpenPosition();
 
         await sendTelegram(
-          `${emoji} PAPER EXIT
+          `${emoji} ${getTradeModeLabel(config, "EXIT")}
 
 Signal : LONG_EXIT
 
@@ -1129,7 +1210,7 @@ Position still marked OPEN.`,
         clearOpenPosition();
 
         await sendTelegram(
-          `${emoji} PAPER EXIT
+          `${emoji} ${getTradeModeLabel(config, "EXIT")}
 
 Signal : SHORT_EXIT
 

@@ -67,6 +67,249 @@ function getIstIsoString(date = new Date()) {
   return `${istDate.toISOString().slice(0, 19)}+05:30`;
 }
 
+function getIstDateParts(date) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  }).formatToParts(date);
+
+  return {
+    day: parts.find((part) => part.type === "day")?.value || "",
+    month: parts.find((part) => part.type === "month")?.value || "",
+    year: parts.find((part) => part.type === "year")?.value || "",
+  };
+}
+
+function getIstDateKey(date) {
+  const { day, month, year } = getIstDateParts(date);
+  return `${year}-${month}-${day}`;
+}
+
+function getIstDaySeparator(date) {
+  const { day, month, year } = getIstDateParts(date);
+  return `==================== ${Number(day)} - ${month} - ${year} ====================`;
+}
+
+function getTradeSeparator(sequence) {
+  return `---------------------------        Trade -${sequence}        ---------------------------`;
+}
+
+function getIstTimeLabel(timestampMs) {
+  if (!timestampMs) {
+    return "Unknown time";
+  }
+
+  return new Date(timestampMs).toLocaleTimeString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+function getTimeSeparator(timestampMs) {
+  return `---------------------------        ${getIstTimeLabel(timestampMs)}        ---------------------------`;
+}
+
+function isEntryWebhook(line) {
+  return /Webhook received: .*"signal":"(LONG_ENTRY|SHORT_ENTRY)"/.test(line);
+}
+
+function isNonTradeEntryResult(line) {
+  return /(LONG_ENTRY|SHORT_ENTRY).*(ignored|failed)|daily trade limit reached/i.test(
+    line,
+  );
+}
+
+function isPositionChanged(line) {
+  return /Position changed to (LONG|SHORT)/.test(line);
+}
+
+function formatLogTimestamp(line) {
+  return line.replace(
+    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g,
+    (match) => {
+      return new Date(match).toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        hour12: true,
+      });
+    },
+  );
+}
+
+function getParsedLogLine(line) {
+  const timestampMatch = line.match(
+    /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)/,
+  );
+  const timestamp = timestampMatch ? new Date(timestampMatch[1]) : null;
+
+  return {
+    raw: line,
+    display: formatLogTimestamp(line),
+    timestampMs: timestamp ? timestamp.getTime() : 0,
+    minuteKey: timestamp
+      ? Math.floor(timestamp.getTime() / (60 * 1000)).toString()
+      : "unknown",
+    dateKey: timestamp ? getIstDateKey(timestamp) : "unknown",
+    daySeparator: timestamp ? getIstDaySeparator(timestamp) : "",
+  };
+}
+
+function getLogDay(daysByKey, parsedLine) {
+  if (!daysByKey.has(parsedLine.dateKey)) {
+    daysByKey.set(parsedLine.dateKey, {
+      daySeparator: parsedLine.daySeparator,
+      latestMs: 0,
+      general: [],
+      trades: [],
+    });
+  }
+
+  return daysByKey.get(parsedLine.dateKey);
+}
+
+function getGeneralTimeSections(lines) {
+  const bucketsByMinute = new Map();
+
+  lines.forEach((line) => {
+    if (!bucketsByMinute.has(line.minuteKey)) {
+      bucketsByMinute.set(line.minuteKey, {
+        latestMs: 0,
+        lines: [],
+      });
+    }
+
+    const bucket = bucketsByMinute.get(line.minuteKey);
+    bucket.latestMs = Math.max(bucket.latestMs, line.timestampMs);
+    bucket.lines.push(line);
+  });
+
+  return Array.from(bucketsByMinute.values()).map((bucket) => ({
+    latestMs: bucket.latestMs,
+    lines: [
+      getTimeSeparator(bucket.latestMs),
+      ...bucket.lines
+        .slice()
+        .sort((a, b) => b.timestampMs - a.timestampMs)
+        .map((line) => line.display),
+    ],
+  }));
+}
+
+function formatDashboardLogs(content) {
+  const lines = content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (!lines.length) {
+    return "No logs yet.";
+  }
+
+  const daysByKey = new Map();
+  let currentTrade = null;
+  let pendingTrade = null;
+
+  lines.slice(-160).forEach((line) => {
+    const parsedLine = getParsedLogLine(line);
+    const day = getLogDay(daysByKey, parsedLine);
+    day.latestMs = Math.max(day.latestMs, parsedLine.timestampMs);
+
+    if (currentTrade && currentTrade.dateKey !== parsedLine.dateKey) {
+      currentTrade = null;
+    }
+
+    if (isEntryWebhook(line)) {
+      if (pendingTrade) {
+        pendingTrade.day.general.push(...pendingTrade.lines);
+      }
+
+      pendingTrade = {
+        dateKey: parsedLine.dateKey,
+        day,
+        latestMs: parsedLine.timestampMs,
+        lines: [parsedLine],
+      };
+      currentTrade = null;
+      return;
+    }
+
+    if (pendingTrade) {
+      pendingTrade.lines.push(parsedLine);
+      pendingTrade.latestMs = Math.max(
+        pendingTrade.latestMs,
+        parsedLine.timestampMs,
+      );
+
+      if (isNonTradeEntryResult(line)) {
+        pendingTrade.day.general.push(...pendingTrade.lines);
+        pendingTrade = null;
+        return;
+      }
+
+      if (isPositionChanged(line)) {
+        const trade = {
+          sequence: pendingTrade.day.trades.length + 1,
+          lines: pendingTrade.lines,
+          dateKey: pendingTrade.dateKey,
+          latestMs: pendingTrade.latestMs,
+        };
+
+        pendingTrade.day.trades.push(trade);
+        currentTrade = trade;
+        pendingTrade = null;
+      }
+
+      return;
+    }
+
+    if (currentTrade) {
+      currentTrade.lines.push(parsedLine);
+      currentTrade.latestMs = Math.max(
+        currentTrade.latestMs,
+        parsedLine.timestampMs,
+      );
+      return;
+    }
+
+    day.general.push(parsedLine);
+  });
+
+  if (pendingTrade) {
+    pendingTrade.day.general.push(...pendingTrade.lines);
+  }
+
+  return Array.from(daysByKey.values())
+    .sort((a, b) => b.latestMs - a.latestMs)
+    .flatMap((day) => {
+      const sections = [
+        ...day.trades.map((trade) => ({
+          latestMs: trade.latestMs,
+          lines: [
+            getTimeSeparator(trade.latestMs),
+            getTradeSeparator(trade.sequence),
+            ...trade.lines
+              .slice()
+              .sort((a, b) => b.timestampMs - a.timestampMs)
+              .map((line) => line.display),
+          ],
+        })),
+        ...getGeneralTimeSections(day.general),
+      ]
+        .sort((a, b) => b.latestMs - a.latestMs)
+        .flatMap((section) => section.lines);
+
+      if (day.daySeparator) {
+        sections.unshift(day.daySeparator);
+      }
+
+      return sections;
+    })
+    .join("\n");
+}
+
 // Dashboard bootstrap endpoint: config plus live process/tunnel status.
 app.get("/api/config", async (req, res) => {
   const env = readEnv();
@@ -320,23 +563,7 @@ app.get("/api/logs", (req, res) => {
     }
 
     const content = fs.readFileSync(logPath, "utf8");
-    const lines = content.trim().split("\n");
-    // Keep the response small and show the latest activity first.
-    const lastLines = lines
-      .slice(-80)
-      .reverse()
-      .map((line) => {
-        return line.replace(
-          /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g,
-          (match) => {
-            return new Date(match).toLocaleString("en-IN", {
-              timeZone: "Asia/Kolkata",
-              hour12: true,
-            });
-          },
-        );
-      })
-      .join("\n");
+    const lastLines = formatDashboardLogs(content);
 
     res.json({
       success: true,

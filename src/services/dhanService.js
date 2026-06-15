@@ -62,14 +62,22 @@ async function checkDhanHealth() {
     const response = await axios.get("https://api.dhan.co/v2/profile", {
       headers: {
         "access-token": process.env.DHAN_ACCESS_TOKEN,
+        "client-id": process.env.DHAN_CLIENT_ID,
       },
       timeout: 5000,
     });
+    const profileClientId = String(response.data.dhanClientId || "");
+    const configuredClientId = String(process.env.DHAN_CLIENT_ID || "");
+    const connected =
+      profileClientId && configuredClientId && profileClientId === configuredClientId;
 
     return {
-      connected: true,
-      clientId: response.data.dhanClientId,
-      message: "Connected",
+      connected,
+      clientId: profileClientId,
+      configuredClientId,
+      message: connected
+        ? "Connected"
+        : "Dhan client ID does not match the active token",
     };
   } catch (error) {
     return {

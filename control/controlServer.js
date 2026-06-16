@@ -6,6 +6,7 @@
  */
 const express = require("express");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 
@@ -107,6 +108,19 @@ function getIstTimeLabel(timestampMs) {
     minute: "2-digit",
     hour12: true,
   });
+}
+
+function getLocalNetworkIps() {
+  return Object.values(os.networkInterfaces())
+    .flat()
+    .filter(
+      (net) =>
+        net &&
+        net.family === "IPv4" &&
+        !net.internal &&
+        net.address,
+    )
+    .map((net) => net.address);
 }
 
 function getTimeSeparator(timestampMs) {
@@ -505,6 +519,31 @@ app.get("/api/ngrok-url", async (req, res) => {
       success: false,
       running: false,
       url: "",
+    });
+  }
+});
+
+// Return current public and local IP details for broker allowlist diagnostics.
+app.get("/api/network-ip", async (req, res) => {
+  const localIps = getLocalNetworkIps();
+
+  try {
+    const response = await axios.get("https://api.ipify.org?format=json", {
+      timeout: 3000,
+    });
+
+    res.json({
+      publicIp: response.data.ip || "",
+      localIps,
+      checkedAt: new Date().toISOString(),
+      error: "",
+    });
+  } catch (error) {
+    res.json({
+      publicIp: "",
+      localIps,
+      checkedAt: new Date().toISOString(),
+      error: "Public IP unavailable",
     });
   }
 });

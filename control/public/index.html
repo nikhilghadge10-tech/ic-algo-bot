@@ -9,8 +9,8 @@
   <head>
     <meta charset="UTF-8" />
     <title>Algo Bot Control Center</title>
-    <link rel="icon" type="image/jpeg" href="images/favicon_bot1.jpeg" />
-    <link rel="apple-touch-icon" href="images/favicon_bot1.jpeg" />
+    <link rel="icon" type="image/png" href="images/alog-bot-sq1.png" />
+    <link rel="apple-touch-icon" href="images/alog-bot-sq1.png" />
     <link rel="stylesheet" href="style.css" />
 
     <script
@@ -31,6 +31,10 @@
         config.LIVE_LOGS = "";
         config.NIFTY_SPOT_LOADING = false;
         config.NIFTY_SPOT_ERROR = "";
+        config.TOKEN_COUNTDOWN_TICK = Date.now();
+        config.NETWORK_PUBLIC_IP = "";
+        config.NETWORK_LOCAL_IPS = [];
+        config.NETWORK_IP_ERROR = "";
 
         const model = new sap.ui.model.json.JSONModel(config);
         sap.ui.getCore().setModel(model);
@@ -54,6 +58,11 @@
           fresh.CALC_ACTUAL_RISK = currentData.CALC_ACTUAL_RISK;
           fresh.CALC_LONG_LOTS = currentData.CALC_LONG_LOTS;
           fresh.CALC_SHORT_LOTS = currentData.CALC_SHORT_LOTS;
+          fresh.TOKEN_COUNTDOWN_TICK =
+            currentData.TOKEN_COUNTDOWN_TICK || Date.now();
+          fresh.NETWORK_PUBLIC_IP = currentData.NETWORK_PUBLIC_IP || "";
+          fresh.NETWORK_LOCAL_IPS = currentData.NETWORK_LOCAL_IPS || [];
+          fresh.NETWORK_IP_ERROR = currentData.NETWORK_IP_ERROR || "";
 
           model.setData(fresh);
         }
@@ -87,6 +96,20 @@
           } catch (error) {
             model.setProperty("/ngrokRunning", false);
             model.setProperty("/ngrokUrl", "");
+          }
+        }
+
+        async function refreshNetworkIp() {
+          try {
+            const result = await fetch("/api/network-ip").then((r) => r.json());
+
+            model.setProperty("/NETWORK_PUBLIC_IP", result.publicIp || "");
+            model.setProperty("/NETWORK_LOCAL_IPS", result.localIps || []);
+            model.setProperty("/NETWORK_IP_ERROR", result.error || "");
+          } catch (error) {
+            model.setProperty("/NETWORK_PUBLIC_IP", "");
+            model.setProperty("/NETWORK_LOCAL_IPS", []);
+            model.setProperty("/NETWORK_IP_ERROR", "Public IP unavailable");
           }
         }
 
@@ -131,17 +154,25 @@
           }
         }
 
-        // Dhan access tokens are short-lived, so show a simple expiry countdown.
-        function getDhanTokenCountdown(updatedAt) {
+        function getDhanTokenRemaining(updatedAt) {
           if (!updatedAt) {
-            return "Token update time missing";
+            return null;
           }
 
           const updated = new Date(updatedAt).getTime();
 
           const expires = updated + 24 * 60 * 60 * 1000;
 
-          const remaining = expires - Date.now();
+          return expires - Date.now();
+        }
+
+        // Dhan access tokens are short-lived, so show a simple expiry countdown.
+        function getDhanTokenCountdown(updatedAt) {
+          const remaining = getDhanTokenRemaining(updatedAt);
+
+          if (remaining === null) {
+            return "Token update time missing";
+          }
 
           if (remaining <= 0) {
             return "Token expired";
@@ -154,6 +185,15 @@
           );
 
           return `Expires in ${hours}h ${minutes}m`;
+        }
+
+        function isDhanTokenExpiringSoon(updatedAt) {
+          const remaining = getDhanTokenRemaining(updatedAt);
+
+          const expiringSoon =
+            remaining !== null && remaining > 0 && remaining < 60 * 60 * 1000;
+
+          return expiringSoon ? "true" : "false";
         }
 
         // Open a proper SAP UI5 dialog for updating the Dhan token.
@@ -242,9 +282,25 @@
 
                   new sap.m.Text({
                     text: {
-                      path: "/DHAN_TOKEN_UPDATED_AT",
+                      parts: [
+                        { path: "/DHAN_TOKEN_UPDATED_AT" },
+                        { path: "/TOKEN_COUNTDOWN_TICK" },
+                      ],
                       formatter: getDhanTokenCountdown,
                     },
+                    customData: [
+                      new sap.ui.core.CustomData({
+                        key: "expiring-soon",
+                        value: {
+                          parts: [
+                            { path: "/DHAN_TOKEN_UPDATED_AT" },
+                            { path: "/TOKEN_COUNTDOWN_TICK" },
+                          ],
+                          formatter: isDhanTokenExpiringSoon,
+                        },
+                        writeToDom: true,
+                      }),
+                    ],
                   }).addStyleClass("tokenCountdown"),
                 ],
               }).addStyleClass("tokenDialogContent"),
@@ -813,7 +869,7 @@
 
                       new sap.m.ObjectStatus({
                         text: {
-                          path: "/dhanHealth",
+                          path: "/dhanHealth/connected",
                           formatter: (v) => (v ? "Connected" : "Disconnected"),
                         },
                         state: {
@@ -834,9 +890,25 @@
 
                       new sap.m.Text({
                         text: {
-                          path: "/DHAN_TOKEN_UPDATED_AT",
+                          parts: [
+                            { path: "/DHAN_TOKEN_UPDATED_AT" },
+                            { path: "/TOKEN_COUNTDOWN_TICK" },
+                          ],
                           formatter: getDhanTokenCountdown,
                         },
+                        customData: [
+                          new sap.ui.core.CustomData({
+                            key: "expiring-soon",
+                            value: {
+                              parts: [
+                                { path: "/DHAN_TOKEN_UPDATED_AT" },
+                                { path: "/TOKEN_COUNTDOWN_TICK" },
+                              ],
+                              formatter: isDhanTokenExpiringSoon,
+                            },
+                            writeToDom: true,
+                          }),
+                        ],
                       }).addStyleClass("tokenCountdown"),
                     ],
                   }).addStyleClass("statusTile brokerTile"),
@@ -854,14 +926,24 @@
                         },
                         state: {
                           path: "/PAPER_TRADE",
-                          formatter: (v) => (v === "true" ? "Success" : "Error"),
+                          formatter: () => "Success",
                         },
-                      }),
+                        customData: [
+                          new sap.ui.core.CustomData({
+                            key: "live-mode",
+                            value: {
+                              path: "/PAPER_TRADE",
+                              formatter: (v) => (v === "true" ? "false" : "true"),
+                            },
+                            writeToDom: true,
+                          }),
+                        ],
+                      }).addStyleClass("tradingModeStatus"),
 
                       new sap.m.Button({
                         text: "Emergency Stop",
                         icon: "sap-icon://alert",
-                        type: "Reject",
+                        type: "Default",
                         press: emergencyStop,
                       }).addStyleClass("tradingModeEmergencyButton"),
                     ],
@@ -871,7 +953,7 @@
 
               new sap.m.HBox({
                 alignItems: "Center",
-                justifyContent: "SpaceBetween",
+                justifyContent: "Start",
                 items: [
                   new sap.m.HBox({
                     alignItems: "Center",
@@ -883,7 +965,7 @@
                       new sap.m.Input({
                         value: "{/ngrokUrl}",
                         editable: false,
-                        width: "350px",
+                        width: "240px",
                       }).addStyleClass("webhookInput"),
 
                       new sap.m.Button({
@@ -903,7 +985,48 @@
                         },
                       }),
                     ],
-                  }),
+                  }).addStyleClass("webhookUrlRow"),
+
+                  new sap.m.HBox({
+                    alignItems: "Center",
+                    items: [
+                      new sap.m.Label({
+                        text: "Public IP",
+                      }).addStyleClass("webhookLabel networkIpLabel"),
+
+                      new sap.m.ObjectStatus({
+                        text: {
+                          parts: [
+                            { path: "/NETWORK_PUBLIC_IP" },
+                            { path: "/NETWORK_IP_ERROR" },
+                          ],
+                          formatter: (ip, error) =>
+                            ip || error || "Checking...",
+                        },
+                        state: {
+                          path: "/NETWORK_IP_ERROR",
+                          formatter: (v) => (v ? "Warning" : "None"),
+                        },
+                      }).addStyleClass("networkIpStatus"),
+
+                      new sap.m.Button({
+                        icon: "sap-icon://copy",
+                        tooltip: "Copy Public IP",
+                        type: "Transparent",
+                        press: function () {
+                          const ip = model.getProperty("/NETWORK_PUBLIC_IP");
+
+                          if (!ip) {
+                            sap.m.MessageToast.show("No public IP available");
+                            return;
+                          }
+
+                          navigator.clipboard.writeText(ip);
+                          sap.m.MessageToast.show("Public IP copied");
+                        },
+                      }),
+                    ],
+                  }).addStyleClass("networkIpRow"),
                 ],
               }).addStyleClass("readinessActionRow"),
             ],
@@ -1171,7 +1294,7 @@
                 rows: 18,
                 width: "100%",
                 editable: false,
-              }),
+              }).addStyleClass("activityLogTextArea"),
 
               new sap.m.Button({
                 text: "Refresh Logs",
@@ -1370,14 +1493,19 @@
         await refreshConfig();
         await refreshAlgoStatus();
         await refreshNgrokUrl();
+        await refreshNetworkIp();
         await refreshLogs();
         await refreshDhanHealth();
 
         // Keep operational status fresh while the dashboard stays open.
         setInterval(refreshAlgoStatus, 5000);
         setInterval(refreshNgrokUrl, 5000);
+        setInterval(refreshNetworkIp, 5000);
         setInterval(refreshLogs, 5000);
         setInterval(refreshDhanHealth, 60000);
+        setInterval(() => {
+          model.setProperty("/TOKEN_COUNTDOWN_TICK", Date.now());
+        }, 60000);
 
         // Render the OpenUI5 app into the body placeholder.
         new sap.m.App({ pages: [page] }).placeAt("content");

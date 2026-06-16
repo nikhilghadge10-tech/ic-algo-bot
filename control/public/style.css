@@ -222,6 +222,11 @@
   line-height: 1.45;
 }
 
+.activityLogTextArea .sapMInputBaseInner,
+.activityLogTextArea .sapMTextAreaInner {
+  font-weight: 400 !important;
+}
+
 .buttonRow,
 .tileButtonRow {
   display: flex;
@@ -278,6 +283,9 @@
 }
 
 .readinessActionRow {
+  display: flex !important;
+  align-items: center;
+  justify-content: flex-start;
   margin-top: 4px;
   padding: 14px;
   border: 1px solid var(--line);
@@ -286,9 +294,13 @@
 }
 
 .readinessActionRow > .sapMFlexItem,
-.readinessActionRow .sapMFlexBox {
+.webhookUrlRow,
+.networkIpRow {
   min-width: 0;
-  width: 100%;
+}
+
+.webhookUrlRow {
+  flex: 0 1 auto;
 }
 
 .webhookLabel {
@@ -298,7 +310,27 @@
 }
 
 .webhookInput {
-  width: min(520px, 46vw);
+  width: min(260px, 100%);
+}
+
+.webhookInput .sapMInputBaseInner {
+  font-weight: 400 !important;
+}
+
+.networkIpRow {
+  flex: 0 0 auto;
+  min-height: 36px;
+}
+
+.networkIpLabel {
+  margin-left: 0;
+  margin-right: 8px;
+  width: 74px;
+}
+
+.networkIpStatus .sapMObjStatusText {
+  color: #344054;
+  font-weight: 500;
 }
 
 /* Trading permission switch tiles. */
@@ -341,8 +373,37 @@
   gap: 8px;
 }
 
+.tradingModeStatus .sapMObjStatusText {
+  font-weight: 700 !important;
+}
+
+.tradingModeStatus[data-live-mode="true"] .sapMObjStatusText {
+  animation: tradingModeBlink 1s ease-in-out infinite;
+}
+
+@keyframes tradingModeBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.25;
+  }
+}
+
 .tradingModeEmergencyButton {
   margin-top: 10px;
+}
+
+.tradingModeEmergencyButton .sapMBtnInner {
+  border-color: rgba(195, 49, 49, 0.35) !important;
+  background: #fff !important;
+  color: var(--red) !important;
+}
+
+.tradingModeEmergencyButton .sapMBtnIcon {
+  color: var(--red) !important;
 }
 
 /* Planning and lot-sizing controls. */
@@ -553,6 +614,23 @@
   margin-top: 8px;
   color: var(--muted);
   font-size: 0.84rem;
+  font-weight: 400 !important;
+}
+
+.tokenCountdown[data-expiring-soon="true"] {
+  animation: tokenExpiryBlink 1s ease-in-out infinite;
+  color: var(--red);
+}
+
+@keyframes tokenExpiryBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.25;
+  }
 }
 
 .tokenButton {
@@ -611,6 +689,25 @@
   .riskInputRow,
   .riskControlRow {
     grid-template-columns: 1fr;
+  }
+
+  .readinessActionRow {
+    align-items: flex-start;
+    flex-direction: column !important;
+  }
+
+  .webhookUrlRow,
+  .networkIpRow {
+    width: 100% !important;
+  }
+
+  .webhookUrlRow {
+    flex-wrap: wrap !important;
+  }
+
+  .webhookInput {
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   .webhookLabel {

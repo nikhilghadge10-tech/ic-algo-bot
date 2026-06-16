@@ -6,19 +6,22 @@
  * Paper mode returns a successful mock response without calling Dhan.
  */
 const axios = require("axios");
+const logger = require("./logger");
 
 // Keep Dhan error responses in one consistent shape for the webhook logic.
 function handleDhanError(error, payload, orderSide) {
-  console.log(`DHAN ${orderSide} ERROR STATUS:`, error.response?.status);
-  console.log(`DHAN ${orderSide} ERROR DATA:`, error.response?.data);
-  console.log(`DHAN ${orderSide} ERROR MESSAGE:`, error.message);
+  const errorDetails = error.response?.data || error.message;
+
+  logger.error(
+    `DHAN ${orderSide} ERROR status=${error.response?.status || "n/a"} details=${JSON.stringify(errorDetails)}`,
+  );
 
   return {
     success: false,
     side: orderSide,
     payload,
     status: error.response?.status,
-    error: error.response?.data || error.message,
+    error: errorDetails,
   };
 }
 

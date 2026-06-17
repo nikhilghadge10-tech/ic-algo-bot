@@ -83,7 +83,12 @@
         // Pull live position and last-signal state from the algo server.
         async function refreshAlgoStatus() {
           try {
-            const status = await fetch("/api/algo-status").then((r) =>
+            const selectedPaperTrade = model.getProperty("/PAPER_TRADE");
+            const query =
+              selectedPaperTrade === "true" || selectedPaperTrade === "false"
+                ? `?paperTrade=${encodeURIComponent(selectedPaperTrade)}`
+                : "";
+            const status = await fetch(`/api/algo-status${query}`).then((r) =>
               r.json(),
             );
             model.setProperty("/algoLiveStatus", status);
@@ -833,6 +838,14 @@
           setTimeout(applyLogFilters, 0);
         }
 
+        async function handlePermissionSwitchChange(path, state) {
+          model.setProperty("/" + path, state ? "true" : "false");
+
+          if (path === "PAPER_TRADE") {
+            await refreshAlgoStatus();
+          }
+        }
+
         // Save dashboard settings to .env.
         async function saveConfig() {
           const data = model.getData();
@@ -996,12 +1009,9 @@
                     return value === "true";
                   },
                 },
-                change: function (e) {
-                  model.setProperty(
-                    "/" + path,
-                    e.getParameter("state") ? "true" : "false",
-                  );
-                },
+	                change: function (e) {
+	                  handlePermissionSwitchChange(path, e.getParameter("state"));
+	                },
               }).addStyleClass("permissionSwitch"),
             ],
           }).addStyleClass("permissionTile");

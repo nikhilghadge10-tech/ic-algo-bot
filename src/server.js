@@ -113,10 +113,17 @@ loadInstruments();
 // Dashboard status endpoint. Config is read live so toggles update immediately.
 app.get("/status", async (req, res) => {
   const config = getRuntimeConfig();
+  const statusConfig = {
+    ...config,
+    PAPER_TRADE:
+      req.query.paperTrade === "true" || req.query.paperTrade === "false"
+        ? req.query.paperTrade
+        : config.PAPER_TRADE,
+  };
 
   await syncActiveStopLossStatus();
 
-  const activeTradeMode = getTradeMode(config);
+  const activeTradeMode = getTradeMode(statusConfig);
   const positionBelongsToActiveMode =
     currentPosition && normalizeTradeMode(currentPositionMode) === activeTradeMode;
 
@@ -124,20 +131,20 @@ app.get("/status", async (req, res) => {
     currentPosition: positionBelongsToActiveMode ? currentPosition : null,
     lastSignal,
     lastSignalTime,
-    allowBuy: config.ALLOW_BUY,
-    allowSell: config.ALLOW_SELL,
-    paperTrade: config.PAPER_TRADE,
+    allowBuy: statusConfig.ALLOW_BUY,
+    allowSell: statusConfig.ALLOW_SELL,
+    paperTrade: statusConfig.PAPER_TRADE,
     tradeMode: activeTradeMode,
     storedPositionMode: currentPosition ? normalizeTradeMode(currentPositionMode) : null,
-    lotSize: config.LOT_SIZE,
-    optionMode: config.OPTION_MODE,
+    lotSize: statusConfig.LOT_SIZE,
+    optionMode: statusConfig.OPTION_MODE,
     dailyTradeLimit: getDailyTradeLimitStatus(
-      config.MAX_DAILY_TRADES,
+      statusConfig.MAX_DAILY_TRADES,
       activeTradeMode,
     ),
     lastTrades: getDashboardTrades(3, activeTradeMode),
-    autoPremiumSl: config.AUTO_PREMIUM_SL,
-    premiumSlInterval: config.PREMIUM_SL_INTERVAL,
+    autoPremiumSl: statusConfig.AUTO_PREMIUM_SL,
+    premiumSlInterval: statusConfig.PREMIUM_SL_INTERVAL,
   });
 });
 

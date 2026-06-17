@@ -581,7 +581,11 @@ app.post("/api/stop-ngrok", async (req, res) => {
 // Proxy the algo server status into the dashboard.
 app.get("/api/algo-status", async (req, res) => {
   try {
-    const response = await axios.get("http://localhost:3000/status", {
+    const paperTrade =
+      req.query.paperTrade === "true" || req.query.paperTrade === "false"
+        ? `?paperTrade=${req.query.paperTrade}`
+        : "";
+    const response = await axios.get(`http://localhost:3000/status${paperTrade}`, {
       timeout: 2000,
     });
 

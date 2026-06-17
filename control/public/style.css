@@ -224,7 +224,20 @@
 
 .activityLogTextArea .sapMInputBaseInner,
 .activityLogTextArea .sapMTextAreaInner {
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    monospace !important;
   font-weight: 400 !important;
+  overflow-x: auto !important;
+  white-space: pre !important;
+  word-break: normal !important;
+}
+
+.logFilterRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-bottom: 10px;
 }
 
 .buttonRow,
@@ -319,6 +332,7 @@
 
 .networkIpRow {
   flex: 0 0 auto;
+  margin-left: 8px;
   min-height: 36px;
 }
 
@@ -699,6 +713,11 @@
   .webhookUrlRow,
   .networkIpRow {
     width: 100% !important;
+  }
+
+  .networkIpRow {
+    margin-top: 8px;
+    margin-left: 0;
   }
 
   .webhookUrlRow {

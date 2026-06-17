@@ -33,6 +33,7 @@ const {
 } = require("./services/instrumentService");
 const {
   getDailyTradeLimitStatus,
+  normalizeTradeMode,
   recordSuccessfulEntry,
 } = require("./services/tradeLimitService");
 const {
@@ -58,12 +59,15 @@ let optionSymbol = positionData.optionSymbol;
 let stopLossOrderId = positionData.stopLossOrderId;
 let premiumStopLoss = positionData.premiumStopLoss;
 let premiumStopLossCandle = positionData.premiumStopLossCandle;
+let currentPositionMode = positionData.tradeMode || positionData.positionMode || null;
 
 console.log(`Restored Position: ${currentPosition}`);
+logger.info("LIFECYCLE Algo server process booting");
 
 const app = express();
 let lastSignal = "";
 let lastSignalTime = 0;
+let server = null;
 
 // All incoming webhook/control payloads are JSON.
 app.use(express.json());
@@ -112,17 +116,26 @@ app.get("/status", async (req, res) => {
 
   await syncActiveStopLossStatus();
 
+  const activeTradeMode = getTradeMode(config);
+  const positionBelongsToActiveMode =
+    currentPosition && normalizeTradeMode(currentPositionMode) === activeTradeMode;
+
   res.json({
-    currentPosition,
+    currentPosition: positionBelongsToActiveMode ? currentPosition : null,
     lastSignal,
     lastSignalTime,
     allowBuy: config.ALLOW_BUY,
     allowSell: config.ALLOW_SELL,
     paperTrade: config.PAPER_TRADE,
+    tradeMode: activeTradeMode,
+    storedPositionMode: currentPosition ? normalizeTradeMode(currentPositionMode) : null,
     lotSize: config.LOT_SIZE,
     optionMode: config.OPTION_MODE,
-    dailyTradeLimit: getDailyTradeLimitStatus(config.MAX_DAILY_TRADES),
-    lastTrades: getDashboardTrades(),
+    dailyTradeLimit: getDailyTradeLimitStatus(
+      config.MAX_DAILY_TRADES,
+      activeTradeMode,
+    ),
+    lastTrades: getDashboardTrades(3, activeTradeMode),
     autoPremiumSl: config.AUTO_PREMIUM_SL,
     premiumSlInterval: config.PREMIUM_SL_INTERVAL,
   });
@@ -145,6 +158,14 @@ function getRuntimeConfig() {
 // Normalize string/boolean-style feature flags to a strict true check.
 function isEnabled(value) {
   return String(value).toLowerCase() === "true";
+}
+
+function getTradeMode(config) {
+  return isEnabled(config.PAPER_TRADE) ? "PAPER" : "LIVE";
+}
+
+function currentPositionBelongsToMode(mode) {
+  return currentPosition && normalizeTradeMode(currentPositionMode) === mode;
 }
 
 function isAllowedUnderlyingSymbol(symbol) {
@@ -260,6 +281,7 @@ function isBrokerOrderExecuted(orderStatus) {
 
 function clearOpenPosition() {
   currentPosition = null;
+  currentPositionMode = null;
   securityId = null;
   quantity = null;
   optionSymbol = null;
@@ -269,6 +291,7 @@ function clearOpenPosition() {
 
   savePosition({
     currentPosition,
+    tradeMode: currentPositionMode,
     securityId,
     quantity,
     optionSymbol,
@@ -530,8 +553,7 @@ function getSignalEmoji(signal) {
 }
 
 function getTradeModeLabel(config, action) {
-  const mode = isEnabled(config.PAPER_TRADE) ? "PAPER" : "LIVE";
-  return `${mode} ${action}`;
+  return `${getTradeMode(config)} ${action}`;
 }
 
 function getOrderPlacementNote(config) {
@@ -590,6 +612,7 @@ No order placed.`,
 
     logger.info(`Last Signal Updated: ${signal}`);
     const config = getRuntimeConfig();
+    const activeTradeMode = getTradeMode(config);
 
     // Global kill switch: useful for market holidays or manual pauses.
     if (isEnabled(config.NO_TRADE_TODAY)) {
@@ -621,7 +644,10 @@ No order placed.`,
 
     // Daily trade limit counts only successful entries and resets by IST date.
     if (isEntrySignal(signal)) {
-      const limitStatus = getDailyTradeLimitStatus(config.MAX_DAILY_TRADES);
+      const limitStatus = getDailyTradeLimitStatus(
+        config.MAX_DAILY_TRADES,
+        activeTradeMode,
+      );
 
       if (!limitStatus.allowed) {
         return rejectDailyTradeLimit(res, signal, symbol, price, limitStatus);
@@ -632,7 +658,10 @@ No order placed.`,
       //  =============================== LONG ENTRY ===============================
       case "LONG_ENTRY": {
         // Ignore duplicate entries so one signal cannot stack multiple positions.
-        if (currentPosition === "LONG") {
+        if (
+          currentPosition === "LONG" &&
+          currentPositionBelongsToMode(activeTradeMode)
+        ) {
           logger.warn("Duplicate LONG_ENTRY ignored");
 
           await sendTelegram(
@@ -654,7 +683,9 @@ No order placed.`,
             await sendTelegram(
               `⚠️ LONG_ENTRY ignored
 
-Current Position : ${currentPosition}`,
+Current Position : ${currentPosition}
+Position Mode    : ${normalizeTradeMode(currentPositionMode)}
+Signal Mode      : ${activeTradeMode}`,
             );
 
             return res.status(200).send("Position already open");
@@ -741,6 +772,7 @@ Position NOT changed.`,
           }
 
           currentPosition = "LONG";
+          currentPositionMode = activeTradeMode;
 
           logger.info("Position changed to LONG");
 
@@ -780,6 +812,7 @@ Position is OPEN but UNPROTECTED.`,
 
           createTrade({
             signal,
+            tradeMode: activeTradeMode,
             entryOrderId: getOrderId(orderResult),
             securityId: contract.SEM_SMST_SECURITY_ID,
             quantity,
@@ -792,6 +825,7 @@ Position is OPEN but UNPROTECTED.`,
           // Persist the position so a restarted server can still exit it.
           savePosition({
             currentPosition,
+            tradeMode: currentPositionMode,
             securityId: contract.SEM_SMST_SECURITY_ID,
             quantity,
             optionSymbol: contract.SEM_CUSTOM_SYMBOL,
@@ -800,7 +834,7 @@ Position is OPEN but UNPROTECTED.`,
             premiumStopLossCandle,
           });
 
-          const tradeLimitStatus = recordSuccessfulEntry();
+          const tradeLimitStatus = recordSuccessfulEntry(activeTradeMode);
 
           await sendTelegram(
             `${emoji} ${getTradeModeLabel(config, "TRADE")}
@@ -842,7 +876,10 @@ ${getOrderPlacementNote(config)}`,
       //  =============================== SHORT ENTRY ===============================
       case "SHORT_ENTRY": {
         // Ignore duplicate short-side entries while already short.
-        if (currentPosition === "SHORT") {
+        if (
+          currentPosition === "SHORT" &&
+          currentPositionBelongsToMode(activeTradeMode)
+        ) {
           logger.warn("Duplicate SHORT_ENTRY ignored");
 
           await sendTelegram(
@@ -864,7 +901,9 @@ No order placed.`,
             await sendTelegram(
               `⚠️ SHORT_ENTRY ignored
 
-Current Position : ${currentPosition}`,
+Current Position : ${currentPosition}
+Position Mode    : ${normalizeTradeMode(currentPositionMode)}
+Signal Mode      : ${activeTradeMode}`,
             );
 
             return res.status(200).send("Position already open");
@@ -951,6 +990,7 @@ Position NOT changed.`,
           }
 
           currentPosition = "SHORT";
+          currentPositionMode = activeTradeMode;
 
           logger.info("Position changed to SHORT");
 
@@ -990,6 +1030,7 @@ Position is OPEN but UNPROTECTED.`,
 
           createTrade({
             signal,
+            tradeMode: activeTradeMode,
             entryOrderId: getOrderId(orderResult),
             securityId: contract.SEM_SMST_SECURITY_ID,
             quantity,
@@ -1002,6 +1043,7 @@ Position is OPEN but UNPROTECTED.`,
           // Persist the position so a restarted server can still exit it.
           savePosition({
             currentPosition,
+            tradeMode: currentPositionMode,
             securityId: contract.SEM_SMST_SECURITY_ID,
             quantity,
             optionSymbol: contract.SEM_CUSTOM_SYMBOL,
@@ -1010,7 +1052,7 @@ Position is OPEN but UNPROTECTED.`,
             premiumStopLossCandle,
           });
 
-          const tradeLimitStatus = recordSuccessfulEntry();
+          const tradeLimitStatus = recordSuccessfulEntry(activeTradeMode);
 
           await sendTelegram(
             `${emoji} ${getTradeModeLabel(config, "TRADE")}
@@ -1052,7 +1094,11 @@ ${getOrderPlacementNote(config)}`,
       //  =============================== LONG EXIT ===============================
       case "LONG_EXIT": {
         // Exit signals are ignored unless the matching position is open.
-        if (currentPosition !== "LONG") {
+        if (
+          currentPosition !== "LONG" ||
+          !currentPositionBelongsToMode(activeTradeMode)
+        ) {
+          logger.warn("LONG_EXIT ignored because no LONG position is open");
           return res.status(200).send("No LONG position");
         }
 
@@ -1116,8 +1162,10 @@ Position still marked OPEN.`,
         markLatestOpenTradeExited({
           signal,
           exitOrderId: getOrderId(exitResult),
+          tradeMode: activeTradeMode,
         });
         clearOpenPosition();
+        logger.info(`Position closed: ${exitOptionSymbol}`);
 
         await sendTelegram(
           `${emoji} ${getTradeModeLabel(config, "EXIT")}
@@ -1141,7 +1189,11 @@ Position Closed`,
       //  =============================== SHORT EXIT ===============================
       case "SHORT_EXIT": {
         // Exit signals are ignored unless the matching position is open.
-        if (currentPosition !== "SHORT") {
+        if (
+          currentPosition !== "SHORT" ||
+          !currentPositionBelongsToMode(activeTradeMode)
+        ) {
+          logger.warn("SHORT_EXIT ignored because no SHORT position is open");
           return res.status(200).send("No SHORT position");
         }
 
@@ -1206,8 +1258,10 @@ Position still marked OPEN.`,
         markLatestOpenTradeExited({
           signal,
           exitOrderId: getOrderId(exitResult),
+          tradeMode: activeTradeMode,
         });
         clearOpenPosition();
+        logger.info(`Position closed: ${exitOptionSymbol}`);
 
         await sendTelegram(
           `${emoji} ${getTradeModeLabel(config, "EXIT")}
@@ -1283,6 +1337,26 @@ app.get("/nifty-spot", async (req, res) => {
 });
 
 // Start the algo webhook server.
-app.listen(PORT, () => {
+server = app.listen(PORT, () => {
+  logger.info(`LIFECYCLE Algo server listening on port ${PORT}`);
   console.log(`Server running on port ${PORT}`);
 });
+
+function shutdown(signal) {
+  logger.info(`LIFECYCLE Algo server received ${signal}, shutting down`);
+
+  if (!server) {
+    process.exit(0);
+  }
+
+  server.close(() => {
+    process.exit(0);
+  });
+
+  setTimeout(() => {
+    process.exit(0);
+  }, 3000).unref();
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));

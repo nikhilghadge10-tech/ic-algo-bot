@@ -19,6 +19,16 @@ const axios = require("axios");
 let algoProcess = null;
 let ngrokProcess = null;
 let ngrokUrl = "";
+const logPath = path.join(__dirname, "..", "logs", "app.log");
+const positionPath = path.join(__dirname, "..", "src", "data", "position.json");
+const tradeStatePath = path.join(__dirname, "..", "src", "data", "tradeState.json");
+const tradeHistoryPath = path.join(
+  __dirname,
+  "..",
+  "src",
+  "data",
+  "tradeHistory.json",
+);
 
 // Accept JSON API requests and serve the dashboard assets from control/public.
 app.use(express.json());
@@ -68,6 +78,66 @@ function getIstIsoString(date = new Date()) {
   return `${istDate.toISOString().slice(0, 19)}+05:30`;
 }
 
+function appendLifecycleLog(message, level = "info") {
+  const logDir = path.dirname(logPath);
+
+  fs.mkdirSync(logDir, { recursive: true });
+  fs.appendFileSync(
+    logPath,
+    `${new Date().toISOString()} [${level.toUpperCase()}] LIFECYCLE ${message}\n`,
+  );
+}
+
+function readJsonFile(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    return null;
+  }
+}
+
+async function getAlgoSnapshot() {
+  let status = null;
+
+  try {
+    const response = await axios.get("http://localhost:3000/status", {
+      timeout: 1500,
+    });
+
+    status = response.data;
+  } catch (error) {
+    status = null;
+  }
+
+  return {
+    status,
+    position: readJsonFile(positionPath),
+    tradeState: readJsonFile(tradeStatePath),
+    tradeHistory: readJsonFile(tradeHistoryPath),
+  };
+}
+
+function getSnapshotEntryCount(snapshot) {
+  return Number(snapshot?.tradeState?.entryCount || 0);
+}
+
+function getSnapshotTradeCount(snapshot) {
+  const trades = snapshot?.tradeHistory?.trades;
+  return Array.isArray(trades) ? trades.length : 0;
+}
+
+function didAlgoStateChange(before, after) {
+  if (!after) {
+    return false;
+  }
+
+  return (
+    before?.position?.currentPosition !== after.position?.currentPosition ||
+    getSnapshotEntryCount(before) !== getSnapshotEntryCount(after) ||
+    getSnapshotTradeCount(before) !== getSnapshotTradeCount(after)
+  );
+}
+
 function getIstDateParts(date) {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Kolkata",
@@ -90,7 +160,7 @@ function getIstDateKey(date) {
 
 function getIstDaySeparator(date) {
   const { day, month, year } = getIstDateParts(date);
-  return `==================== ${Number(day)} - ${month} - ${year} ====================`;
+  return `\n==========================   ${Number(day)} - ${month} - ${year}   ============================\n`;
 }
 
 function getTradeSeparator(sequence) {
@@ -316,7 +386,7 @@ function formatDashboardLogs(content) {
         .flatMap((section) => section.lines);
 
       if (day.daySeparator) {
-        sections.unshift(day.daySeparator);
+        sections.push(day.daySeparator);
       }
 
       return sections;
@@ -400,10 +470,18 @@ app.post("/api/config", (req, res) => {
 });
 
 // Start the algo webhook server as a child process.
-app.post("/api/start-server", (req, res) => {
+app.post("/api/start-server", async (req, res) => {
   if (algoProcess) {
+    appendLifecycleLog("Algo server start requested but already running");
     return res.json({ success: true, message: "Algo server already running" });
   }
+
+  if (await isAlgoActuallyRunning()) {
+    appendLifecycleLog("Algo server start requested but already running on port 3000");
+    return res.json({ success: true, message: "Algo server already running" });
+  }
+
+  appendLifecycleLog("Algo server start requested");
 
   algoProcess = spawn("node", ["src/server.js"], {
     cwd: path.join(__dirname, ".."),
@@ -411,7 +489,11 @@ app.post("/api/start-server", (req, res) => {
     stdio: "inherit",
   });
 
-  algoProcess.on("exit", () => {
+  algoProcess.on("exit", (code, signal) => {
+    appendLifecycleLog(
+      `Algo server process exited code=${code ?? "null"} signal=${signal ?? "null"}`,
+      code === 0 || signal === "SIGTERM" ? "info" : "warn",
+    );
     algoProcess = null;
   });
 
@@ -421,9 +503,11 @@ app.post("/api/start-server", (req, res) => {
 // Stop the child algo server if this dashboard started it.
 app.post("/api/stop-server", (req, res) => {
   if (!algoProcess) {
+    appendLifecycleLog("Algo server stop requested but dashboard has no child process");
     return res.json({ success: true, message: "Algo server not running" });
   }
 
+  appendLifecycleLog("Algo server stop requested");
   algoProcess.kill();
   algoProcess = null;
 
@@ -435,18 +519,27 @@ app.post("/api/start-ngrok", async (req, res) => {
   const health = await getNgrokHealth();
 
   if (health.running) {
+    appendLifecycleLog(
+      `Ngrok start requested but already running url=${health.url || "unknown"}`,
+    );
     return res.json({
       success: true,
       message: "Ngrok already running",
     });
   }
 
+  appendLifecycleLog("Ngrok start requested");
+
   ngrokProcess = spawn("ngrok", ["http", "3000"], {
     shell: true,
     stdio: "inherit",
   });
 
-  ngrokProcess.on("exit", () => {
+  ngrokProcess.on("exit", (code, signal) => {
+    appendLifecycleLog(
+      `Ngrok process exited code=${code ?? "null"} signal=${signal ?? "null"}`,
+      code === 0 || signal === "SIGTERM" ? "info" : "warn",
+    );
     ngrokProcess = null;
   });
 
@@ -459,6 +552,8 @@ app.post("/api/start-ngrok", async (req, res) => {
 // Stop ngrok, including any process that may have been started separately.
 app.post("/api/stop-ngrok", async (req, res) => {
   try {
+    appendLifecycleLog("Ngrok stop requested");
+
     if (ngrokProcess) {
       ngrokProcess.kill();
       ngrokProcess = null;
@@ -474,6 +569,8 @@ app.post("/api/stop-ngrok", async (req, res) => {
       message: "Ngrok stopped",
     });
   } catch (error) {
+    appendLifecycleLog(`Ngrok stop failed: ${error.message}`, "error");
+
     res.json({
       success: false,
       message: error.message,
@@ -564,14 +661,17 @@ app.post("/api/emergency-stop", (req, res) => {
 
 // Send a dashboard-generated signal to the algo webhook for manual testing.
 app.post("/api/test-signal", async (req, res) => {
+  const payload = req.body;
+  const beforeSnapshot = await getAlgoSnapshot();
+
   try {
-    const payload = req.body;
+    appendLifecycleLog(`MANUAL_SIGNAL requested signal=${payload.signal || "unknown"}`);
 
     const response = await axios.post(
       "http://localhost:3000/webhook",
       payload,
       {
-        timeout: 5000,
+        timeout: 30000,
       },
     );
 
@@ -580,7 +680,27 @@ app.post("/api/test-signal", async (req, res) => {
       message: `Test signal sent: ${payload.signal}`,
       response: response.data,
     });
+    appendLifecycleLog(`MANUAL_SIGNAL completed signal=${payload.signal || "unknown"}`);
   } catch (error) {
+    const afterSnapshot = await getAlgoSnapshot();
+
+    if (didAlgoStateChange(beforeSnapshot, afterSnapshot)) {
+      appendLifecycleLog(
+        `MANUAL_SIGNAL response lost after processing signal=${payload.signal || "unknown"}: ${error.message}`,
+        "warn",
+      );
+
+      return res.json({
+        success: true,
+        warning: true,
+        message: `Signal processed locally, but response was lost: ${error.message}`,
+        error: error.message,
+        algoStatus: afterSnapshot.status,
+      });
+    }
+
+    appendLifecycleLog(`MANUAL_SIGNAL failed: ${error.message}`, "warn");
+
     res.json({
       success: false,
       message: "Test signal failed. Is algo server running?",
@@ -592,8 +712,6 @@ app.post("/api/test-signal", async (req, res) => {
 // Return recent log entries newest-first for the dashboard log viewer.
 app.get("/api/logs", (req, res) => {
   try {
-    const logPath = path.join(__dirname, "..", "logs", "app.log");
-
     if (!fs.existsSync(logPath)) {
       return res.json({
         success: true,
@@ -673,5 +791,6 @@ app.post("/api/update-dhan-token", (req, res) => {
 
 // Start the local dashboard server.
 app.listen(PORT, () => {
+  appendLifecycleLog(`Control dashboard started on port ${PORT}`);
   console.log(`Control dashboard running at http://localhost:${PORT}`);
 });

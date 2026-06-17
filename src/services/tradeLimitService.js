@@ -51,36 +51,60 @@ function getTradeStateForToday() {
   return {
     date: today,
     entryCount: Number(state.entryCount || 0),
+    countsByMode: {
+      PAPER: Number(state.countsByMode?.PAPER || 0),
+      LIVE: Number(state.countsByMode?.LIVE || 0),
+    },
   };
 }
 
+function normalizeTradeMode(mode) {
+  return String(mode || "").toUpperCase() === "LIVE" ? "LIVE" : "PAPER";
+}
+
 // Check whether another entry is allowed under the configured daily max.
-function getDailyTradeLimitStatus(maxDailyTrades) {
+function getDailyTradeLimitStatus(maxDailyTrades, mode) {
   const limit = Number(maxDailyTrades || 0);
   const state = getTradeStateForToday();
+  const tradeMode = normalizeTradeMode(mode);
+  const entryCount = mode
+    ? Number(state.countsByMode?.[tradeMode] || 0)
+    : Number(state.entryCount || 0);
 
   return {
     ...state,
+    mode: tradeMode,
+    entryCount,
     limit,
-    remaining: Math.max(limit - state.entryCount, 0),
-    allowed: limit <= 0 || state.entryCount < limit,
+    remaining: Math.max(limit - entryCount, 0),
+    allowed: limit <= 0 || entryCount < limit,
   };
 }
 
 // Increment after a successful entry order and return the updated state.
-function recordSuccessfulEntry() {
+function recordSuccessfulEntry(mode) {
   const state = getTradeStateForToday();
+  const tradeMode = normalizeTradeMode(mode);
+  const countsByMode = {
+    PAPER: Number(state.countsByMode?.PAPER || 0),
+    LIVE: Number(state.countsByMode?.LIVE || 0),
+  };
+
+  countsByMode[tradeMode] += 1;
+
   const updatedState = {
     date: state.date,
-    entryCount: state.entryCount + 1,
+    entryCount: countsByMode.PAPER + countsByMode.LIVE,
+    countsByMode,
   };
 
   saveTradeState(updatedState);
-  return updatedState;
+  return getDailyTradeLimitStatus(0, tradeMode);
 }
 
 module.exports = {
   getDailyTradeLimitStatus,
   getIstDateKey,
+  normalizeTradeMode,
   recordSuccessfulEntry,
 };

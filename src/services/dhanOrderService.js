@@ -6,7 +6,28 @@
  * Paper mode returns a successful mock response without calling Dhan.
  */
 const axios = require("axios");
+const dotenv = require("dotenv");
+const fs = require("fs");
+const path = require("path");
 const logger = require("./logger");
+
+const envPath = path.join(__dirname, "..", "..", ".env");
+
+function getRuntimeEnv() {
+  try {
+    return {
+      ...process.env,
+      ...dotenv.parse(fs.readFileSync(envPath)),
+    };
+  } catch (error) {
+    logger.warn(`Unable to read Dhan order runtime config: ${error.message}`);
+    return process.env;
+  }
+}
+
+function isPaperTrade(env = getRuntimeEnv()) {
+  return String(env.PAPER_TRADE).toLowerCase() === "true";
+}
 
 // Keep Dhan error responses in one consistent shape for the webhook logic.
 function handleDhanError(error, payload, orderSide) {
@@ -27,9 +48,11 @@ function handleDhanError(error, payload, orderSide) {
 
 // Place a market BUY order for the selected option contract.
 async function placeMarketBuyOrder(contract, quantity) {
+  const env = getRuntimeEnv();
+
   // Dhan expects these exact field names for an F&O intraday market order.
   const payload = {
-    dhanClientId: process.env.DHAN_CLIENT_ID,
+    dhanClientId: env.DHAN_CLIENT_ID,
     transactionType: "BUY",
     exchangeSegment: "NSE_FNO",
     productType: "INTRADAY",
@@ -40,7 +63,7 @@ async function placeMarketBuyOrder(contract, quantity) {
   };
 
   // Paper trading stops here and returns the payload for logging/debugging.
-  if (process.env.PAPER_TRADE === "true") {
+  if (isPaperTrade(env)) {
     console.log("\n==============================");
     console.log("PAPER ORDER");
     console.log("==============================");
@@ -67,8 +90,8 @@ async function placeMarketBuyOrder(contract, quantity) {
       payload,
       {
         headers: {
-          "access-token": process.env.DHAN_ACCESS_TOKEN,
-          "client-id": process.env.DHAN_CLIENT_ID,
+          "access-token": env.DHAN_ACCESS_TOKEN,
+          "client-id": env.DHAN_CLIENT_ID,
           "Content-Type": "application/json",
         },
       },
@@ -89,9 +112,11 @@ async function placeMarketBuyOrder(contract, quantity) {
 
 // Place a market SELL order to close the currently stored option position.
 async function placeMarketSellOrder(securityId, quantity) {
+  const env = getRuntimeEnv();
+
   // Exits only need the security id and quantity because the contract was saved at entry.
   const payload = {
-    dhanClientId: process.env.DHAN_CLIENT_ID,
+    dhanClientId: env.DHAN_CLIENT_ID,
     transactionType: "SELL",
     exchangeSegment: "NSE_FNO",
     productType: "INTRADAY",
@@ -102,7 +127,7 @@ async function placeMarketSellOrder(securityId, quantity) {
   };
 
   // Paper exits mirror live exits but avoid the broker API call.
-  if (process.env.PAPER_TRADE === "true") {
+  if (isPaperTrade(env)) {
     console.log("\n==============================");
     console.log("PAPER SELL ORDER");
     console.log("==============================");
@@ -123,8 +148,8 @@ async function placeMarketSellOrder(securityId, quantity) {
       payload,
       {
         headers: {
-          "access-token": process.env.DHAN_ACCESS_TOKEN,
-          "client-id": process.env.DHAN_CLIENT_ID,
+          "access-token": env.DHAN_ACCESS_TOKEN,
+          "client-id": env.DHAN_CLIENT_ID,
           "Content-Type": "application/json",
         },
       },
@@ -144,8 +169,10 @@ async function placeMarketSellOrder(securityId, quantity) {
 }
 
 async function placeStopLossMarketSellOrder(securityId, quantity, triggerPrice) {
+  const env = getRuntimeEnv();
+
   const payload = {
-    dhanClientId: process.env.DHAN_CLIENT_ID,
+    dhanClientId: env.DHAN_CLIENT_ID,
     transactionType: "SELL",
     exchangeSegment: "NSE_FNO",
     productType: "INTRADAY",
@@ -156,7 +183,7 @@ async function placeStopLossMarketSellOrder(securityId, quantity, triggerPrice) 
     triggerPrice,
   };
 
-  if (process.env.PAPER_TRADE === "true") {
+  if (isPaperTrade(env)) {
     console.log("\n==============================");
     console.log("PAPER STOP LOSS SELL ORDER");
     console.log("==============================");
@@ -180,8 +207,8 @@ async function placeStopLossMarketSellOrder(securityId, quantity, triggerPrice) 
       payload,
       {
         headers: {
-          "access-token": process.env.DHAN_ACCESS_TOKEN,
-          "client-id": process.env.DHAN_CLIENT_ID,
+          "access-token": env.DHAN_ACCESS_TOKEN,
+          "client-id": env.DHAN_CLIENT_ID,
           "Content-Type": "application/json",
         },
       },
@@ -201,6 +228,8 @@ async function placeStopLossMarketSellOrder(securityId, quantity, triggerPrice) 
 }
 
 async function cancelOrder(orderId) {
+  const env = getRuntimeEnv();
+
   if (!orderId) {
     return {
       success: true,
@@ -208,7 +237,7 @@ async function cancelOrder(orderId) {
     };
   }
 
-  if (process.env.PAPER_TRADE === "true" || String(orderId).startsWith("PAPER-")) {
+  if (isPaperTrade(env) || String(orderId).startsWith("PAPER-")) {
     console.log("\n==============================");
     console.log("PAPER CANCEL ORDER");
     console.log("==============================");
@@ -230,8 +259,8 @@ async function cancelOrder(orderId) {
       `https://api.dhan.co/v2/orders/${orderId}`,
       {
         headers: {
-          "access-token": process.env.DHAN_ACCESS_TOKEN,
-          "client-id": process.env.DHAN_CLIENT_ID,
+          "access-token": env.DHAN_ACCESS_TOKEN,
+          "client-id": env.DHAN_CLIENT_ID,
           "Content-Type": "application/json",
         },
       },
@@ -250,6 +279,8 @@ async function cancelOrder(orderId) {
 }
 
 async function getOrderStatus(orderId) {
+  const env = getRuntimeEnv();
+
   if (!orderId) {
     return {
       success: false,
@@ -257,7 +288,7 @@ async function getOrderStatus(orderId) {
     };
   }
 
-  if (process.env.PAPER_TRADE === "true" || String(orderId).startsWith("PAPER-")) {
+  if (isPaperTrade(env) || String(orderId).startsWith("PAPER-")) {
     return {
       success: true,
       paperTrade: true,
@@ -273,8 +304,8 @@ async function getOrderStatus(orderId) {
       `https://api.dhan.co/v2/orders/${orderId}`,
       {
         headers: {
-          "access-token": process.env.DHAN_ACCESS_TOKEN,
-          "client-id": process.env.DHAN_CLIENT_ID,
+          "access-token": env.DHAN_ACCESS_TOKEN,
+          "client-id": env.DHAN_CLIENT_ID,
           "Content-Type": "application/json",
         },
       },

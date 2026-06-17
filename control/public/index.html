@@ -28,7 +28,12 @@
         config.algoLiveStatus = {};
         config.ngrokUrl = config.ngrokUrl || "";
         config.dhanHealth = null;
+        config.RAW_LOGS = "";
         config.LIVE_LOGS = "";
+        config.SHOW_READINESS_LOGS = false;
+        config.SHOW_MANUAL_SIGNAL_LOGS = true;
+        config.SHOW_TRADINGVIEW_SIGNAL_LOGS = true;
+        config.SHOW_DETAILED_SIGNAL_LOGS = false;
         config.NIFTY_SPOT_LOADING = false;
         config.NIFTY_SPOT_ERROR = "";
         config.TOKEN_COUNTDOWN_TICK = Date.now();
@@ -47,7 +52,15 @@
           fresh.algoLiveStatus = currentData.algoLiveStatus || {};
           fresh.ngrokUrl = fresh.ngrokUrl || currentData.ngrokUrl || "";
           fresh.dhanHealth = currentData.dhanHealth || null;
+          fresh.RAW_LOGS = currentData.RAW_LOGS || "";
           fresh.LIVE_LOGS = currentData.LIVE_LOGS || "";
+          fresh.SHOW_READINESS_LOGS = currentData.SHOW_READINESS_LOGS === true;
+          fresh.SHOW_MANUAL_SIGNAL_LOGS =
+            currentData.SHOW_MANUAL_SIGNAL_LOGS !== false;
+          fresh.SHOW_TRADINGVIEW_SIGNAL_LOGS =
+            currentData.SHOW_TRADINGVIEW_SIGNAL_LOGS !== false;
+          fresh.SHOW_DETAILED_SIGNAL_LOGS =
+            currentData.SHOW_DETAILED_SIGNAL_LOGS === true;
           fresh.TEST_PRICE = currentData.TEST_PRICE || "";
           fresh.NIFTY_SPOT_LTP = currentData.NIFTY_SPOT_LTP;
           fresh.NIFTY_SPOT_CHECKED_AT = currentData.NIFTY_SPOT_CHECKED_AT;
@@ -326,7 +339,498 @@
         // Pull recent logs from the backend; the backend already sorts newest-first.
         async function refreshLogs() {
           const result = await fetch("/api/logs").then((r) => r.json());
-          model.setProperty("/LIVE_LOGS", result.logs || "");
+          model.setProperty("/RAW_LOGS", result.logs || "");
+          applyLogFilters();
+        }
+
+        function isReadinessLogLine(line) {
+          return (
+            /LIFECYCLE|Control dashboard|Algo server|Ngrok/i.test(line) &&
+            !/MANUAL_SIGNAL/i.test(line)
+          );
+        }
+
+        function isManualSignalLogLine(line) {
+          return /MANUAL_SIGNAL|"source":"MANUAL_SIGNAL"|Test signal sent/i.test(
+            line,
+          );
+        }
+
+        function isSignalLogLine(line) {
+          return /Webhook received:|Last Signal Updated:|Selected Option:|Position changed to|Position closed|ignored because|Unknown signal|DHAN .* ERROR|Telegram Error|failed/i.test(
+            line,
+          );
+        }
+
+        function getWebhookPayload(line) {
+          const match = line.match(/Webhook received: (\{.*\})/);
+
+          if (!match) {
+            return null;
+          }
+
+          try {
+            return JSON.parse(match[1]);
+          } catch (error) {
+            return null;
+          }
+        }
+
+        function getReadableOption(text) {
+          if (!text) return "";
+
+          const selectedMatch = text.match(/Selected Option:\s*(\d+)\s+(CE|PE)/i);
+
+          if (selectedMatch) {
+            return `NIFTY ${selectedMatch[1]} ${selectedMatch[2].toUpperCase()}`;
+          }
+
+          const symbolMatch = text.match(/NIFTY.*?(\d{5})\s+(CALL|PUT)/i);
+
+          if (symbolMatch) {
+            return `NIFTY ${symbolMatch[1]} ${
+              symbolMatch[2].toUpperCase() === "CALL" ? "CE" : "PE"
+            }`;
+          }
+
+          return text;
+        }
+
+        function getSignalSourceLabel(lines) {
+          return lines.some(isManualSignalLogLine) ? "Manual" : "TradingView";
+        }
+
+        const SUMMARY_LOG_LABEL_WIDTH = 18;
+
+        function formatSummaryLine(label, value) {
+          return `${label.padEnd(SUMMARY_LOG_LABEL_WIDTH, " ")}: ${value}`;
+        }
+
+        function getLogTimestamp(line) {
+          const match = line.match(/^(.*?)\s+\[[A-Z]+\]/);
+          return match ? match[1] : "";
+        }
+
+        function getTimestampSortValue(timestamp) {
+          const match = String(timestamp || "").match(
+            /^(\d{1,2})\/(\d{1,2})\/(\d{4}),\s+(\d{1,2}):(\d{2}):(\d{2})\s+(am|pm)$/i,
+          );
+
+          if (!match) {
+            return 0;
+          }
+
+          let hour = Number(match[4]);
+          const meridiem = match[7].toLowerCase();
+
+          if (meridiem === "pm" && hour !== 12) {
+            hour += 12;
+          }
+
+          if (meridiem === "am" && hour === 12) {
+            hour = 0;
+          }
+
+          return new Date(
+            Number(match[3]),
+            Number(match[2]) - 1,
+            Number(match[1]),
+            hour,
+            Number(match[5]),
+            Number(match[6]),
+          ).getTime();
+        }
+
+        function formatTimestampedSummary(timestamp, summary) {
+          return timestamp ? `${timestamp}  : ${summary}` : summary;
+        }
+
+        function getReadinessLogParts(line) {
+          const match = line.match(/^(.*?)\s+\[[A-Z]+\]\s+LIFECYCLE\s+(.+)$/);
+
+          if (!match) {
+            return null;
+          }
+
+          return {
+            timestamp: match[1],
+            message: match[2],
+          };
+        }
+
+        function formatReadinessSummary(timestamp, message) {
+          return `${timestamp}  : ${message}`;
+        }
+
+        function getReadinessSummaryMessage(message) {
+          if (/Control dashboard started/i.test(message)) {
+            return { key: "control-started", text: "Control dashboard started" };
+          }
+
+          if (
+            /Algo server process exited.*SIGTERM|Algo server received SIGTERM|Algo server stop requested/i.test(
+              message,
+            )
+          ) {
+            return { key: "algo-stopped", text: "Algo server stopped" };
+          }
+
+          if (/Algo server listening on port|Algo server start requested/i.test(message)) {
+            return { key: "algo-started", text: "Algo server started" };
+          }
+
+          if (/Ngrok process exited.*SIGTERM|Ngrok stop requested/i.test(message)) {
+            return { key: "ngrok-stopped", text: "Ngrok stopped" };
+          }
+
+          if (/Ngrok start requested but already running/i.test(message)) {
+            return { key: "ngrok-running", text: "Ngrok already running" };
+          }
+
+          if (/Ngrok start requested/i.test(message)) {
+            return { key: "ngrok-started", text: "Ngrok started" };
+          }
+
+          return null;
+        }
+
+        function getConciseReadinessItems(lines) {
+          const seen = new Set();
+          const summaryItems = [];
+
+          lines.forEach((line) => {
+            const parts = getReadinessLogParts(line);
+
+            if (!parts) {
+              return;
+            }
+
+            const summary = getReadinessSummaryMessage(parts.message);
+
+            if (!summary || seen.has(summary.key)) {
+              return;
+            }
+
+            seen.add(summary.key);
+            summaryItems.push({
+              sortValue: getTimestampSortValue(parts.timestamp),
+              text: formatReadinessSummary(parts.timestamp, summary.text),
+            });
+          });
+
+          return summaryItems;
+        }
+
+        function getFailureReason(line) {
+          if (!line) return "";
+
+          const invalidIpMatch = line.match(/"errorMessage":"([^"]+)"/);
+
+          if (invalidIpMatch) {
+            return invalidIpMatch[1];
+          }
+
+          if (/symbol is not NIFTY/i.test(line)) {
+            const symbolMatch = line.match(/not NIFTY:\s*([A-Z0-9]+)/i);
+            return symbolMatch
+              ? `Symbol is not NIFTY (${symbolMatch[1]})`
+              : "Symbol is not NIFTY";
+          }
+
+          if (/Unknown signal/i.test(line)) {
+            return "Unknown signal";
+          }
+
+          if (/disabled/i.test(line)) {
+            return "Trading permission disabled";
+          }
+
+          if (/daily trade limit reached/i.test(line)) {
+            return "Daily trade limit reached";
+          }
+
+          if (/premium stop-loss setup failed/i.test(line)) {
+            return "Premium stop-loss setup failed";
+          }
+
+          if (/calculated quantity is invalid/i.test(line)) {
+            return "Invalid quantity";
+          }
+
+          if (/Telegram Error/i.test(line)) {
+            return "Telegram delivery failed";
+          }
+
+          const manualSignalResponseLostMatch = line.match(
+            /MANUAL_SIGNAL response lost after processing .*:\s*(.+)$/i,
+          );
+
+          if (manualSignalResponseLostMatch) {
+            return `Response lost after processing (${manualSignalResponseLostMatch[1]})`;
+          }
+
+          const manualSignalFailureMatch = line.match(/MANUAL_SIGNAL failed:\s*(.+)$/i);
+
+          if (manualSignalFailureMatch) {
+            return manualSignalFailureMatch[1];
+          }
+
+          const failedMatch = line.match(/\] (.+failed.*)$/i);
+          return failedMatch ? failedMatch[1] : "";
+        }
+
+        function getConciseSignalItems(lines) {
+          const signalLines = lines.filter(
+            (line) => !isReadinessLogLine(line),
+          );
+
+          if (!signalLines.length) {
+            return [];
+          }
+
+          const sourceLabel = getSignalSourceLabel(signalLines);
+          const payloadItems = signalLines
+            .map((line) => ({ line, payload: getWebhookPayload(line) }))
+            .filter((item) => item.payload);
+          const payloads = payloadItems.map((item) => item.payload);
+          const entryItem = payloadItems.find((item) =>
+            /_ENTRY$/.test(item.payload.signal),
+          );
+          const exitItem = payloadItems.find((item) =>
+            /_EXIT$/.test(item.payload.signal),
+          );
+          const entry = entryItem?.payload;
+          const exit = exitItem?.payload;
+          const openOptionLine = signalLines.find((line) => /Selected Option:/i.test(line));
+          const closeOptionLine = signalLines.find((line) => /Position closed:/i.test(line));
+          const openOption = getReadableOption(openOptionLine);
+          const closeOption = getReadableOption(closeOptionLine || openOptionLine);
+          const ignoredLine = signalLines.find((line) =>
+            /ignored because|Unknown signal/i.test(line),
+          );
+          const orderErrorLine = signalLines.find((line) => /DHAN .* ERROR/i.test(line));
+          const manualSignalResponseLostLine = signalLines.find((line) =>
+            /MANUAL_SIGNAL response lost after processing/i.test(line),
+          );
+          const manualSignalFailureLine = signalLines.find((line) =>
+            /MANUAL_SIGNAL failed:/i.test(line),
+          );
+          const telegramErrorLine = signalLines.find((line) =>
+            /Telegram Error/i.test(line),
+          );
+          const summaryItems = [];
+          const fallbackTimestamp = getLogTimestamp(signalLines[0]);
+          const pushSummaryLine = (label, value, sourceLine) => {
+            const timestamp = getLogTimestamp(sourceLine || "") || fallbackTimestamp;
+            summaryItems.push({
+              sortValue: getTimestampSortValue(timestamp),
+              text: formatTimestampedSummary(timestamp, formatSummaryLine(label, value)),
+            });
+          };
+
+          if (entry) {
+            pushSummaryLine(`${sourceLabel} Entry`, entry.signal, entryItem.line);
+
+            if (orderErrorLine) {
+              pushSummaryLine("Order Failed", getFailureReason(orderErrorLine), orderErrorLine);
+            } else if (manualSignalResponseLostLine) {
+              pushSummaryLine(
+                "Signal Warning",
+                getFailureReason(manualSignalResponseLostLine),
+                manualSignalResponseLostLine,
+              );
+            } else if (manualSignalFailureLine) {
+              pushSummaryLine(
+                "Signal Failed",
+                getFailureReason(manualSignalFailureLine),
+                manualSignalFailureLine,
+              );
+            } else if (ignoredLine) {
+              pushSummaryLine("Signal Ignored", getFailureReason(ignoredLine), ignoredLine);
+            } else if (openOption) {
+              pushSummaryLine("Position Opened", openOption, openOptionLine);
+            }
+          }
+
+          if (exit) {
+            pushSummaryLine(`${sourceLabel} Exit`, exit.signal, exitItem.line);
+
+            if (orderErrorLine) {
+              pushSummaryLine("Order Failed", getFailureReason(orderErrorLine), orderErrorLine);
+            } else if (manualSignalResponseLostLine) {
+              pushSummaryLine(
+                "Signal Warning",
+                getFailureReason(manualSignalResponseLostLine),
+                manualSignalResponseLostLine,
+              );
+            } else if (manualSignalFailureLine) {
+              pushSummaryLine(
+                "Signal Failed",
+                getFailureReason(manualSignalFailureLine),
+                manualSignalFailureLine,
+              );
+            } else if (ignoredLine) {
+              pushSummaryLine("Signal Ignored", getFailureReason(ignoredLine), ignoredLine);
+            } else if (closeOption) {
+              pushSummaryLine("Position Closed", closeOption, closeOptionLine);
+            }
+          }
+
+          if (!entry && !exit && ignoredLine) {
+            const payload = payloads[0];
+            pushSummaryLine(
+              `${sourceLabel} Signal`,
+              payload?.signal || "UNKNOWN",
+              payloadItems[0]?.line,
+            );
+            pushSummaryLine("Signal Ignored", getFailureReason(ignoredLine), ignoredLine);
+          }
+
+          if (!entry && !exit && manualSignalFailureLine) {
+            const payload = payloads[0];
+            pushSummaryLine(
+              `${sourceLabel} Signal`,
+              payload?.signal || "UNKNOWN",
+              payloadItems[0]?.line,
+            );
+            pushSummaryLine(
+              "Signal Failed",
+              getFailureReason(manualSignalFailureLine),
+              manualSignalFailureLine,
+            );
+          }
+
+          if (!entry && !exit && manualSignalResponseLostLine) {
+            const payload = payloads[0];
+            pushSummaryLine(
+              `${sourceLabel} Signal`,
+              payload?.signal || "UNKNOWN",
+              payloadItems[0]?.line,
+            );
+            pushSummaryLine(
+              "Signal Warning",
+              getFailureReason(manualSignalResponseLostLine),
+              manualSignalResponseLostLine,
+            );
+          }
+
+          if (telegramErrorLine && summaryItems.length) {
+            pushSummaryLine(
+              "Alert Warning",
+              getFailureReason(telegramErrorLine),
+              telegramErrorLine,
+            );
+          }
+
+          return summaryItems;
+        }
+
+        function getDisplayLogLines(lines, data) {
+          if (data.SHOW_DETAILED_SIGNAL_LOGS) {
+            return lines;
+          }
+
+          return [
+            ...getConciseReadinessItems(lines.filter(isReadinessLogLine)),
+            ...getConciseSignalItems(lines),
+          ]
+            .sort((a, b) => b.sortValue - a.sortValue)
+            .map((item) => item.text);
+        }
+
+        function applyLogFilters() {
+          const data = model.getData();
+          const rawLogs = data.RAW_LOGS || "";
+
+          if (!rawLogs || rawLogs === "No logs yet.") {
+            model.setProperty("/LIVE_LOGS", rawLogs);
+            return;
+          }
+
+          const outputLines = [];
+          let pendingSectionSeparators = [];
+          let sectionLines = [];
+          let dayHasVisibleSection = false;
+          let inManualSignalBlock = false;
+
+          function flushLogSection() {
+            if (!sectionLines.length) {
+              pendingSectionSeparators = [];
+              return;
+            }
+
+            const displayLines = getDisplayLogLines(sectionLines, data);
+
+            if (!displayLines.length) {
+              pendingSectionSeparators = [];
+              sectionLines = [];
+              return;
+            }
+
+            outputLines.push(...pendingSectionSeparators, ...displayLines);
+            dayHasVisibleSection = true;
+            pendingSectionSeparators = [];
+            sectionLines = [];
+          }
+
+          rawLogs.split("\n").forEach((line) => {
+            if (/^=+/.test(line)) {
+              flushLogSection();
+              if (dayHasVisibleSection) {
+                outputLines.push(line);
+              }
+              dayHasVisibleSection = false;
+              return;
+            }
+
+            if (/^---------------------------/.test(line)) {
+              if (/Trade -/.test(line)) {
+                pendingSectionSeparators.push(line);
+              } else {
+                flushLogSection();
+                pendingSectionSeparators = [line];
+              }
+
+              return;
+            }
+
+            const manualLine = isManualSignalLogLine(line);
+            const readinessLine = isReadinessLogLine(line);
+            let visible = false;
+
+            if (/MANUAL_SIGNAL (completed|failed)/i.test(line)) {
+              inManualSignalBlock = true;
+            }
+
+            if (readinessLine) {
+              visible = data.SHOW_READINESS_LOGS;
+            } else if (manualLine || inManualSignalBlock) {
+              visible = data.SHOW_MANUAL_SIGNAL_LOGS;
+            } else if (isSignalLogLine(line)) {
+              visible = data.SHOW_TRADINGVIEW_SIGNAL_LOGS;
+            }
+
+            if (visible) {
+              sectionLines.push(line);
+            }
+
+            if (/MANUAL_SIGNAL requested/i.test(line)) {
+              inManualSignalBlock = false;
+            }
+          });
+
+          flushLogSection();
+
+          model.setProperty(
+            "/LIVE_LOGS",
+            outputLines.length
+              ? outputLines.join("\n")
+              : "No logs match the selected filters.",
+          );
+        }
+
+        function updateLogFilters() {
+          setTimeout(applyLogFilters, 0);
         }
 
         // Save dashboard settings to .env.
@@ -390,6 +894,7 @@
 
           const payload = {
             signal,
+            source: "MANUAL_SIGNAL",
             symbol: "NIFTY",
             price: Number(data.TEST_PRICE || 23500),
             time: new Date().toISOString(),
@@ -650,7 +1155,14 @@
           return new sap.m.VBox({
             items: [
               new sap.m.Title({
-                text: "Live Trading Status",
+                text: {
+                  path: "/PAPER_TRADE",
+                  formatter: function (paperTrade) {
+                    return paperTrade === "true"
+                      ? "Paper Bot Status"
+                      : "Live Trading Status";
+                  },
+                },
                 level: "H3",
               }).addStyleClass("sectionTitle"),
 
@@ -658,19 +1170,46 @@
                 items: [
                   new sap.m.VBox({
                     items: [
-                      new sap.m.Text({
-                        text: "Current Position",
+	                      new sap.m.Text({
+	                        text: {
+	                          parts: [
+	                            { path: "/algoLiveStatus/running" },
+	                            { path: "/PAPER_TRADE" },
+	                          ],
+	                          formatter: function (running, paperTrade) {
+	                            if (!running) return "Algo Server";
+	                            return paperTrade === "true"
+	                              ? "Simulated Position"
+	                              : "Current Position";
+                          },
+                        },
                       }).addStyleClass("statusTitle"),
                       new sap.m.ObjectStatus({
-                        text: {
-                          path: "/algoLiveStatus/currentPosition",
-                          formatter: (v) => v || "NONE",
-                        },
-                        state: {
-                          path: "/algoLiveStatus/currentPosition",
-                          formatter: (v) => (v ? "Warning" : "Success"),
-                        },
-                      }),
+	                        text: {
+	                          parts: [
+	                            { path: "/algoLiveStatus/running" },
+	                            { path: "/algoLiveStatus/currentPosition" },
+	                            { path: "/PAPER_TRADE" },
+	                          ],
+	                          formatter: function (running, position, paperTrade) {
+	                            if (!running) return "OFFLINE";
+	                            const label = position || "NONE";
+	                            return paperTrade === "true" && position
+	                              ? `${label} (Paper)`
+                              : label;
+                          },
+	                        },
+	                        state: {
+	                          parts: [
+	                            { path: "/algoLiveStatus/running" },
+	                            { path: "/algoLiveStatus/currentPosition" },
+	                          ],
+	                          formatter: function (running, position) {
+	                            if (!running) return "Error";
+	                            return position ? "Warning" : "Success";
+	                          },
+	                        },
+	                      }),
                     ],
                   }).addStyleClass("statusTile"),
 
@@ -679,30 +1218,16 @@
                       new sap.m.Text({ text: "Last Trades" }).addStyleClass(
                         "statusTitle",
                       ),
-                      new sap.m.Text({
-                        text: {
-                          path: "/algoLiveStatus/lastTrades/0",
-                          formatter: function (trade) {
-                            if (!trade) return "-";
-                            return `${trade.label}: ${trade.displayStatus}`;
-                          },
-                        },
-                      }).addStyleClass("lastTradeLine"),
-                      new sap.m.Text({
-                        text: {
-                          path: "/algoLiveStatus/lastTrades/1",
-                          formatter: function (trade) {
-                            if (!trade) return "";
-                            return `${trade.label}: ${trade.displayStatus}`;
-                          },
-                        },
-                      }).addStyleClass("lastTradeLine"),
-                      new sap.m.Text({
-                        text: {
-                          path: "/algoLiveStatus/lastTrades/2",
-                          formatter: function (trade) {
-                            if (!trade) return "";
-                            return `${trade.label}: ${trade.displayStatus}`;
+	                      new sap.m.Text({
+	                        text: {
+	                          parts: [
+	                            { path: "/algoLiveStatus/running" },
+	                            { path: "/algoLiveStatus/lastTrades/0" },
+	                          ],
+	                          formatter: function (running, trade) {
+	                            if (!running) return "Algo server not running";
+	                            if (!trade) return "-";
+	                            return `${trade.label}: ${trade.displayStatus}`;
                           },
                         },
                       }).addStyleClass("lastTradeLine"),
@@ -715,18 +1240,26 @@
                         text: "Trades Today",
                       }).addStyleClass("statusTitle"),
                       new sap.m.ObjectStatus({
-                        text: {
-                          path: "/algoLiveStatus/dailyTradeLimit",
-                          formatter: function (v) {
-                            if (!v) return "-";
-                            if (!v.limit) return `${v.entryCount} / No limit`;
+	                        text: {
+	                          parts: [
+	                            { path: "/algoLiveStatus/running" },
+	                            { path: "/algoLiveStatus/dailyTradeLimit" },
+	                          ],
+	                          formatter: function (running, v) {
+	                            if (!running) return "-";
+	                            if (!v) return "-";
+	                            if (!v.limit) return `${v.entryCount} / No limit`;
                             return `${v.entryCount} / ${v.limit}`;
                           },
                         },
-                        state: {
-                          path: "/algoLiveStatus/dailyTradeLimit",
-                          formatter: function (v) {
-                            if (!v || !v.limit) return "Success";
+	                        state: {
+	                          parts: [
+	                            { path: "/algoLiveStatus/running" },
+	                            { path: "/algoLiveStatus/dailyTradeLimit" },
+	                          ],
+	                          formatter: function (running, v) {
+	                            if (!running) return "Error";
+	                            if (!v || !v.limit) return "Success";
                             return v.allowed ? "Success" : "Error";
                           },
                         },
@@ -1289,6 +1822,40 @@
                 level: "H3",
               }).addStyleClass("sectionTitle"),
 
+              new sap.m.HBox({
+                items: [
+                  new sap.m.CheckBox({
+                    text: "TradingView signals",
+                    selected: "{/SHOW_TRADINGVIEW_SIGNAL_LOGS}",
+                    select: updateLogFilters,
+                  }),
+
+                  new sap.m.CheckBox({
+                    text: "Manual signals",
+                    selected: "{/SHOW_MANUAL_SIGNAL_LOGS}",
+                    select: updateLogFilters,
+                  }),
+
+                  new sap.m.CheckBox({
+                    text: "Readiness center",
+                    selected: "{/SHOW_READINESS_LOGS}",
+                    select: updateLogFilters,
+                  }),
+
+                  new sap.m.CheckBox({
+                    text: "Detailed",
+                    selected: "{/SHOW_DETAILED_SIGNAL_LOGS}",
+                    select: updateLogFilters,
+                  }),
+
+                  new sap.m.Button({
+                    text: "Refresh Logs",
+                    icon: "sap-icon://refresh",
+                    press: refreshLogs,
+                  }),
+                ],
+              }).addStyleClass("logFilterRow"),
+
               new sap.m.TextArea({
                 value: "{/LIVE_LOGS}",
                 rows: 18,
@@ -1296,11 +1863,6 @@
                 editable: false,
               }).addStyleClass("activityLogTextArea"),
 
-              new sap.m.Button({
-                text: "Refresh Logs",
-                icon: "sap-icon://refresh",
-                press: refreshLogs,
-              }).addStyleClass("sapUiSmallMarginTop"),
             ],
           }).addStyleClass("card");
         }
@@ -1470,17 +2032,17 @@
                     }),
 
                     new sap.m.IconTabFilter({
-                      key: "monitoring",
-                      text: "Monitoring",
-                      icon: "sap-icon://activity-items",
-                      content: [monitoringCard()],
-                    }),
-
-                    new sap.m.IconTabFilter({
                       key: "manualSignals",
                       text: "Manual Signals",
                       icon: "sap-icon://action",
                       content: [testCenterCard()],
+                    }),
+
+                    new sap.m.IconTabFilter({
+                      key: "monitoring",
+                      text: "Monitoring",
+                      icon: "sap-icon://activity-items",
+                      content: [monitoringCard()],
                     }),
                   ],
                 }).addStyleClass("cockpitTabs"),

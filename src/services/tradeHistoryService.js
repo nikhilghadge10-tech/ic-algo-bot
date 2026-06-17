@@ -7,7 +7,7 @@
  */
 const fs = require("fs");
 const path = require("path");
-const { getIstDateKey } = require("./tradeLimitService");
+const { getIstDateKey, normalizeTradeMode } = require("./tradeLimitService");
 
 const tradeHistoryFile = path.join(__dirname, "../data/tradeHistory.json");
 
@@ -90,9 +90,11 @@ function getDisplayStatus(status) {
 function createTrade(entry) {
   const history = getTradeHistoryForToday();
   const sequence = history.trades.length + 1;
+  const tradeMode = normalizeTradeMode(entry.tradeMode);
   const trade = {
     id: `${history.date}-${sequence}-${Date.now()}`,
     sequence,
+    tradeMode,
     status: entry.stopLossOrderId ? "RUNNING" : "RUNNING_UNPROTECTED",
     entrySignal: entry.signal,
     entryTime: nowIso(),
@@ -123,9 +125,14 @@ function findLatestOpenTrade(trades) {
   return null;
 }
 
-function markLatestOpenTradeExited({ signal, exitOrderId, manual = false }) {
+function markLatestOpenTradeExited({ signal, exitOrderId, manual = false, tradeMode }) {
   const history = getTradeHistoryForToday();
-  const trade = findLatestOpenTrade(history.trades);
+  const normalizedMode = tradeMode ? normalizeTradeMode(tradeMode) : null;
+  const trade = findLatestOpenTrade(
+    normalizedMode
+      ? history.trades.filter((item) => item.tradeMode === normalizedMode)
+      : history.trades,
+  );
 
   if (!trade) {
     return null;
@@ -159,12 +166,17 @@ function markTradeStopLossHit(stopLossOrderId) {
   return trade;
 }
 
-function getDashboardTrades(limit = 3) {
+function getDashboardTrades(limit = 3, tradeMode) {
   const history = getTradeHistoryForToday();
+  const normalizedMode = tradeMode ? normalizeTradeMode(tradeMode) : null;
+  const trades = normalizedMode
+    ? history.trades.filter((trade) => trade.tradeMode === normalizedMode)
+    : history.trades;
 
-  return history.trades.slice(-limit).map((trade) => ({
+  return trades.slice(-limit).map((trade) => ({
     id: trade.id,
     sequence: trade.sequence,
+    tradeMode: trade.tradeMode,
     label: getOrdinalLabel(trade.sequence),
     status: trade.status,
     displayStatus: getDisplayStatus(trade.status),

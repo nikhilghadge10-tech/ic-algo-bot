@@ -1,7 +1,7 @@
 /*
  * Sends operational alerts to Telegram.
  * The webhook uses this for entries, exits, ignored signals, and failures.
- * Errors are logged and re-thrown so callers know notification failed.
+ * Errors are logged without failing the trading flow.
  */
 const axios = require("axios");
 const logger = require("./logger");
@@ -13,16 +13,19 @@ async function sendTelegram(message) {
 
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
 
-  // Telegram failures are important because they hide trading state changes.
+  // Telegram failures matter, but should not block order/position processing.
   try {
     const response = await axios.post(url, {
       chat_id: chatId,
       text: message,
+    }, {
+      timeout: 5000,
     });
 
-    logger.info("Telegram sent successfully");
-
-    return response.data;
+    return {
+      success: true,
+      data: response.data,
+    };
   } catch (error) {
     logger.error(
       `Telegram Error: ${JSON.stringify(
@@ -30,7 +33,10 @@ async function sendTelegram(message) {
       )}`,
     );
 
-    throw error;
+    return {
+      success: false,
+      error: error.response?.data || error.message,
+    };
   }
 }
 

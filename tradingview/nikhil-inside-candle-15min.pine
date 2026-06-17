@@ -4,98 +4,154 @@
 
 indicator("Nikhil - Inside Candle - 15 min", overlay=true)
 
-// User Inputs
+// === User Inputs ===
+// RiRe controls how far the target is placed compared to the actual stop-loss risk.
 RiRe          = input.float(5.0, title='Risk Reward Ratio')
+
+// When the child candle range is above this value, only half of the child candle is used as SL risk.
+largeChildThreshold = input.float(50.0, title='Large Child Candle Threshold Points')
+
+// Patterns are allowed only during this session, using the timezone selected below.
 sessionInput  = input.session("0930-1430:23456", title="Allowed Pattern Formation Session")
 timeZoneInput = input.string("Exchange", title="Timezone", options=["Exchange", "UTC", "America/New_York", "Asia/Kolkata"])
 
-// State Tracking Variables
+// === State Tracking Variables ===
+// childHigh and childLow store the detected child candle boundaries used for breakout detection.
 var float childHigh = na
 var float childLow  = na
-var int tradeState  = 0 // 0 = Idle, 1 = Waiting for Breakout, 2 = In Long, 3 = In Short
-var float targetPrice = na
 
-// Time Session Management
+// tradeState controls the script flow: idle, waiting for breakout, active long, or active short.
+var int tradeState  = 0 // 0 = Idle, 1 = Waiting for Breakout, 2 = In Long, 3 = In Short
+
+// targetPrice stores the active trade target; stopPrice stores the actual adjusted SL level.
+var float targetPrice = na
+var float stopPrice = na
+
+// === Time Session Management ===
+// Use the selected timezone, or the symbol exchange timezone when "Exchange" is selected.
 tz = timeZoneInput == "Exchange" ? syminfo.timezone : timeZoneInput
+
+// in_session is true only when the current candle belongs to the configured pattern session.
 in_session = not na(time(timeframe.period, sessionInput, tz))
 
-// Reset variables on a new trading day
+// === Daily Reset ===
+// Clear all stored levels and trade state at the start of a new trading day.
 if dayofweek != dayofweek[1]
     childHigh   := na
     childLow    := na
     tradeState  := 0
     targetPrice := na
+    stopPrice   := na
 
-// Flags to capture precise candle of occurrence
+// === Signal Flags ===
+// These booleans are reset on every candle and become true only on the exact candle of the event.
 bool is_inside   = false
 bool long_entry  = false
 bool short_entry = false
 bool long_exit   = false
 bool short_exit  = false
 
-// 1. CHANNELS & PATTERN DETECTION (Evaluated relative to the preceding candle)
-// An inside candle means the CURRENT candle is completely engulfed by the PREVIOUS (Mother) candle
+// === 1. Inside Candle Pattern Detection ===
+// An inside candle means the current candle is completely inside the previous mother candle.
+// The script only searches for a new setup when idle and inside the allowed session.
 if high < high[1] and low > low[1] and tradeState == 0 and in_session
     is_inside  := true
     tradeState := 1
-    // CORRECTION: Saving the CHILD (Baby) candle boundaries, NOT the mother candle
+
+    // Save the child candle boundaries, because entries trigger when price breaks these levels.
     childHigh  := high
     childLow   := low
 
-// 2. REAL-TIME WICK EXECUTION ENGINE
-// If we are waiting for a breakout from the baby candle
+// === 2. Breakout Entry Engine ===
+// While waiting for breakout, wick movement beyond childHigh creates long entry,
+// and wick movement below childLow creates short entry.
 if tradeState == 1
+    // If one candle breaks both sides of the child candle, skip the setup to avoid ambiguous direction.
     if high > childHigh and low < childLow
-        // Rare edge case: One massive candle breaks both sides. Skip to avoid execution traps.
         tradeState := 0
         childHigh  := na
         childLow   := na
+        targetPrice := na
+        stopPrice  := na
+
+    // Long entry: price breaks above the child candle high.
     else if high > childHigh
         long_entry  := true
         tradeState  := 2
-        // 1:5 Target calculated using Child (Baby) Candle Risk Profile
-        targetPrice := childHigh + (childHigh - childLow) * RiRe
+
+        // Calculate child candle size and reduce SL risk by half when the child candle is above threshold.
+        childRange = childHigh - childLow
+        slRange = childRange > largeChildThreshold ? childRange / 2 : childRange
+
+        // Long SL is below entry. For huge child candles, this becomes the midpoint of the child candle.
+        stopPrice := childHigh - slRange
+
+        // Long target uses the actual adjusted SL risk so the risk-reward ratio stays correct.
+        targetPrice := childHigh + slRange * RiRe
+
+    // Short entry: price breaks below the child candle low.
     else if low < childLow
         short_entry := true
         tradeState  := 3
-        targetPrice := childLow - (childHigh - childLow) * RiRe
 
-// If active in a Long Trade: Check wicks immediately
+        // Calculate child candle size and reduce SL risk by half when the child candle is above threshold.
+        childRange = childHigh - childLow
+        slRange = childRange > largeChildThreshold ? childRange / 2 : childRange
+
+        // Short SL is above entry. For huge child candles, this becomes the midpoint of the child candle.
+        stopPrice := childLow + slRange
+
+        // Short target uses the actual adjusted SL risk so the risk-reward ratio stays correct.
+        targetPrice := childLow - slRange * RiRe
+
+// === 3. Long Trade Exit Engine ===
+// Once in a long trade, exit immediately when wick touches SL or target.
 else if tradeState == 2
-    if low < childLow or high >= targetPrice
+    if low < stopPrice or high >= targetPrice
         long_exit   := true
         tradeState  := 0
+
+        // Clear setup and trade levels after the long trade completes.
         childHigh   := na
         childLow    := na
+        targetPrice := na
+        stopPrice   := na
 
-// If active in a Short Trade: Check wicks immediately
+// === 4. Short Trade Exit Engine ===
+// Once in a short trade, exit immediately when wick touches SL or target.
 else if tradeState == 3
-    if high > childHigh or low <= targetPrice
+    if high > stopPrice or low <= targetPrice
         short_exit  := true
         tradeState  := 0
+
+        // Clear setup and trade levels after the short trade completes.
         childHigh   := na
         childLow    := na
+        targetPrice := na
+        stopPrice   := na
 
-// --- Visualizations ---
-// UPDATED: Paint the entire baby candle body, borders, and wicks solid yellow
+// === Visualizations ===
+// Paint the detected child candle yellow so the setup candle is easy to identify.
 barcolor(is_inside ? color.yellow : na, title="Baby Candle Highlights")
 
-// Plots entry and exit arrows on the exact historical candle where the wick touch occurs
+// Plot entry and exit arrows on the exact candle where the wick condition occurs.
 plotshape(long_entry, title='Wick Long Entry', style=shape.arrowup, location=location.belowbar, color=color.green, text='Long Entry', textcolor=color.green, size=size.normal)
 plotshape(short_entry, title='Wick Short Entry', style=shape.arrowdown, location=location.abovebar, color=color.red, text='Short Entry', textcolor=color.red, size=size.normal)
 plotshape(long_exit, title='Wick Long Exit', style=shape.arrowdown, location=location.abovebar, color=color.orange, text='Long Exit', textcolor=color.orange, size=size.normal)
 plotshape(short_exit, title='Wick Short Exit', style=shape.arrowup, location=location.belowbar, color=color.orange, text='Short Exit', textcolor=color.orange, size=size.normal)
 
-// Visual Boundary Lines mapped directly over the Baby Candle coordinates
+// Plot child boundaries, adjusted stop-loss, and active target levels while a setup/trade is live.
 plot(tradeState > 0 ? childHigh : na, title="Child High Boundary", color=color.purple, style=plot.style_linebr, linewidth=2)
 plot(tradeState > 0 ? childLow : na, title="Child Low Boundary", color=color.purple, style=plot.style_linebr, linewidth=2)
+plot(tradeState == 2 or tradeState == 3 ? stopPrice : na, title="Adjusted Stop Loss", color=color.orange, style=plot.style_linebr, linewidth=2)
 plot(tradeState == 2 ? targetPrice : na, title="Long 1:5 Target", color=color.green, style=plot.style_linebr, linewidth=2)
 plot(tradeState == 3 ? targetPrice : na, title="Short 1:5 Target", color=color.red, style=plot.style_linebr, linewidth=2)
 
-// Background Tint for Time Constraints
+// Tint the background during the session where new patterns are allowed.
 bgcolor(in_session ? color.new(color.blue, 97) : na)
 
-// --- Real-Time Alert Engine ---
+// === Real-Time Alert Engine ===
+// Alert conditions expose entries and exits so TradingView alerts can be created from this indicator.
 alertcondition(long_entry, 'Long Entry', 'Long Entry Triggered Instantly by Child Wick!')
 alertcondition(long_exit, 'Long Exit', 'Long Exit Triggered Instantly by Child Wick Target/Stop!')
 alertcondition(short_entry, 'Short Entry', 'Short Entry Triggered Instantly by Child Wick!')

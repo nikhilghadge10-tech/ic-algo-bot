@@ -2,28 +2,17 @@
  * Builds and submits Dhan order requests for the algo bot.
  * Entry orders use BUY because the strategy buys the selected option contract.
  * Exit orders use SELL against the stored security id and quantity.
- * Protective premium stop-loss orders use SELL STOP_LOSS_MARKET.
+ * Protective option stop-loss orders use SELL STOP_LOSS (SL-Limit).
  * Paper mode returns a successful mock response without calling Dhan.
  */
 const axios = require("axios");
-const dotenv = require("dotenv");
-const fs = require("fs");
-const path = require("path");
 const logger = require("./logger");
-
-const envPath = path.join(__dirname, "..", "..", ".env");
-
-function getRuntimeEnv() {
-  try {
-    return {
-      ...process.env,
-      ...dotenv.parse(fs.readFileSync(envPath)),
-    };
-  } catch (error) {
-    logger.warn(`Unable to read Dhan order runtime config: ${error.message}`);
-    return process.env;
-  }
-}
+const {
+  getDhanHeaders,
+  getDhanUrl,
+  getRuntimeEnv,
+  requireDhanRuntimeConfig,
+} = require("./dhanRuntimeConfig");
 
 function isPaperTrade(env = getRuntimeEnv()) {
   return String(env.PAPER_TRADE).toLowerCase() === "true";
@@ -43,7 +32,21 @@ function handleDhanError(error, payload, orderSide) {
     payload,
     status: error.response?.status,
     error: errorDetails,
+    environment: error.dhanEnvironment,
   };
+}
+
+async function callDhan(config, request) {
+  try {
+    return await axios({
+      ...request,
+      url: getDhanUrl(request.endpoint, config),
+      headers: getDhanHeaders(config),
+    });
+  } catch (error) {
+    error.dhanEnvironment = config.environment;
+    throw error;
+  }
 }
 
 // Place a market BUY order for the selected option contract.
@@ -52,7 +55,7 @@ async function placeMarketBuyOrder(contract, quantity) {
 
   // Dhan expects these exact field names for an F&O intraday market order.
   const payload = {
-    dhanClientId: env.DHAN_CLIENT_ID,
+    dhanClientId: "",
     transactionType: "BUY",
     exchangeSegment: "NSE_FNO",
     productType: "INTRADAY",
@@ -77,6 +80,9 @@ async function placeMarketBuyOrder(contract, quantity) {
     };
   }
 
+  const dhan = requireDhanRuntimeConfig();
+  payload.dhanClientId = dhan.clientId;
+
   console.log("\n==============================");
   console.log("LIVE BUY ORDER");
   console.log("==============================");
@@ -85,17 +91,11 @@ async function placeMarketBuyOrder(contract, quantity) {
 
   // Live mode submits the order to Dhan and passes back the broker response.
   try {
-    const response = await axios.post(
-      "https://api.dhan.co/v2/orders",
-      payload,
-      {
-        headers: {
-          "access-token": env.DHAN_ACCESS_TOKEN,
-          "client-id": env.DHAN_CLIENT_ID,
-          "Content-Type": "application/json",
-        },
-      },
-    );
+    const response = await callDhan(dhan, {
+      method: "POST",
+      endpoint: "/v2/orders",
+      data: payload,
+    });
 
     console.log("DHAN BUY RESPONSE");
     console.log(response.data);
@@ -116,7 +116,7 @@ async function placeMarketSellOrder(securityId, quantity) {
 
   // Exits only need the security id and quantity because the contract was saved at entry.
   const payload = {
-    dhanClientId: env.DHAN_CLIENT_ID,
+    dhanClientId: "",
     transactionType: "SELL",
     exchangeSegment: "NSE_FNO",
     productType: "INTRADAY",
@@ -141,19 +141,16 @@ async function placeMarketSellOrder(securityId, quantity) {
     };
   }
 
+  const dhan = requireDhanRuntimeConfig();
+  payload.dhanClientId = dhan.clientId;
+
   // Live exit order. The caller decides whether to clear local position state.
   try {
-    const response = await axios.post(
-      "https://api.dhan.co/v2/orders",
-      payload,
-      {
-        headers: {
-          "access-token": env.DHAN_ACCESS_TOKEN,
-          "client-id": env.DHAN_CLIENT_ID,
-          "Content-Type": "application/json",
-        },
-      },
-    );
+    const response = await callDhan(dhan, {
+      method: "POST",
+      endpoint: "/v2/orders",
+      data: payload,
+    });
 
     console.log("DHAN SELL RESPONSE");
     console.log(response.data);
@@ -168,24 +165,30 @@ async function placeMarketSellOrder(securityId, quantity) {
   }
 }
 
-async function placeStopLossMarketSellOrder(securityId, quantity, triggerPrice) {
+async function placeStopLossLimitSellOrder(
+  securityId,
+  quantity,
+  triggerPrice,
+  limitPrice,
+) {
   const env = getRuntimeEnv();
 
   const payload = {
-    dhanClientId: env.DHAN_CLIENT_ID,
+    dhanClientId: "",
     transactionType: "SELL",
     exchangeSegment: "NSE_FNO",
     productType: "INTRADAY",
-    orderType: "STOP_LOSS_MARKET",
+    orderType: "STOP_LOSS",
     validity: "DAY",
     securityId,
     quantity,
+    price: limitPrice,
     triggerPrice,
   };
 
   if (isPaperTrade(env)) {
     console.log("\n==============================");
-    console.log("PAPER STOP LOSS SELL ORDER");
+    console.log("PAPER STOP LOSS LIMIT SELL ORDER");
     console.log("==============================");
     console.log(payload);
     console.log("==============================\n");
@@ -201,21 +204,36 @@ async function placeStopLossMarketSellOrder(securityId, quantity, triggerPrice) 
     };
   }
 
+  const dhan = requireDhanRuntimeConfig();
+  payload.dhanClientId = dhan.clientId;
+
   try {
-    const response = await axios.post(
-      "https://api.dhan.co/v2/orders",
-      payload,
-      {
-        headers: {
-          "access-token": env.DHAN_ACCESS_TOKEN,
-          "client-id": env.DHAN_CLIENT_ID,
-          "Content-Type": "application/json",
-        },
-      },
+    logger.info(
+      `DHAN option SL-Limit request: ${JSON.stringify({
+        transactionType: payload.transactionType,
+        exchangeSegment: payload.exchangeSegment,
+        productType: payload.productType,
+        orderType: payload.orderType,
+        validity: payload.validity,
+        securityId: payload.securityId,
+        quantity: payload.quantity,
+        triggerPrice: payload.triggerPrice,
+        price: payload.price,
+        environment: dhan.environment,
+      })}`,
     );
+
+    const response = await callDhan(dhan, {
+      method: "POST",
+      endpoint: "/v2/orders",
+      data: payload,
+    });
 
     console.log("DHAN STOP LOSS SELL RESPONSE");
     console.log(response.data);
+    logger.info(
+      `DHAN option SL-Limit accepted: ${JSON.stringify(response.data)}`,
+    );
 
     return {
       success: true,
@@ -254,17 +272,13 @@ async function cancelOrder(orderId) {
     };
   }
 
+  const dhan = requireDhanRuntimeConfig();
+
   try {
-    const response = await axios.delete(
-      `https://api.dhan.co/v2/orders/${orderId}`,
-      {
-        headers: {
-          "access-token": env.DHAN_ACCESS_TOKEN,
-          "client-id": env.DHAN_CLIENT_ID,
-          "Content-Type": "application/json",
-        },
-      },
-    );
+    const response = await callDhan(dhan, {
+      method: "DELETE",
+      endpoint: `/v2/orders/${orderId}`,
+    });
 
     console.log("DHAN CANCEL ORDER RESPONSE");
     console.log(response.data);
@@ -299,17 +313,13 @@ async function getOrderStatus(orderId) {
     };
   }
 
+  const dhan = requireDhanRuntimeConfig();
+
   try {
-    const response = await axios.get(
-      `https://api.dhan.co/v2/orders/${orderId}`,
-      {
-        headers: {
-          "access-token": env.DHAN_ACCESS_TOKEN,
-          "client-id": env.DHAN_CLIENT_ID,
-          "Content-Type": "application/json",
-        },
-      },
-    );
+    const response = await callDhan(dhan, {
+      method: "GET",
+      endpoint: `/v2/orders/${orderId}`,
+    });
 
     console.log("DHAN ORDER STATUS RESPONSE");
     console.log(response.data);
@@ -328,5 +338,5 @@ module.exports = {
   getOrderStatus,
   placeMarketBuyOrder,
   placeMarketSellOrder,
-  placeStopLossMarketSellOrder,
+  placeStopLossLimitSellOrder,
 };

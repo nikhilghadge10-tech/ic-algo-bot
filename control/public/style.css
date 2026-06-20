@@ -1,5 +1,5 @@
 /*
- * Styles for the local Algo Bot Control Center.
+ * Styles for the local IC Algo Bot Control Center.
  * OpenUI5 provides the base controls; this file turns them into a compact
  * trading cockpit with clearer hierarchy, status scanning, and responsive
  * layouts for day-to-day operation.
@@ -50,7 +50,7 @@
   border-radius: var(--radius);
   background:
     linear-gradient(120deg, rgba(12, 21, 38, 0.94), rgba(19, 55, 96, 0.88)),
-    url("images/algo-bot.jpg") center / cover;
+    url("images/ic-algo-bot.jpg") center / cover;
   box-shadow: var(--shadow);
 }
 
@@ -105,6 +105,21 @@
   padding: 18px;
   border: 0;
   background: transparent;
+}
+
+.webhookPopupDialog .sapMDialogSection {
+  background: var(--panel-soft);
+}
+
+.webhookPopupList {
+  margin: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.webhookPopupList .sapMLIB {
+  padding: 6px;
 }
 
 /* Cards and section hierarchy. */
@@ -175,6 +190,17 @@
 .statusTile .sapMObjStatusText,
 .statusTile .sapMText {
   font-weight: 600;
+}
+
+.statusTile .lastTradeDetailLine {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 400;
+  white-space: pre !important;
+}
+
+.statusTile .lastTradeDetailLine:first-of-type {
+  margin-top: 8px;
 }
 
 .sapMObjStatusSuccess .sapMObjStatusText {
@@ -284,6 +310,16 @@
   padding: 12px;
 }
 
+.telegramControlRow {
+  gap: 16px;
+  padding: 8px 4px;
+}
+
+.telegramControlRow .infoText {
+  padding: 6px 0 0;
+  color: #667085;
+}
+
 .webhookBox,
 .readinessActionRow {
   display: flex;
@@ -373,16 +409,6 @@
   margin-top: 10px;
 }
 
-.permissionSaveRow {
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
-}
-
-.saveButton {
-  margin-top: 8px;
-}
-
 .tradingModeTile {
   gap: 8px;
 }
@@ -406,17 +432,17 @@
   }
 }
 
-.tradingModeEmergencyButton {
-  margin-top: 10px;
+.readinessEmergencyButton {
+  margin-left: auto;
 }
 
-.tradingModeEmergencyButton .sapMBtnInner {
+.readinessEmergencyButton .sapMBtnInner {
   border-color: rgba(195, 49, 49, 0.35) !important;
   background: #fff !important;
   color: var(--red) !important;
 }
 
-.tradingModeEmergencyButton .sapMBtnIcon {
+.readinessEmergencyButton .sapMBtnIcon {
   color: var(--red) !important;
 }
 
@@ -501,6 +527,20 @@
   grid-template-columns: repeat(4, minmax(112px, 1fr));
 }
 
+.premiumThresholdFieldsRow {
+  grid-template-columns: repeat(4, minmax(112px, 1fr));
+}
+
+.premiumThresholdGroup {
+  margin-bottom: 16px;
+}
+
+.planningHelperText {
+  margin-top: 10px;
+  color: #667085;
+  font-size: 0.85rem;
+}
+
 .planningModeBox {
   margin-bottom: 16px;
 }
@@ -511,6 +551,23 @@
   gap: 12px;
   width: 100%;
   align-items: end;
+}
+
+/* Give the selected market direction an immediate visual cue. */
+.marketBiasSegmentedButton
+  .sapMSegBBtn:nth-child(1).sapMSegBBtnSel
+  .sapMSegBBtnInner {
+  border-color: #78b98b !important;
+  background: #e7f5eb !important;
+  color: #176b35 !important;
+}
+
+.marketBiasSegmentedButton
+  .sapMSegBBtn:nth-child(3).sapMSegBBtnSel
+  .sapMSegBBtnInner {
+  border-color: #d99090 !important;
+  background: #fbeaea !important;
+  color: #a12626 !important;
 }
 
 .planningMetricTile,
@@ -636,6 +693,12 @@
   color: var(--red);
 }
 
+.tokenCountdown[data-expired="true"] {
+  animation: tokenExpiryBlink 0.8s ease-in-out infinite;
+  color: var(--red) !important;
+  font-weight: 800 !important;
+}
+
 @keyframes tokenExpiryBlink {
   0%,
   100% {
@@ -718,6 +781,11 @@
   .networkIpRow {
     margin-top: 8px;
     margin-left: 0;
+  }
+
+  .readinessEmergencyButton {
+    margin-left: 0;
+    margin-top: 8px;
   }
 
   .webhookUrlRow {

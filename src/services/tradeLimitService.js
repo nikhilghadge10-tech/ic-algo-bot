@@ -53,13 +53,16 @@ function getTradeStateForToday() {
     entryCount: Number(state.entryCount || 0),
     countsByMode: {
       PAPER: Number(state.countsByMode?.PAPER || 0),
+      SANDBOX: Number(state.countsByMode?.SANDBOX || 0),
       LIVE: Number(state.countsByMode?.LIVE || 0),
     },
   };
 }
 
 function normalizeTradeMode(mode) {
-  return String(mode || "").toUpperCase() === "LIVE" ? "LIVE" : "PAPER";
+  const normalized = String(mode || "").toUpperCase();
+
+  return ["LIVE", "SANDBOX"].includes(normalized) ? normalized : "PAPER";
 }
 
 // Check whether another entry is allowed under the configured daily max.
@@ -87,6 +90,7 @@ function recordSuccessfulEntry(mode) {
   const tradeMode = normalizeTradeMode(mode);
   const countsByMode = {
     PAPER: Number(state.countsByMode?.PAPER || 0),
+    SANDBOX: Number(state.countsByMode?.SANDBOX || 0),
     LIVE: Number(state.countsByMode?.LIVE || 0),
   };
 
@@ -94,7 +98,30 @@ function recordSuccessfulEntry(mode) {
 
   const updatedState = {
     date: state.date,
-    entryCount: countsByMode.PAPER + countsByMode.LIVE,
+    entryCount:
+      countsByMode.PAPER + countsByMode.SANDBOX + countsByMode.LIVE,
+    countsByMode,
+  };
+
+  saveTradeState(updatedState);
+  return getDailyTradeLimitStatus(0, tradeMode);
+}
+
+function rollbackSuccessfulEntry(mode) {
+  const state = getTradeStateForToday();
+  const tradeMode = normalizeTradeMode(mode);
+  const countsByMode = {
+    PAPER: Number(state.countsByMode?.PAPER || 0),
+    SANDBOX: Number(state.countsByMode?.SANDBOX || 0),
+    LIVE: Number(state.countsByMode?.LIVE || 0),
+  };
+
+  countsByMode[tradeMode] = Math.max(countsByMode[tradeMode] - 1, 0);
+
+  const updatedState = {
+    date: state.date,
+    entryCount:
+      countsByMode.PAPER + countsByMode.SANDBOX + countsByMode.LIVE,
     countsByMode,
   };
 
@@ -107,4 +134,5 @@ module.exports = {
   getIstDateKey,
   normalizeTradeMode,
   recordSuccessfulEntry,
+  rollbackSuccessfulEntry,
 };

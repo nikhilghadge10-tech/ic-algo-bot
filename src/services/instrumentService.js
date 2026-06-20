@@ -31,13 +31,30 @@ function loadInstruments() {
 // Finds the nearest-expiry NIFTY option matching the requested strike and type.
 function getNiftyOption(strike, optionType) {
   const today = new Date();
+  const marketCloseToday = new Date(today);
+
+  marketCloseToday.setHours(15, 30, 0, 0);
 
   // Filter down to NIFTY options for the exact strike and CE/PE direction.
   const matches = instruments.filter((row) => {
+    const expiry = new Date(row.SEM_EXPIRY_DATE);
+    const expiryMarketClose = new Date(expiry);
+
+    // Dhan's master stores expiry around 14:30 UTC/20:00 IST for some rows,
+    // so compare calendar dates and keep today's expiry only until market close.
+    expiryMarketClose.setHours(15, 30, 0, 0);
+
+    const isTradableExpiry =
+      Number.isFinite(expiry.getTime()) &&
+      (expiryMarketClose.toDateString() !== today.toDateString()
+        ? expiryMarketClose > today
+        : today <= marketCloseToday);
+
     return (
       row.SEM_CUSTOM_SYMBOL?.startsWith("NIFTY ") &&
       row.SEM_OPTION_TYPE === optionType &&
-      Number(row.SEM_STRIKE_PRICE) === strike
+      Number(row.SEM_STRIKE_PRICE) === strike &&
+      isTradableExpiry
     );
   });
 

@@ -5,18 +5,19 @@
  * placeOrder is a legacy generic helper; active trades use dhanOrderService.
  */
 const axios = require("axios");
-
-// Shared headers for simple Dhan GET calls.
-const headers = {
-  "access-token": process.env.DHAN_ACCESS_TOKEN,
-  "client-id": process.env.DHAN_CLIENT_ID,
-};
+const {
+  getDhanHeaders,
+  getDhanRuntimeConfig,
+  getDhanUrl,
+  requireDhanRuntimeConfig,
+} = require("./dhanRuntimeConfig");
 
 // Fetches the Dhan profile to prove the configured credentials are accepted.
 async function getProfile() {
   try {
-    const response = await axios.get("https://api.dhan.co/v2/profile", {
-      headers,
+    const config = requireDhanRuntimeConfig();
+    const response = await axios.get(getDhanUrl("/v2/profile", config), {
+      headers: getDhanHeaders(config),
     });
 
     return response.data;
@@ -58,21 +59,31 @@ async function placeOrder(orderData) {
 
 // Lightweight broker connectivity check shown in the dashboard.
 async function checkDhanHealth() {
+  const config = getDhanRuntimeConfig();
+
+  if (!config.configured) {
+    return {
+      connected: false,
+      environment: config.environment,
+      configured: false,
+      message: `${config.environment} credentials not configured`,
+    };
+  }
+
   try {
-    const response = await axios.get("https://api.dhan.co/v2/profile", {
-      headers: {
-        "access-token": process.env.DHAN_ACCESS_TOKEN,
-        "client-id": process.env.DHAN_CLIENT_ID,
-      },
+    const response = await axios.get(getDhanUrl("/v2/profile", config), {
+      headers: getDhanHeaders(config),
       timeout: 5000,
     });
     const profileClientId = String(response.data.dhanClientId || "");
-    const configuredClientId = String(process.env.DHAN_CLIENT_ID || "");
+    const configuredClientId = config.clientId;
     const connected =
       profileClientId && configuredClientId && profileClientId === configuredClientId;
 
     return {
       connected,
+      configured: true,
+      environment: config.environment,
       clientId: profileClientId,
       configuredClientId,
       message: connected
@@ -82,6 +93,8 @@ async function checkDhanHealth() {
   } catch (error) {
     return {
       connected: false,
+      configured: true,
+      environment: config.environment,
       message: error.response?.data?.errorMessage || error.message,
     };
   }

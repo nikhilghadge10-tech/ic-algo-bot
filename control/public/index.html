@@ -8,9 +8,9 @@
 <html>
   <head>
     <meta charset="UTF-8" />
-    <title>Algo Bot Control Center</title>
-    <link rel="icon" type="image/png" href="images/alog-bot-sq1.png" />
-    <link rel="apple-touch-icon" href="images/alog-bot-sq1.png" />
+    <title>IC Algo Bot Control Center</title>
+    <link rel="icon" type="image/png" href="images/ic-algo-bot-icon.png" />
+    <link rel="apple-touch-icon" href="images/ic-algo-bot-icon.png" />
     <link rel="stylesheet" href="style.css" />
 
     <script
@@ -33,7 +33,10 @@
         config.SHOW_READINESS_LOGS = false;
         config.SHOW_MANUAL_SIGNAL_LOGS = true;
         config.SHOW_TRADINGVIEW_SIGNAL_LOGS = true;
+        config.SHOW_PAPER_TRADE_LOGS = true;
+        config.SHOW_IGNORED_SIGNAL_LOGS = true;
         config.SHOW_DETAILED_SIGNAL_LOGS = false;
+        config.TEST_INTERVAL = config.PREMIUM_SL_INTERVAL || "15";
         config.NIFTY_SPOT_LOADING = false;
         config.NIFTY_SPOT_ERROR = "";
         config.TOKEN_COUNTDOWN_TICK = Date.now();
@@ -43,6 +46,12 @@
 
         const model = new sap.ui.model.json.JSONModel(config);
         sap.ui.getCore().setModel(model);
+        let cockpitTabs = null;
+        let lastTradingViewWebhookKey = null;
+        let webhookBaselineLoaded = false;
+        let activeWebhookDialog = null;
+        let lastSavedDhanEnvironment = config.DHAN_ENV || "LIVE";
+        let dhanHealthRequestSequence = 0;
 
         // Refresh .env-backed config while preserving transient UI-only values.
         async function refreshConfig() {
@@ -59,9 +68,15 @@
             currentData.SHOW_MANUAL_SIGNAL_LOGS !== false;
           fresh.SHOW_TRADINGVIEW_SIGNAL_LOGS =
             currentData.SHOW_TRADINGVIEW_SIGNAL_LOGS !== false;
+          fresh.SHOW_PAPER_TRADE_LOGS =
+            currentData.SHOW_PAPER_TRADE_LOGS !== false;
+          fresh.SHOW_IGNORED_SIGNAL_LOGS =
+            currentData.SHOW_IGNORED_SIGNAL_LOGS !== false;
           fresh.SHOW_DETAILED_SIGNAL_LOGS =
             currentData.SHOW_DETAILED_SIGNAL_LOGS === true;
           fresh.TEST_PRICE = currentData.TEST_PRICE || "";
+          fresh.TEST_INTERVAL =
+            currentData.TEST_INTERVAL || fresh.PREMIUM_SL_INTERVAL || "15";
           fresh.NIFTY_SPOT_LTP = currentData.NIFTY_SPOT_LTP;
           fresh.NIFTY_SPOT_CHECKED_AT = currentData.NIFTY_SPOT_CHECKED_AT;
           fresh.NIFTY_SPOT_LOADING = currentData.NIFTY_SPOT_LOADING || false;
@@ -133,14 +148,36 @@
 
         // Ask the algo server whether the Dhan access token is currently valid.
         async function refreshDhanHealth() {
+          const requestedEnvironment =
+            model.getProperty("/DHAN_ENV") || "LIVE";
+          const requestSequence = ++dhanHealthRequestSequence;
+
           try {
             const result = await fetch("/api/dhan-health").then((r) =>
               r.json(),
             );
+
+            if (
+              requestSequence !== dhanHealthRequestSequence ||
+              requestedEnvironment !== model.getProperty("/DHAN_ENV") ||
+              (result.environment &&
+                result.environment !== requestedEnvironment)
+            ) {
+              return;
+            }
+
             model.setProperty("/dhanHealth", result);
           } catch (error) {
+            if (
+              requestSequence !== dhanHealthRequestSequence ||
+              requestedEnvironment !== model.getProperty("/DHAN_ENV")
+            ) {
+              return;
+            }
+
             model.setProperty("/dhanHealth", {
               connected: false,
+              environment: requestedEnvironment,
               message: "Dhan health check failed",
             });
           }
@@ -161,7 +198,7 @@
               return;
             }
 
-            model.setProperty("/TEST_PRICE", result.ltp);
+            model.setProperty("/TEST_PRICE", formatIndianWholeNumber(result.ltp));
             model.setProperty("/NIFTY_SPOT_LTP", result.ltp);
             model.setProperty("/NIFTY_SPOT_CHECKED_AT", result.checkedAt);
           } catch (error) {
@@ -214,8 +251,64 @@
           return expiringSoon ? "true" : "false";
         }
 
+        function isDhanTokenExpired(updatedAt) {
+          const remaining = getDhanTokenRemaining(updatedAt);
+          return remaining !== null && remaining <= 0 ? "true" : "false";
+        }
+
+        function getDhanCredentialStatus(
+          environment,
+          liveUpdatedAt,
+          sandboxConfigured,
+        ) {
+          if (environment === "SANDBOX") {
+            return sandboxConfigured
+              ? "Sandbox token configured"
+              : "Sandbox token not configured";
+          }
+
+          return getDhanTokenCountdown(liveUpdatedAt);
+        }
+
+        function confirmLiveDhanSwitch() {
+          return new Promise((resolve) => {
+            const dialog = new sap.m.Dialog({
+              title: "Switch to LIVE Dhan?",
+              type: "Message",
+              state: "Warning",
+              content: [
+                new sap.m.Text({
+                  text: "New webhook entries can place real-money orders.",
+                }).addStyleClass("sapUiSmallMargin"),
+              ],
+              beginButton: new sap.m.Button({
+                text: "Switch to LIVE",
+                type: "Reject",
+                press: function () {
+                  dialog.close();
+                  resolve(true);
+                },
+              }),
+              endButton: new sap.m.Button({
+                text: "Cancel",
+                press: function () {
+                  dialog.close();
+                  resolve(false);
+                },
+              }),
+              afterClose: function () {
+                dialog.destroy();
+              },
+            });
+
+            dialog.open();
+          });
+        }
+
         // Open a proper SAP UI5 dialog for updating the Dhan token.
         async function updateDhanToken() {
+          const environment = model.getProperty("/DHAN_ENV") || "LIVE";
+          const sandbox = environment === "SANDBOX";
           const tokenInput = new sap.m.Input({
             type: "Password",
             width: "100%",
@@ -257,6 +350,7 @@
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
                     token,
+                    environment,
                   }),
                 }).then((r) => r.json());
 
@@ -278,7 +372,7 @@
           });
 
           const dialog = new sap.m.Dialog({
-            title: "Update Dhan Token",
+            title: `Update Dhan ${environment} Credentials`,
             contentWidth: "480px",
             draggable: true,
             resizable: true,
@@ -286,7 +380,12 @@
               new sap.m.VBox({
                 items: [
                   new sap.m.MessageStrip({
-                    text: "The token is saved locally in .env. Restart the algo server after updating so live broker calls use the new token.",
+                    text: sandbox
+                      ? `Sandbox Client ID ${
+                          model.getProperty("/DHAN_SANDBOX_CLIENT_ID") ||
+                          "2601312809"
+                        } is fixed. Enter only the sandbox access token.`
+                      : "These are your LIVE Dhan credentials. Check the environment badge before saving.",
                     type: "Information",
                     showIcon: true,
                   }),
@@ -301,20 +400,38 @@
                   new sap.m.Text({
                     text: {
                       parts: [
+                        { path: "/DHAN_ENV" },
                         { path: "/DHAN_TOKEN_UPDATED_AT" },
-                        { path: "/TOKEN_COUNTDOWN_TICK" },
+                        { path: "/DHAN_SANDBOX_CONFIGURED" },
                       ],
-                      formatter: getDhanTokenCountdown,
+                      formatter: getDhanCredentialStatus,
                     },
                     customData: [
                       new sap.ui.core.CustomData({
                         key: "expiring-soon",
                         value: {
                           parts: [
+                            { path: "/DHAN_ENV" },
                             { path: "/DHAN_TOKEN_UPDATED_AT" },
-                            { path: "/TOKEN_COUNTDOWN_TICK" },
                           ],
-                          formatter: isDhanTokenExpiringSoon,
+                          formatter: (env, updatedAt) =>
+                            env === "LIVE"
+                              ? isDhanTokenExpiringSoon(updatedAt)
+                              : "false",
+                        },
+                        writeToDom: true,
+                      }),
+                      new sap.ui.core.CustomData({
+                        key: "expired",
+                        value: {
+                          parts: [
+                            { path: "/DHAN_ENV" },
+                            { path: "/DHAN_TOKEN_UPDATED_AT" },
+                          ],
+                          formatter: (env, updatedAt) =>
+                            env === "LIVE"
+                              ? isDhanTokenExpired(updatedAt)
+                              : "false",
                         },
                         writeToDom: true,
                       }),
@@ -344,8 +461,11 @@
         // Pull recent logs from the backend; the backend already sorts newest-first.
         async function refreshLogs() {
           const result = await fetch("/api/logs").then((r) => r.json());
-          model.setProperty("/RAW_LOGS", result.logs || "");
+          const logs = result.logs || "";
+
+          model.setProperty("/RAW_LOGS", logs);
           applyLogFilters();
+          notifyLatestTradingViewWebhook(logs);
         }
 
         function isReadinessLogLine(line) {
@@ -362,7 +482,7 @@
         }
 
         function isSignalLogLine(line) {
-          return /Webhook received:|Last Signal Updated:|Selected Option:|Position changed to|Position closed|ignored because|Unknown signal|DHAN .* ERROR|Telegram Error|failed/i.test(
+          return /Webhook received:|Last Signal Updated:|Execution context:|Selected Option:|Entry sizing:|Position changed to|Position closed|ignored because|Unknown signal|DHAN .* ERROR|Telegram Error|failed/i.test(
             line,
           );
         }
@@ -379,6 +499,126 @@
           } catch (error) {
             return null;
           }
+        }
+
+        function getLatestTradingViewWebhook(logs) {
+          const lines = String(logs || "").split("\n");
+
+          for (const line of lines) {
+            if (!/Webhook received:/i.test(line)) {
+              continue;
+            }
+
+            const payload = getWebhookPayload(line);
+
+            if (
+              !payload ||
+              String(payload.source || "").toUpperCase() === "MANUAL_SIGNAL"
+            ) {
+              continue;
+            }
+
+            return {
+              key: [
+                payload.signal || "",
+                payload.symbol || "",
+                payload.time || "",
+              ].join("|"),
+              payload,
+              receivedAt: getLogTimestamp(line),
+            };
+          }
+
+          return null;
+        }
+
+        function openMonitoringFromWebhook(dialog) {
+          if (cockpitTabs) {
+            cockpitTabs.setSelectedKey("monitoring");
+          }
+
+          refreshLogs();
+
+          if (dialog) {
+            dialog.close();
+          }
+        }
+
+        function showTradingViewWebhookPopup(webhook) {
+          const payload = webhook.payload;
+          const detailsItem = new sap.m.StandardListItem({
+            title: `${payload.signal || "TradingView Signal"} • ${
+              payload.symbol || "NIFTY"
+            }`,
+            description: [
+              `Price: ${payload.price ?? "-"}`,
+              `Candle: ${payload.time || "-"}`,
+              `Interval: ${payload.interval || payload.timeframe || "-"}`,
+              `Received: ${webhook.receivedAt || "just now"}`,
+            ].join("  •  "),
+            icon: "sap-icon://notification-2",
+            type: "Active",
+            press: function () {
+              openMonitoringFromWebhook(activeWebhookDialog);
+            },
+          });
+
+          if (activeWebhookDialog) {
+            activeWebhookDialog.destroy();
+          }
+
+          activeWebhookDialog = new sap.m.Dialog({
+            title: "TradingView Webhook Received",
+            contentWidth: "520px",
+            content: [
+              new sap.m.List({
+                showSeparators: "None",
+                items: [detailsItem],
+              }).addStyleClass("webhookPopupList"),
+            ],
+            beginButton: new sap.m.Button({
+              text: "Open Monitoring",
+              icon: "sap-icon://activity-items",
+              type: "Emphasized",
+              press: function () {
+                openMonitoringFromWebhook(activeWebhookDialog);
+              },
+            }),
+            endButton: new sap.m.Button({
+              text: "Dismiss",
+              press: function () {
+                activeWebhookDialog.close();
+              },
+            }),
+            afterClose: function () {
+              activeWebhookDialog.destroy();
+              activeWebhookDialog = null;
+            },
+          }).addStyleClass("webhookPopupDialog");
+
+          activeWebhookDialog.open();
+        }
+
+        function notifyLatestTradingViewWebhook(logs) {
+          const webhook = getLatestTradingViewWebhook(logs);
+
+          if (!webhook) {
+            webhookBaselineLoaded = true;
+            return;
+          }
+
+          if (!webhookBaselineLoaded) {
+            lastTradingViewWebhookKey = webhook.key;
+            webhookBaselineLoaded = true;
+            return;
+          }
+
+          if (webhook.key === lastTradingViewWebhookKey) {
+            return;
+          }
+
+          lastTradingViewWebhookKey = webhook.key;
+          showTradingViewWebhookPopup(webhook);
         }
 
         function getReadableOption(text) {
@@ -403,6 +643,82 @@
 
         function getSignalSourceLabel(lines) {
           return lines.some(isManualSignalLogLine) ? "Manual" : "TradingView";
+        }
+
+        function getEntrySizingDetails(line) {
+          if (!line) {
+            return null;
+          }
+
+          const getValue = (key) => {
+            const match = line.match(new RegExp(`${key}=(\\S+)`, "i"));
+            return match ? match[1] : "";
+          };
+
+          if (!/Entry sizing:/i.test(line)) {
+            return null;
+          }
+
+          return {
+            source: getValue("source"),
+            optionLtp: getValue("premium"),
+            premiumSl: getValue("premiumSL"),
+            previousCandleLow:
+              getValue("candleLow") || getValue("premiumSL"),
+            previousCandleHigh: getValue("candleHigh"),
+            previousCandleRange: getValue("candleRange"),
+            halfCandle: getValue("halfCandle") === "true",
+            hugeThreshold: getValue("hugeThreshold"),
+            riskPoints: getValue("riskPoints"),
+            lots: getValue("lots"),
+            quantity: getValue("quantity"),
+          };
+        }
+
+        function getExecutionContextDetails(line) {
+          if (!line || !/Execution context:/i.test(line)) {
+            return null;
+          }
+
+          const getValue = (key) => {
+            const match = line.match(new RegExp(`${key}=(\\S+)`, "i"));
+            return match ? match[1] : "";
+          };
+
+          return {
+            tradeMode: getValue("tradeMode"),
+            orderRoute: getValue("orderRoute"),
+            dhanEnvironment: getValue("dhanEnvironment"),
+            marketData: getValue("marketData"),
+            interval: getValue("interval"),
+          };
+        }
+
+        function getSignalInterval(lines, signalItem, executionContext) {
+          const payloadInterval =
+            signalItem?.payload?.interval || signalItem?.payload?.timeframe;
+
+          if (payloadInterval) {
+            return String(payloadInterval);
+          }
+
+          if (executionContext?.interval) {
+            return String(executionContext.interval);
+          }
+
+          const premiumSlPlanLine = lines.find((line) =>
+            /Premium SL-Limit plan:.*interval=/i.test(line),
+          );
+          const planMatch = premiumSlPlanLine?.match(/\binterval=(\S+)/i);
+
+          return planMatch ? planMatch[1] : "";
+        }
+
+        function getExecutionModeLabel(context) {
+          if (!context) return "";
+          if (context.tradeMode === "PAPER") return "Paper simulation (no Dhan order)";
+          if (context.tradeMode === "SANDBOX") return "Real Dhan Sandbox order";
+          return "Real Dhan LIVE order";
         }
 
         const SUMMARY_LOG_LABEL_WIDTH = 18;
@@ -558,6 +874,10 @@
             return "Premium stop-loss setup failed";
           }
 
+          if (/premium stop-loss is active/i.test(line)) {
+            return "Premium stop-loss is active";
+          }
+
           if (/calculated quantity is invalid/i.test(line)) {
             return "Invalid quantity";
           }
@@ -608,12 +928,26 @@
           const exit = exitItem?.payload;
           const openOptionLine = signalLines.find((line) => /Selected Option:/i.test(line));
           const closeOptionLine = signalLines.find((line) => /Position closed:/i.test(line));
+          const entrySizingLine = signalLines.find((line) => /Entry sizing:/i.test(line));
+          const entrySizing = getEntrySizingDetails(entrySizingLine);
+          const executionContextLine = signalLines.find((line) =>
+            /Execution context:/i.test(line),
+          );
+          const executionContext = getExecutionContextDetails(
+            executionContextLine,
+          );
           const openOption = getReadableOption(openOptionLine);
           const closeOption = getReadableOption(closeOptionLine || openOptionLine);
           const ignoredLine = signalLines.find((line) =>
             /ignored because|Unknown signal/i.test(line),
           );
           const orderErrorLine = signalLines.find((line) => /DHAN .* ERROR/i.test(line));
+          const brokerEntryFailureLine = signalLines.find((line) =>
+            /(LONG_ENTRY|SHORT_ENTRY).*(not filled|rejected|failed)/i.test(line),
+          );
+          const positionChangedLine = signalLines.find((line) =>
+            /Position changed to (LONG|SHORT)/i.test(line),
+          );
           const manualSignalResponseLostLine = signalLines.find((line) =>
             /MANUAL_SIGNAL response lost after processing/i.test(line),
           );
@@ -629,15 +963,42 @@
             const timestamp = getLogTimestamp(sourceLine || "") || fallbackTimestamp;
             summaryItems.push({
               sortValue: getTimestampSortValue(timestamp),
+              timestamp,
+              label,
+              value,
               text: formatTimestampedSummary(timestamp, formatSummaryLine(label, value)),
             });
           };
 
           if (entry) {
             pushSummaryLine(`${sourceLabel} Entry`, entry.signal, entryItem.line);
+            const signalInterval =
+              entry.interval || entry.timeframe || executionContext?.interval;
+
+            if (signalInterval) {
+              pushSummaryLine(
+                "Timeframe",
+                `${signalInterval} Minute`,
+                entryItem.line,
+              );
+            }
+            if (executionContext) {
+              pushSummaryLine(
+                "Execution Mode",
+                getExecutionModeLabel(executionContext),
+                executionContextLine,
+              );
+            }
 
             if (orderErrorLine) {
               pushSummaryLine("Order Failed", getFailureReason(orderErrorLine), orderErrorLine);
+            } else if (brokerEntryFailureLine) {
+              pushSummaryLine(
+                "Order Failed",
+                getFailureReason(brokerEntryFailureLine) ||
+                  "Broker did not fill the entry",
+                brokerEntryFailureLine,
+              );
             } else if (manualSignalResponseLostLine) {
               pushSummaryLine(
                 "Signal Warning",
@@ -652,13 +1013,66 @@
               );
             } else if (ignoredLine) {
               pushSummaryLine("Signal Ignored", getFailureReason(ignoredLine), ignoredLine);
-            } else if (openOption) {
-              pushSummaryLine("Position Opened", openOption, openOptionLine);
+            } else if (openOption && positionChangedLine) {
+              pushSummaryLine("Position Opened", openOption, positionChangedLine);
+            }
+
+            if (entrySizing) {
+              pushSummaryLine(
+                "Lots to Buy",
+                `${entrySizing.lots} Lots (${entrySizing.quantity} Qty)`,
+                entrySizingLine,
+              );
+              pushSummaryLine(
+                "SL Risk Points",
+                entrySizing.riskPoints,
+                entrySizingLine,
+              );
+
+              if (
+                entrySizing.source === "LIVE_PREMIUM" &&
+                entrySizing.previousCandleLow !== "n/a"
+              ) {
+                pushSummaryLine(
+                  "Prev. Candle Low",
+                  entrySizing.previousCandleLow,
+                  entrySizingLine,
+                );
+              }
+
+              if (
+                entrySizing.source === "LIVE_PREMIUM" &&
+                entrySizing.halfCandle
+              ) {
+                pushSummaryLine(
+                  "Adjusted Premium SL",
+                  `${entrySizing.premiumSl} (half of ${entrySizing.previousCandleRange}-point candle)`,
+                  entrySizingLine,
+                );
+              }
+
+              if (
+                entrySizing.source === "LIVE_PREMIUM" &&
+                entrySizing.optionLtp !== "n/a"
+              ) {
+                pushSummaryLine(
+                  "Option LTP",
+                  entrySizing.optionLtp,
+                  entrySizingLine,
+                );
+              }
             }
           }
 
           if (exit) {
             pushSummaryLine(`${sourceLabel} Exit`, exit.signal, exitItem.line);
+            if (executionContext) {
+              pushSummaryLine(
+                "Execution Mode",
+                getExecutionModeLabel(executionContext),
+                executionContextLine,
+              );
+            }
 
             if (orderErrorLine) {
               pushSummaryLine("Order Failed", getFailureReason(orderErrorLine), orderErrorLine);
@@ -730,14 +1144,159 @@
           return summaryItems;
         }
 
+        function formatTradeModeForLog(context) {
+          if (!context) return "Not recorded (legacy)";
+          if (context.tradeMode === "PAPER") return "Paper";
+          if (context.tradeMode === "SANDBOX") return "Sandbox";
+          return "Live";
+        }
+
+        const TRADE_LOG_LABEL_WIDTH = 18;
+
+        function formatTradeLogField(label, value) {
+          if (!label) return "";
+          if (!label.trim()) return " ";
+
+          return `${label.padEnd(TRADE_LOG_LABEL_WIDTH, " ")} : ${value ?? "-"}`;
+        }
+
+        function formatTradeLogPair(leftLabel, leftValue, rightLabel, rightValue) {
+          const left = formatTradeLogField(leftLabel, leftValue);
+          const right = formatTradeLogField(rightLabel, rightValue);
+
+          return right ? `${left.padEnd(42, " ")} | ${right}` : left;
+        }
+
+        function getConciseSignalBlock(lines) {
+          const items = getConciseSignalItems(lines);
+
+          if (!items.length) {
+            return [];
+          }
+
+          const byLabel = new Map(items.map((item) => [item.label, item]));
+          const signalItem = items.find((item) =>
+            /^(Manual|TradingView) (Entry|Exit|Signal)$/.test(item.label),
+          );
+          const signalPayloadItem = lines
+            .map((line) => ({ line, payload: getWebhookPayload(line) }))
+            .find((item) => item.payload);
+          const source = signalItem?.label.startsWith("Manual")
+            ? "Manual"
+            : "TradingView";
+          const executionContext = getExecutionContextDetails(
+            lines.find((line) => /Execution context:/i.test(line)),
+          );
+          const signalInterval = getSignalInterval(
+            lines,
+            signalPayloadItem,
+            executionContext,
+          );
+          const outcomeItem = items.find((item) =>
+            [
+              "Position Opened",
+              "Position Closed",
+              "Signal Ignored",
+              "Order Failed",
+              "Signal Failed",
+              "Signal Warning",
+            ].includes(item.label),
+          );
+          const timestamp =
+            signalItem?.timestamp ||
+            items.find((item) => item.timestamp)?.timestamp ||
+            "";
+          const header =
+            `--------------------------------  ${timestamp || "Unknown time"}  ` +
+            "--------------------------------";
+          const headerBorder =
+            "-------------------------------------------------------------------------------------------";
+          const optionLtp = byLabel.get("Option LTP")?.value;
+          const previousCandleLow = byLabel.get("Prev. Candle Low")?.value;
+          const lotsToBuy = byLabel.get("Lots to Buy")?.value;
+          const slRiskPoints = byLabel.get("SL Risk Points")?.value;
+
+          return [
+            headerBorder,
+            header,
+            headerBorder,
+            formatTradeLogPair(
+              "Source",
+              source,
+              "Trade Mode",
+              formatTradeModeForLog(executionContext),
+            ),
+            formatTradeLogPair(
+              "Signal",
+              `${signalItem?.value || "UNKNOWN"} (${
+                signalInterval
+                  ? `${signalInterval} min`
+                  : "interval not recorded"
+              })`,
+              outcomeItem?.label,
+              outcomeItem?.value,
+            ),
+            ...(optionLtp || previousCandleLow
+              ? [
+                  formatTradeLogPair(
+                    optionLtp ? "Option LTP" : "",
+                    optionLtp,
+                    previousCandleLow ? "Prev. Candle Low" : "",
+                    previousCandleLow,
+                  ),
+                ]
+              : []),
+            ...(lotsToBuy || slRiskPoints
+              ? [
+                  formatTradeLogPair(
+                    lotsToBuy ? "Lots to Buy" : "",
+                    lotsToBuy,
+                    slRiskPoints ? "SL Risk Points" : "",
+                    slRiskPoints,
+                  ),
+                ]
+              : []),
+          ];
+        }
+
+        function getConciseSignalBlocks(lines) {
+          const signalTimestamps = Array.from(
+            new Set(
+              lines
+                .filter((line) => /Webhook received:/i.test(line))
+                .map(getLogTimestamp)
+                .filter(Boolean),
+            ),
+          ).sort(
+            (a, b) => getTimestampSortValue(b) - getTimestampSortValue(a),
+          );
+
+          if (!signalTimestamps.length) {
+            return getConciseSignalBlock(lines);
+          }
+
+          return signalTimestamps.flatMap((timestamp) =>
+            getConciseSignalBlock(
+              lines.filter((line) => getLogTimestamp(line) === timestamp),
+            ),
+          );
+        }
+
         function getDisplayLogLines(lines, data) {
           if (data.SHOW_DETAILED_SIGNAL_LOGS) {
             return lines;
           }
 
+          const signalBlock = getConciseSignalBlocks(
+            lines.filter((line) => !isReadinessLogLine(line)),
+          );
+
+          if (signalBlock.length) {
+            return signalBlock;
+          }
+
           return [
             ...getConciseReadinessItems(lines.filter(isReadinessLogLine)),
-            ...getConciseSignalItems(lines),
           ]
             .sort((a, b) => b.sortValue - a.sortValue)
             .map((item) => item.text);
@@ -764,6 +1323,30 @@
               return;
             }
 
+            if (
+              !data.SHOW_PAPER_TRADE_LOGS &&
+              sectionLines.some((line) =>
+                /Execution context:.*tradeMode=PAPER/i.test(line),
+              )
+            ) {
+              pendingSectionSeparators = [];
+              sectionLines = [];
+              return;
+            }
+
+            if (
+              !data.SHOW_IGNORED_SIGNAL_LOGS &&
+              sectionLines.some((line) =>
+                /ignored because|Unknown signal|Duplicate webhook ignored/i.test(
+                  line,
+                ),
+              )
+            ) {
+              pendingSectionSeparators = [];
+              sectionLines = [];
+              return;
+            }
+
             const displayLines = getDisplayLogLines(sectionLines, data);
 
             if (!displayLines.length) {
@@ -772,7 +1355,12 @@
               return;
             }
 
-            outputLines.push(...pendingSectionSeparators, ...displayLines);
+            outputLines.push(
+              ...(data.SHOW_DETAILED_SIGNAL_LOGS
+                ? pendingSectionSeparators
+                : []),
+              ...displayLines,
+            );
             dayHasVisibleSection = true;
             pendingSectionSeparators = [];
             sectionLines = [];
@@ -781,7 +1369,7 @@
           rawLogs.split("\n").forEach((line) => {
             if (/^=+/.test(line)) {
               flushLogSection();
-              if (dayHasVisibleSection) {
+              if (dayHasVisibleSection && data.SHOW_DETAILED_SIGNAL_LOGS) {
                 outputLines.push(line);
               }
               dayHasVisibleSection = false;
@@ -789,7 +1377,7 @@
             }
 
             if (/^---------------------------/.test(line)) {
-              if (/Trade -/.test(line)) {
+              if (/Trade\s+-?\d+/.test(line)) {
                 pendingSectionSeparators.push(line);
               } else {
                 flushLogSection();
@@ -838,8 +1426,25 @@
           setTimeout(applyLogFilters, 0);
         }
 
+        async function copyDisplayedLogs() {
+          const logs = model.getProperty("/LIVE_LOGS") || "";
+
+          if (!logs || logs === "No logs match the selected filters.") {
+            sap.m.MessageToast.show("No displayed logs to copy");
+            return;
+          }
+
+          try {
+            await navigator.clipboard.writeText(logs);
+            sap.m.MessageToast.show("Displayed log copied");
+          } catch (error) {
+            sap.m.MessageToast.show("Unable to copy log");
+          }
+        }
+
         async function handlePermissionSwitchChange(path, state) {
           model.setProperty("/" + path, state ? "true" : "false");
+          await saveConfig({ silent: true });
 
           if (path === "PAPER_TRADE") {
             await refreshAlgoStatus();
@@ -847,7 +1452,7 @@
         }
 
         // Save dashboard settings to .env.
-        async function saveConfig() {
+        async function saveConfig(options = {}) {
           const data = model.getData();
 
           await fetch("/api/config", {
@@ -857,6 +1462,8 @@
               ALLOW_BUY: data.ALLOW_BUY,
               ALLOW_SELL: data.ALLOW_SELL,
               PAPER_TRADE: data.PAPER_TRADE,
+              TELEGRAM_ENABLED: data.TELEGRAM_ENABLED,
+              DHAN_ENV: data.DHAN_ENV,
               NO_TRADE_TODAY: data.NO_TRADE_TODAY,
               AUTO_PREMIUM_SL: data.AUTO_PREMIUM_SL,
               MAX_DAILY_TRADES: data.MAX_DAILY_TRADES,
@@ -867,13 +1474,19 @@
               RISK_MODE: data.RISK_MODE,
               RISK_PERCENT: data.RISK_PERCENT,
               PLANNING_SL_POINTS: data.PLANNING_SL_POINTS,
+              PREMIUM_HUGE_CANDLE_1M: data.PREMIUM_HUGE_CANDLE_1M,
+              PREMIUM_HUGE_CANDLE_3M: data.PREMIUM_HUGE_CANDLE_3M,
+              PREMIUM_HUGE_CANDLE_5M: data.PREMIUM_HUGE_CANDLE_5M,
+              PREMIUM_HUGE_CANDLE_15M: data.PREMIUM_HUGE_CANDLE_15M,
               MARKET_BIAS: data.MARKET_BIAS,
             }),
           });
 
-          sap.m.MessageToast.show(
-            "Config saved. Trading permissions apply immediately.",
-          );
+          if (!options.silent) {
+            sap.m.MessageToast.show(
+              "Config saved. Trading permissions apply immediately.",
+            );
+          }
           await refreshConfig();
           calculateRisk();
         }
@@ -909,8 +1522,10 @@
             signal,
             source: "MANUAL_SIGNAL",
             symbol: "NIFTY",
-            price: Number(data.TEST_PRICE || 23500),
+            price:
+              Number(String(data.TEST_PRICE || "").replace(/,/g, "")) || 23500,
             time: new Date().toISOString(),
+            interval: String(data.TEST_INTERVAL || data.PREMIUM_SL_INTERVAL || "15"),
           };
 
           const result = await fetch("/api/test-signal", {
@@ -942,7 +1557,7 @@
           return new sap.m.VBox({
             items: [
               new sap.m.Text({ text: title }).addStyleClass("statusTitle"),
-              new sap.m.ObjectStatus({
+	                      new sap.m.ObjectStatus({
                 text: {
                   path: path,
                   formatter: function (value) {
@@ -1044,6 +1659,18 @@
           });
         }
 
+        function formatIndianWholeNumber(value) {
+          const number = Number(String(value ?? "").replace(/,/g, ""));
+
+          if (!Number.isFinite(number)) {
+            return value || "";
+          }
+
+          return Math.round(number).toLocaleString("en-IN", {
+            maximumFractionDigits: 0,
+          });
+        }
+
         function createCompactNumberField(
           label,
           path,
@@ -1065,7 +1692,7 @@
               );
               calculateRisk();
             },
-            change: function (e) {
+            change: async function (e) {
               const value = String(e.getParameter("value")).replace(/,/g, "");
 
               model.setProperty("/" + path, value);
@@ -1075,6 +1702,7 @@
               }
 
               calculateRisk();
+              await saveConfig({ silent: true });
             },
           });
 
@@ -1161,6 +1789,10 @@
         }
 
         // Shows live position state and the trade/no-trade toggle.
+        function formatActiveTradeDetail(label, value) {
+          return `${label.padEnd(11, " ")}: ${value}`;
+        }
+
         function liveTradingStatusCard() {
           return new sap.m.VBox({
             items: [
@@ -1220,6 +1852,73 @@
 	                          },
 	                        },
 	                      }),
+                      new sap.m.Text({
+                        text: {
+                          path: "/algoLiveStatus/lastTrades/0",
+                          formatter: function (trade) {
+                            return trade?.premiumSlActive
+                              ? formatActiveTradeDetail("Premium SL", "Active")
+                              : "";
+                          },
+                        },
+                        visible: {
+                          parts: [
+                            { path: "/algoLiveStatus/currentPosition" },
+                            { path: "/algoLiveStatus/lastTrades/0/premiumSlActive" },
+                          ],
+                          formatter: (position, active) =>
+                            Boolean(position && active),
+                        },
+                      }).addStyleClass("lastTradeDetailLine"),
+                      new sap.m.Text({
+                        text: {
+                          path: "/algoLiveStatus/lastTrades/0/premiumSlInterval",
+                          formatter: function (interval) {
+                            if (!interval) return "";
+                            return formatActiveTradeDetail(
+                              "Time frame",
+                              `${interval} minute${
+                                Number(interval) === 1 ? "" : "s"
+                              }`,
+                            );
+                          },
+                        },
+                        visible: {
+                          parts: [
+                            { path: "/algoLiveStatus/currentPosition" },
+                            { path: "/algoLiveStatus/lastTrades/0/premiumSlInterval" },
+                          ],
+                          formatter: (position, interval) =>
+                            Boolean(position && interval),
+                        },
+                      }).addStyleClass("lastTradeDetailLine"),
+                      new sap.m.Text({
+                        text: {
+                          path: "/algoLiveStatus/lastTrades/0",
+                          formatter: function (trade) {
+                            if (!trade?.riskAmount) return "";
+
+                            return formatActiveTradeDetail(
+                              "Risk",
+                              `₹${Number(trade.riskAmount).toLocaleString(
+                                "en-IN",
+                                {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                },
+                              )}`,
+                            );
+                          },
+                        },
+                        visible: {
+                          parts: [
+                            { path: "/algoLiveStatus/currentPosition" },
+                            { path: "/algoLiveStatus/lastTrades/0/riskAmount" },
+                          ],
+                          formatter: (position, riskAmount) =>
+                            Boolean(position && riskAmount),
+                        },
+                      }).addStyleClass("lastTradeDetailLine"),
                     ],
                   }).addStyleClass("statusTile"),
 
@@ -1303,11 +2002,12 @@
                           },
                         },
 
-                        change: function (e) {
+                        change: async function (e) {
                           model.setProperty(
                             "/NO_TRADE_TODAY",
                             e.getParameter("state") ? "false" : "true",
                           );
+                          await saveConfig({ silent: true });
                         },
                       }),
                     ],
@@ -1412,12 +2112,30 @@
 
                       new sap.m.ObjectStatus({
                         text: {
-                          path: "/dhanHealth/connected",
-                          formatter: (v) => (v ? "Connected" : "Disconnected"),
+                          parts: [
+                            { path: "/dhanHealth/checking" },
+                            { path: "/dhanHealth/connected" },
+                            { path: "/dhanHealth/environment" },
+                          ],
+                          formatter: (checking, connected, environment) => {
+                            if (checking) return "Checking...";
+
+                            return `${environment || "Dhan"} ${
+                              connected ? "Connected" : "Disconnected"
+                            }`;
+                          },
                         },
                         state: {
-                          path: "/dhanHealth/connected",
-                          formatter: (v) => (v ? "Success" : "Error"),
+                          parts: [
+                            { path: "/dhanHealth/checking" },
+                            { path: "/dhanHealth/connected" },
+                          ],
+                          formatter: (checking, connected) =>
+                            checking
+                              ? "Information"
+                              : connected
+                                ? "Success"
+                                : "Error",
                         },
                       }),
 
@@ -1434,25 +2152,86 @@
                       new sap.m.Text({
                         text: {
                           parts: [
+                            { path: "/dhanHealth/checking" },
+                            { path: "/dhanHealth/connected" },
+                            { path: "/dhanHealth/environment" },
+                            { path: "/dhanHealth/message" },
                             { path: "/DHAN_TOKEN_UPDATED_AT" },
                             { path: "/TOKEN_COUNTDOWN_TICK" },
                           ],
-                          formatter: getDhanTokenCountdown,
+                          formatter: (
+                            checking,
+                            connected,
+                            environment,
+                            message,
+                            liveUpdatedAt,
+                          ) => {
+                            if (checking) return "";
+                            if (!connected) {
+                              return message || "Connection failed";
+                            }
+                            if (environment === "LIVE") {
+                              return getDhanTokenCountdown(liveUpdatedAt);
+                            }
+
+                            return "";
+                          },
+                        },
+                        visible: {
+                          parts: [
+                            { path: "/dhanHealth/checking" },
+                            { path: "/dhanHealth/connected" },
+                            { path: "/dhanHealth/environment" },
+                          ],
+                          formatter: (checking, connected, environment) =>
+                            !checking &&
+                            (!connected || environment === "LIVE"),
                         },
                         customData: [
                           new sap.ui.core.CustomData({
                             key: "expiring-soon",
                             value: {
                               parts: [
+                                { path: "/dhanHealth/connected" },
+                                { path: "/dhanHealth/environment" },
                                 { path: "/DHAN_TOKEN_UPDATED_AT" },
                                 { path: "/TOKEN_COUNTDOWN_TICK" },
                               ],
-                              formatter: isDhanTokenExpiringSoon,
+                              formatter: (
+                                connected,
+                                environment,
+                                updatedAt,
+                              ) =>
+                                connected && environment === "LIVE"
+                                  ? isDhanTokenExpiringSoon(updatedAt)
+                                  : "false",
+                            },
+                            writeToDom: true,
+                          }),
+                          new sap.ui.core.CustomData({
+                            key: "expired",
+                            value: {
+                              parts: [
+                                { path: "/dhanHealth/connected" },
+                                { path: "/dhanHealth/environment" },
+                                { path: "/DHAN_TOKEN_UPDATED_AT" },
+                                { path: "/TOKEN_COUNTDOWN_TICK" },
+                              ],
+                              formatter: (
+                                connected,
+                                environment,
+                                updatedAt,
+                              ) =>
+                                connected && environment === "LIVE"
+                                  ? isDhanTokenExpired(updatedAt)
+                                  : "false",
                             },
                             writeToDom: true,
                           }),
                         ],
-                      }).addStyleClass("tokenCountdown"),
+                      })
+                        .addStyleClass("tokenCountdown")
+                        .addStyleClass("dhanHealthMessage"),
                     ],
                   }).addStyleClass("statusTile brokerTile"),
 
@@ -1464,8 +2243,12 @@
 
                       new sap.m.ObjectStatus({
                         text: {
-                          path: "/PAPER_TRADE",
-                          formatter: (v) => (v === "true" ? "Paper" : "Live"),
+                          parts: [
+                            { path: "/PAPER_TRADE" },
+                            { path: "/DHAN_ENV" },
+                          ],
+                          formatter: (paper, env) =>
+                            paper === "true" ? "Paper" : env || "LIVE",
                         },
                         state: {
                           path: "/PAPER_TRADE",
@@ -1483,12 +2266,73 @@
                         ],
                       }).addStyleClass("tradingModeStatus"),
 
-                      new sap.m.Button({
-                        text: "Emergency Stop",
-                        icon: "sap-icon://alert",
-                        type: "Default",
-                        press: emergencyStop,
-                      }).addStyleClass("tradingModeEmergencyButton"),
+                      new sap.m.Select({
+                        selectedKey: "{/DHAN_ENV}",
+                        enabled: {
+                          path: "/PAPER_TRADE",
+                          formatter: (v) => v !== "true",
+                        },
+                        change: async function (event) {
+                          const select = event.getSource();
+                          const selected =
+                            event.getParameter("selectedItem").getKey();
+
+                          const saveEnvironment = async () => {
+                            model.setProperty("/DHAN_ENV", selected);
+                            model.setProperty("/dhanHealth", {
+                              connected: false,
+                              environment: selected,
+                              checking: true,
+                              message: `Checking ${selected} connection...`,
+                            });
+                            await saveConfig();
+                            await refreshDhanHealth();
+                            lastSavedDhanEnvironment = selected;
+
+                            if (
+                              selected === "SANDBOX" &&
+                              !model.getProperty("/DHAN_SANDBOX_CONFIGURED")
+                            ) {
+                              sap.m.MessageToast.show(
+                                "Enter your Dhan Sandbox credentials",
+                              );
+                              updateDhanToken();
+                            }
+                          };
+
+                          if (
+                            selected === "LIVE" &&
+                            lastSavedDhanEnvironment !== "LIVE"
+                          ) {
+                            const confirmed = await confirmLiveDhanSwitch();
+
+                            if (confirmed) {
+                              await saveEnvironment();
+                              return;
+                            }
+
+                            model.setProperty(
+                              "/DHAN_ENV",
+                              lastSavedDhanEnvironment,
+                            );
+                            select.setSelectedKey(lastSavedDhanEnvironment);
+                            return;
+                          }
+
+                          await saveEnvironment();
+                        },
+                        items: [
+                          new sap.ui.core.Item({
+                            key: "SANDBOX",
+                            text: "Dhan Sandbox",
+                          }),
+                          new sap.ui.core.Item({
+                            key: "LIVE",
+                            text: "Dhan Live",
+                          }),
+                        ],
+                      }).addStyleClass("dhanEnvironmentSelect"),
+
                     ],
                   }).addStyleClass("statusTile tradingModeTile"),
                 ],
@@ -1570,6 +2414,13 @@
                       }),
                     ],
                   }).addStyleClass("networkIpRow"),
+
+                  new sap.m.Button({
+                    text: "Emergency Stop",
+                    icon: "sap-icon://alert",
+                    type: "Default",
+                    press: emergencyStop,
+                  }).addStyleClass("readinessEmergencyButton"),
                 ],
               }).addStyleClass("readinessActionRow"),
             ],
@@ -1616,21 +2467,65 @@
                     "ON",
                     "OFF",
                     "AUTO_PREMIUM_SL",
-                    "Places a protective SL-M order from the previous premium candle",
+                    "Places a protective option SL-Limit order from the previous premium candle",
                   ),
                 ],
               }).addStyleClass("permissionRow"),
 
+            ],
+          }).addStyleClass("card");
+        }
+
+        function telegramCard() {
+          return new sap.m.VBox({
+            items: [
+              new sap.m.Title({
+                text: "Telegram Notifications",
+                level: "H3",
+              }).addStyleClass("sectionTitle"),
+
               new sap.m.HBox({
-                justifyContent: "Center",
+                alignItems: "Center",
+                justifyContent: "SpaceBetween",
                 items: [
-                  new sap.m.Button({
-                    text: "Save Config",
-                    type: "Emphasized",
-                    press: saveConfig,
-                  }).addStyleClass("saveButton"),
+                  new sap.m.VBox({
+                    items: [
+                      new sap.m.ObjectStatus({
+                        text: {
+                          path: "/TELEGRAM_ENABLED",
+                          formatter: (value) =>
+                            value === "true" ? "Enabled" : "Disabled",
+                        },
+                        state: {
+                          path: "/TELEGRAM_ENABLED",
+                          formatter: (value) =>
+                            value === "true" ? "Success" : "None",
+                        },
+                      }),
+                      new sap.m.Text({
+                        text: "When disabled, Telegram requests and Telegram log entries are skipped.",
+                      }).addStyleClass("infoText"),
+                    ],
+                  }),
+
+                  new sap.m.Switch({
+                    customTextOn: "ON",
+                    customTextOff: "OFF",
+                    state: {
+                      path: "/TELEGRAM_ENABLED",
+                      formatter: (value) => value === "true",
+                    },
+                    change: async function (event) {
+                      model.setProperty(
+                        "/TELEGRAM_ENABLED",
+                        event.getParameter("state") ? "true" : "false",
+                      );
+                      await saveConfig();
+                      await refreshLogs();
+                    },
+                  }).addStyleClass("permissionSwitch"),
                 ],
-              }).addStyleClass("permissionSaveRow"),
+              }).addStyleClass("telegramControlRow"),
             ],
           }).addStyleClass("card");
         }
@@ -1721,7 +2616,7 @@
                           new sap.m.SegmentedButton({
                             selectedKey: "{/RISK_MODE}",
                             width: "240px",
-                            selectionChange: function (e) {
+                            selectionChange: async function (e) {
                               const item = e.getParameter("item");
 
                               model.setProperty(
@@ -1731,6 +2626,7 @@
                                   : e.getSource().getSelectedKey(),
                               );
                               calculateRisk();
+                              await saveConfig({ silent: true });
                             },
                             items: [
                               new sap.m.SegmentedButtonItem({
@@ -1758,7 +2654,7 @@
                           new sap.m.SegmentedButton({
                             selectedKey: "{/MARKET_BIAS}",
                             width: "300px",
-                            selectionChange: function (e) {
+                            selectionChange: async function (e) {
                               const item = e.getParameter("item");
 
                               model.setProperty(
@@ -1768,6 +2664,7 @@
                                   : e.getSource().getSelectedKey(),
                               );
                               calculateRisk();
+                              await saveConfig({ silent: true });
                             },
                             items: [
                               new sap.m.SegmentedButtonItem({
@@ -1786,7 +2683,7 @@
                                 width: "100px",
                               }),
                             ],
-                          }),
+                          }).addStyleClass("marketBiasSegmentedButton"),
                         ],
                       }),
                     ],
@@ -1809,16 +2706,41 @@
                 ],
               }).addStyleClass("planningKeyMetricsRow"),
 
-              new sap.m.HBox({
-                justifyContent: "Center",
+              new sap.m.VBox({
                 items: [
-                  new sap.m.Button({
-                    text: "Save Config",
-                    type: "Emphasized",
-                    press: saveConfig,
-                  }).addStyleClass("saveButton"),
+                  new sap.m.Text({
+                    text: "Auto Premium SL — Huge Candle Thresholds",
+                  }).addStyleClass("planningGroupTitle"),
+
+                  new sap.m.HBox({
+                    items: [
+                      createCompactNumberField(
+                        "1 Minute",
+                        "PREMIUM_HUGE_CANDLE_1M",
+                      ),
+                      createCompactNumberField(
+                        "3 Minutes",
+                        "PREMIUM_HUGE_CANDLE_3M",
+                      ),
+                      createCompactNumberField(
+                        "5 Minutes",
+                        "PREMIUM_HUGE_CANDLE_5M",
+                      ),
+                      createCompactNumberField(
+                        "15 Minutes",
+                        "PREMIUM_HUGE_CANDLE_15M",
+                      ),
+                    ],
+                  }).addStyleClass(
+                    "planningFieldsRow premiumThresholdFieldsRow",
+                  ),
+
+                  new sap.m.Text({
+                    text: "When a completed premium candle exceeds its interval threshold, the SL trigger moves to the candle midpoint.",
+                  }).addStyleClass("planningHelperText"),
                 ],
-              }),
+              }).addStyleClass("planningCalcGroup premiumThresholdGroup"),
+
             ],
           }).addStyleClass("card");
         }
@@ -1835,19 +2757,31 @@
               new sap.m.HBox({
                 items: [
                   new sap.m.CheckBox({
-                    text: "TradingView signals",
+                    text: "TradingView",
                     selected: "{/SHOW_TRADINGVIEW_SIGNAL_LOGS}",
                     select: updateLogFilters,
                   }),
 
                   new sap.m.CheckBox({
-                    text: "Manual signals",
+                    text: "Manual",
                     selected: "{/SHOW_MANUAL_SIGNAL_LOGS}",
                     select: updateLogFilters,
                   }),
 
                   new sap.m.CheckBox({
-                    text: "Readiness center",
+                    text: "Paper trades",
+                    selected: "{/SHOW_PAPER_TRADE_LOGS}",
+                    select: updateLogFilters,
+                  }),
+
+                  new sap.m.CheckBox({
+                    text: "Ignored",
+                    selected: "{/SHOW_IGNORED_SIGNAL_LOGS}",
+                    select: updateLogFilters,
+                  }),
+
+                  new sap.m.CheckBox({
+                    text: "Readiness",
                     selected: "{/SHOW_READINESS_LOGS}",
                     select: updateLogFilters,
                   }),
@@ -1859,9 +2793,17 @@
                   }),
 
                   new sap.m.Button({
-                    text: "Refresh Logs",
                     icon: "sap-icon://refresh",
+                    tooltip: "Refresh Logs",
+                    type: "Transparent",
                     press: refreshLogs,
+                  }),
+
+                  new sap.m.Button({
+                    icon: "sap-icon://copy",
+                    tooltip: "Copy Log",
+                    type: "Transparent",
+                    press: copyDisplayedLogs,
                   }),
                 ],
               }).addStyleClass("logFilterRow"),
@@ -1887,7 +2829,7 @@
               }).addStyleClass("sectionTitle"),
 
               new sap.m.MessageStrip({
-                text: "These buttons send real webhook signals into the bot. If Paper Trade is LIVE, they can place live Dhan orders.",
+                text: "These buttons send webhook signals into the bot. Paper Trade ON simulates orders; Paper Trade OFF sends orders to the selected Dhan environment.",
                 type: "Warning",
                 showIcon: true,
               }).addStyleClass("sapUiSmallMarginBottom"),
@@ -1903,9 +2845,9 @@
 
                   new sap.m.Input({
                     value: "{/TEST_PRICE}",
-                    type: "Number",
+                    type: "Text",
                     width: "160px",
-                    placeholder: "23500",
+                    placeholder: "23,500",
                   }),
 
                   new sap.m.Button({
@@ -1939,10 +2881,50 @@
                         })
                       : "-";
 
-                    return `Fetched from Dhan: ${ltp} at ${checkedText}`;
+                    return `Fetched from Dhan: ${formatIndianWholeNumber(
+                      ltp,
+                    )} at ${checkedText}`;
                   },
                 },
               }).addStyleClass("manualSpotStatus"),
+
+              new sap.m.HBox({
+                alignItems: "Center",
+                items: [
+                  createLabelWithInfo(
+                    "Signal Timeframe",
+                    "Used to select the previous completed option-premium candle for stop-loss planning.",
+                    "webhookLabel",
+                  ),
+
+                  new sap.m.SegmentedButton({
+                    selectedKey: "{/TEST_INTERVAL}",
+                    width: "360px",
+                    items: [
+                      new sap.m.SegmentedButtonItem({
+                        key: "1",
+                        text: "1 Min",
+                        width: "90px",
+                      }),
+                      new sap.m.SegmentedButtonItem({
+                        key: "3",
+                        text: "3 Min",
+                        width: "90px",
+                      }),
+                      new sap.m.SegmentedButtonItem({
+                        key: "5",
+                        text: "5 Min",
+                        width: "90px",
+                      }),
+                      new sap.m.SegmentedButtonItem({
+                        key: "15",
+                        text: "15 Min",
+                        width: "90px",
+                      }),
+                    ],
+                  }),
+                ],
+              }).addStyleClass("webhookBox"),
 
               new sap.m.HBox({
                 items: [
@@ -1979,8 +2961,57 @@
         }
 
         // Assemble the dashboard page and group cards into tabs.
+        cockpitTabs = new sap.m.IconTabBar({
+          expanded: true,
+          select: function (e) {
+            const selectedKey = e.getParameter("key");
+
+            if (selectedKey === "planning") {
+              calculateRisk();
+            }
+
+            if (selectedKey === "manualSignals") {
+              refreshNiftySpotPrice();
+            }
+          },
+          items: [
+            new sap.m.IconTabFilter({
+              key: "tradingDesk",
+              text: "Trading Desk",
+              icon: "sap-icon://monitor-payments",
+              content: [
+                liveTradingStatusCard(),
+                readinessCenterCard(),
+                tradingPermissionsCard(),
+                telegramCard(),
+              ],
+            }),
+
+            new sap.m.IconTabFilter({
+              key: "planning",
+              text: "Planning",
+              icon: "sap-icon://business-objects-experience",
+              content: [planningCard()],
+            }),
+
+            new sap.m.IconTabFilter({
+              key: "manualSignals",
+              text: "Manual Signals",
+              icon: "sap-icon://action",
+              content: [testCenterCard()],
+            }),
+
+            new sap.m.IconTabFilter({
+              key: "monitoring",
+              text: "Monitoring",
+              icon: "sap-icon://activity-items",
+              content: [monitoringCard()],
+            }),
+          ],
+        }).addStyleClass("cockpitTabs");
+
         const page = new sap.m.Page({
-          title: "Algo Bot Control Center",
+          title: "IC Algo Bot Control Center",
           showHeader: false,
           content: [
             new sap.m.VBox({
@@ -1989,7 +3020,7 @@
                   alignItems: "Center",
                   items: [
                     new sap.m.Avatar({
-                      src: "images/algo-bot.jpg",
+                      src: "images/ic-algo-bot.jpg",
                       displaySize: "XL",
                       displayShape: "Circle",
                     }).addStyleClass("botAvatar"),
@@ -2009,53 +3040,7 @@
                   ],
                 }).addStyleClass("heroCard"),
 
-                new sap.m.IconTabBar({
-                  expanded: true,
-                  select: function (e) {
-                    const selectedKey = e.getParameter("key");
-
-                    if (selectedKey === "planning") {
-                      calculateRisk();
-                    }
-
-                    if (selectedKey === "manualSignals") {
-                      refreshNiftySpotPrice();
-                    }
-                  },
-                  items: [
-                    new sap.m.IconTabFilter({
-                      key: "tradingDesk",
-                      text: "Trading Desk",
-                      icon: "sap-icon://monitor-payments",
-                      content: [
-                        liveTradingStatusCard(),
-                        readinessCenterCard(),
-                        tradingPermissionsCard(),
-                      ],
-                    }),
-
-                    new sap.m.IconTabFilter({
-                      key: "planning",
-                      text: "Planning",
-                      icon: "sap-icon://business-objects-experience",
-                      content: [planningCard()],
-                    }),
-
-                    new sap.m.IconTabFilter({
-                      key: "manualSignals",
-                      text: "Manual Signals",
-                      icon: "sap-icon://action",
-                      content: [testCenterCard()],
-                    }),
-
-                    new sap.m.IconTabFilter({
-                      key: "monitoring",
-                      text: "Monitoring",
-                      icon: "sap-icon://activity-items",
-                      content: [monitoringCard()],
-                    }),
-                  ],
-                }).addStyleClass("cockpitTabs"),
+                cockpitTabs,
               ],
             }).addStyleClass("dashboardShell"),
           ],

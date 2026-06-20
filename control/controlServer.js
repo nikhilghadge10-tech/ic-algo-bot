@@ -12,6 +12,7 @@ const { spawn } = require("child_process");
 
 const app = express();
 const PORT = 4000;
+const DHAN_SANDBOX_CLIENT_ID = "2601312809";
 
 const envPath = path.join(__dirname, "..", ".env");
 const axios = require("axios");
@@ -53,6 +54,7 @@ function readEnv() {
 // Update existing .env keys while preserving comments and unrelated lines.
 function writeEnv(updates) {
   const lines = fs.readFileSync(envPath, "utf8").split("\n");
+  const updatedKeys = new Set();
 
   const updatedLines = lines.map((line) => {
     const trimmed = line.trim();
@@ -61,10 +63,17 @@ function writeEnv(updates) {
     const [key] = trimmed.split("=");
 
     if (Object.prototype.hasOwnProperty.call(updates, key)) {
+      updatedKeys.add(key);
       return `${key}=${updates[key]}`;
     }
 
     return line;
+  });
+
+  Object.entries(updates).forEach(([key, value]) => {
+    if (!updatedKeys.has(key)) {
+      updatedLines.push(`${key}=${value}`);
+    }
   });
 
   fs.writeFileSync(envPath, updatedLines.join("\n"));
@@ -158,13 +167,21 @@ function getIstDateKey(date) {
   return `${year}-${month}-${day}`;
 }
 
-function getIstDaySeparator(date) {
-  const { day, month, year } = getIstDateParts(date);
-  return `\n==========================   ${Number(day)} - ${month} - ${year}   ============================\n`;
+function getIstIsoDateKey(date) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function getIstDaySeparator() {
+  return "\n================================================================================\n";
 }
 
 function getTradeSeparator(sequence) {
-  return `---------------------------        Trade -${sequence}        ---------------------------`;
+  return `---------------------------        Trade ${sequence}        ---------------------------`;
 }
 
 function getIstTimeLabel(timestampMs) {
@@ -202,13 +219,26 @@ function isEntryWebhook(line) {
 }
 
 function isNonTradeEntryResult(line) {
-  return /(LONG_ENTRY|SHORT_ENTRY).*(ignored|failed)|daily trade limit reached/i.test(
-    line,
+  return (
+    /(LONG_ENTRY|SHORT_ENTRY).*(ignored|failed|not filled|rejected)/i.test(
+      line,
+    ) ||
+    /daily trade limit reached|calculated quantity is invalid/i.test(line)
   );
 }
 
 function isPositionChanged(line) {
   return /Position changed to (LONG|SHORT)/.test(line);
+}
+
+function isTradeTerminalResult(line) {
+  return /Position closed:|premium stop-loss hit|safety exit requested|stopped immediately/i.test(
+    line,
+  );
+}
+
+function isReadinessLifecycle(line) {
+  return /LIFECYCLE/i.test(line) && !/MANUAL_SIGNAL/i.test(line);
 }
 
 function formatLogTimestamp(line) {
@@ -282,11 +312,13 @@ function getGeneralTimeSections(lines) {
   }));
 }
 
-function formatDashboardLogs(content) {
+function formatDashboardLogs(content, telegramEnabled = false) {
+  const tradeHistory = readJsonFile(tradeHistoryPath);
   const lines = content
     .split("\n")
     .map((line) => line.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((line) => telegramEnabled || !/Telegram/i.test(line));
 
   if (!lines.length) {
     return "No logs yet.";
@@ -301,8 +333,20 @@ function formatDashboardLogs(content) {
     const day = getLogDay(daysByKey, parsedLine);
     day.latestMs = Math.max(day.latestMs, parsedLine.timestampMs);
 
+    if (pendingTrade && pendingTrade.dateKey !== parsedLine.dateKey) {
+      pendingTrade.day.general.push(...pendingTrade.lines);
+      pendingTrade = null;
+    }
+
     if (currentTrade && currentTrade.dateKey !== parsedLine.dateKey) {
       currentTrade = null;
+    }
+
+    // Operational start/stop events belong to their day, never to an open
+    // signal/trade block left over from earlier activity.
+    if (isReadinessLifecycle(line)) {
+      day.general.push(parsedLine);
+      return;
     }
 
     if (isEntryWebhook(line)) {
@@ -334,8 +378,17 @@ function formatDashboardLogs(content) {
       }
 
       if (isPositionChanged(line)) {
+        const sequence = pendingTrade.day.trades.length + 1;
+        const persistedTrade =
+          tradeHistory?.date === getIstIsoDateKey(new Date(parsedLine.timestampMs))
+            ? tradeHistory.trades?.find(
+                (item) => Number(item.sequence) === sequence,
+              )
+            : null;
         const trade = {
-          sequence: pendingTrade.day.trades.length + 1,
+          sequence,
+          tradeMode: persistedTrade?.tradeMode || null,
+          entryTime: persistedTrade?.entryTime || null,
           lines: pendingTrade.lines,
           dateKey: pendingTrade.dateKey,
           latestMs: pendingTrade.latestMs,
@@ -355,6 +408,11 @@ function formatDashboardLogs(content) {
         currentTrade.latestMs,
         parsedLine.timestampMs,
       );
+
+      if (isTradeTerminalResult(line)) {
+        currentTrade = null;
+      }
+
       return;
     }
 
@@ -378,6 +436,21 @@ function formatDashboardLogs(content) {
               .slice()
               .sort((a, b) => b.timestampMs - a.timestampMs)
               .map((line) => line.display),
+            ...(!trade.lines.some((line) =>
+              /Execution context:/i.test(line.raw),
+            ) && trade.tradeMode
+              ? [
+                  formatLogTimestamp(
+                    `${trade.entryTime || new Date(trade.latestMs).toISOString()} ` +
+                      `[INFO] Execution context: tradeMode=${trade.tradeMode} ` +
+                      `orderRoute=${
+                        trade.tradeMode === "PAPER"
+                          ? "SIMULATION"
+                          : `${trade.tradeMode}_DHAN`
+                      }`,
+                  ),
+                ]
+              : []),
           ],
         })),
         ...getGeneralTimeSections(day.general),
@@ -405,9 +478,19 @@ app.get("/api/config", async (req, res) => {
     ALLOW_BUY: env.ALLOW_BUY,
     ALLOW_SELL: env.ALLOW_SELL,
     PAPER_TRADE: env.PAPER_TRADE,
+    TELEGRAM_ENABLED:
+      String(env.TELEGRAM_ENABLED).toLowerCase() === "true" ? "true" : "false",
+    DHAN_ENV: String(env.DHAN_ENV || "LIVE").toUpperCase(),
+    DHAN_SANDBOX_CLIENT_ID,
+    DHAN_SANDBOX_CONFIGURED: Boolean(env.DHAN_SANDBOX_ACCESS_TOKEN),
     NO_TRADE_TODAY: env.NO_TRADE_TODAY,
     AUTO_PREMIUM_SL: env.AUTO_PREMIUM_SL,
     PREMIUM_SL_INTERVAL: env.PREMIUM_SL_INTERVAL,
+    PREMIUM_SL_LIMIT_BAND: env.PREMIUM_SL_LIMIT_BAND,
+    PREMIUM_HUGE_CANDLE_1M: env.PREMIUM_HUGE_CANDLE_1M || "6",
+    PREMIUM_HUGE_CANDLE_3M: env.PREMIUM_HUGE_CANDLE_3M || "12",
+    PREMIUM_HUGE_CANDLE_5M: env.PREMIUM_HUGE_CANDLE_5M || "15",
+    PREMIUM_HUGE_CANDLE_15M: env.PREMIUM_HUGE_CANDLE_15M || "25",
 
     MAX_DAILY_TRADES: env.MAX_DAILY_TRADES,
     MAX_OPEN_POSITIONS: env.MAX_OPEN_POSITIONS,
@@ -422,6 +505,7 @@ app.get("/api/config", async (req, res) => {
     MARKET_BIAS: env.MARKET_BIAS,
 
     DHAN_TOKEN_UPDATED_AT: env.DHAN_TOKEN_UPDATED_AT,
+    DHAN_SANDBOX_TOKEN_UPDATED_AT: env.DHAN_SANDBOX_TOKEN_UPDATED_AT,
 
     algoRunning,
     ngrokRunning: ngrokHealth.running,
@@ -465,7 +549,16 @@ async function getNgrokHealth() {
 
 // Save dashboard-edited settings back to .env.
 app.post("/api/config", (req, res) => {
-  writeEnv(req.body);
+  const updates = { ...req.body };
+
+  if (updates.DHAN_ENV) {
+    updates.DHAN_ENV =
+      String(updates.DHAN_ENV).toUpperCase() === "SANDBOX"
+        ? "SANDBOX"
+        : "LIVE";
+  }
+
+  writeEnv(updates);
   res.json({ success: true });
 });
 
@@ -724,7 +817,11 @@ app.get("/api/logs", (req, res) => {
     }
 
     const content = fs.readFileSync(logPath, "utf8");
-    const lastLines = formatDashboardLogs(content);
+    const env = readEnv();
+    const lastLines = formatDashboardLogs(
+      content,
+      String(env.TELEGRAM_ENABLED).toLowerCase() === "true",
+    );
 
     res.json({
       success: true,
@@ -773,7 +870,11 @@ app.get("/api/nifty-spot", async (req, res) => {
 
 // Store a refreshed Dhan token and timestamp in .env.
 app.post("/api/update-dhan-token", (req, res) => {
-  const { token } = req.body;
+  const { token, environment } = req.body;
+  const dhanEnvironment =
+    String(environment || readEnv().DHAN_ENV).toUpperCase() === "SANDBOX"
+      ? "SANDBOX"
+      : "LIVE";
 
   if (!token) {
     return res.status(400).json({
@@ -782,14 +883,22 @@ app.post("/api/update-dhan-token", (req, res) => {
     });
   }
 
-  writeEnv({
-    DHAN_ACCESS_TOKEN: token,
-    DHAN_TOKEN_UPDATED_AT: getIstIsoString(),
-  });
+  if (dhanEnvironment === "SANDBOX") {
+    writeEnv({
+      DHAN_SANDBOX_CLIENT_ID,
+      DHAN_SANDBOX_ACCESS_TOKEN: token,
+      DHAN_SANDBOX_TOKEN_UPDATED_AT: getIstIsoString(),
+    });
+  } else {
+    writeEnv({
+      DHAN_ACCESS_TOKEN: token,
+      DHAN_TOKEN_UPDATED_AT: getIstIsoString(),
+    });
+  }
 
   res.json({
     success: true,
-    message: "Dhan token updated. Restart algo server.",
+    message: `${dhanEnvironment} Dhan credentials updated`,
   });
 });
 

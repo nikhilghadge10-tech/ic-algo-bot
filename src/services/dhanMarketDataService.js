@@ -5,6 +5,12 @@
  * The manual signal panel uses LTP quotes to pre-fill current NIFTY spot.
  */
 const axios = require("axios");
+const {
+  getDhanHeaders,
+  getDhanUrl,
+  getRuntimeEnv,
+  requireDhanMarketDataConfig,
+} = require("./dhanRuntimeConfig");
 
 function formatIstDateTime(date) {
   const istOffsetMs = 5.5 * 60 * 60 * 1000;
@@ -54,38 +60,60 @@ function extractLtp(responseData, exchangeSegment, securityId) {
 }
 
 async function getNiftySpotLtp() {
-  const exchangeSegment = process.env.NIFTY_SPOT_SEGMENT || "IDX_I";
-  const securityId = String(process.env.NIFTY_SPOT_SECURITY_ID || "13");
+  const env = getRuntimeEnv();
+  const exchangeSegment = env.NIFTY_SPOT_SEGMENT || "IDX_I";
+  const securityId = String(env.NIFTY_SPOT_SECURITY_ID || "13");
+  const result = await getInstrumentLtp(exchangeSegment, securityId);
+
+  return {
+    symbol: "NIFTY",
+    ...result,
+  };
+}
+
+async function getInstrumentLtp(exchangeSegment, securityId, instrument) {
+  const config = requireDhanMarketDataConfig();
+  const normalizedSecurityId = String(securityId);
+
   const payload = {
-    [exchangeSegment]: [Number(securityId)],
+    [exchangeSegment]: [Number(normalizedSecurityId)],
   };
 
   const response = await axios.post(
-    "https://api.dhan.co/v2/marketfeed/ltp",
+    getDhanUrl("/v2/marketfeed/ltp", config),
     payload,
     {
       headers: {
-        "access-token": process.env.DHAN_ACCESS_TOKEN,
-        "client-id": process.env.DHAN_CLIENT_ID,
-        "Content-Type": "application/json",
+        ...getDhanHeaders(config),
       },
     },
   );
 
-  const ltp = Number(extractLtp(response.data, exchangeSegment, securityId));
+  const ltp = Number(
+    extractLtp(response.data, exchangeSegment, normalizedSecurityId),
+  );
 
   if (!Number.isFinite(ltp) || ltp <= 0) {
-    throw new Error(`NIFTY spot LTP missing in Dhan response`);
+    throw new Error(
+      `LTP missing in Dhan response for ${exchangeSegment}:${normalizedSecurityId}`,
+    );
   }
 
   return {
-    symbol: "NIFTY",
     ltp,
     exchangeSegment,
-    securityId,
+    securityId: normalizedSecurityId,
     checkedAt: new Date().toISOString(),
     response: response.data,
   };
+}
+
+async function getOptionLtp(contract) {
+  return getInstrumentLtp(
+    "NSE_FNO",
+    String(contract.SEM_SMST_SECURITY_ID),
+    contract.SEM_INSTRUMENT_NAME || "OPTIDX",
+  );
 }
 
 async function getPreviousCompletedIntradayCandle(
@@ -93,6 +121,8 @@ async function getPreviousCompletedIntradayCandle(
   intervalMinutes,
   referenceTime,
 ) {
+  const env = getRuntimeEnv();
+  const config = requireDhanMarketDataConfig();
   const interval = String(intervalMinutes || 15);
   const referenceDate = normalizeReferenceTime(referenceTime);
   const currentIntervalStart = getIntervalStart(
@@ -112,12 +142,11 @@ async function getPreviousCompletedIntradayCandle(
   };
 
   const response = await axios.post(
-    "https://api.dhan.co/v2/charts/intraday",
+    getDhanUrl("/v2/charts/intraday", config),
     payload,
     {
       headers: {
-        "access-token": process.env.DHAN_ACCESS_TOKEN,
-        "Content-Type": "application/json",
+        ...getDhanHeaders(config),
       },
     },
   );
@@ -139,6 +168,7 @@ async function getPreviousCompletedIntradayCandle(
 }
 
 module.exports = {
+  getOptionLtp,
   getNiftySpotLtp,
   getPreviousCompletedIntradayCandle,
 };

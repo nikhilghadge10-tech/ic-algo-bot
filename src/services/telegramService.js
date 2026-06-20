@@ -5,11 +5,34 @@
  */
 const axios = require("axios");
 const logger = require("./logger");
+const { getRuntimeEnv } = require("./dhanRuntimeConfig");
+
+function isTelegramEnabled() {
+  const env = getRuntimeEnv();
+  return String(env.TELEGRAM_ENABLED).toLowerCase() === "true";
+}
 
 // Post a plain text message to the configured Telegram chat.
-async function sendTelegram(message) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
+async function sendTelegramAndWait(message) {
+  if (!isTelegramEnabled()) {
+    return {
+      success: true,
+      disabled: true,
+      skipped: true,
+    };
+  }
+
+  const env = getRuntimeEnv();
+  const token = env.TELEGRAM_BOT_TOKEN;
+  const chatId = env.TELEGRAM_CHAT_ID;
+
+  if (!token || !chatId) {
+    logger.error("Telegram Error: enabled but credentials are missing");
+    return {
+      success: false,
+      error: "Telegram credentials are missing",
+    };
+  }
 
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
 
@@ -40,6 +63,26 @@ async function sendTelegram(message) {
   }
 }
 
+// Queue notifications without delaying TradingView webhook responses.
+function sendTelegram(message) {
+  if (!isTelegramEnabled()) {
+    return Promise.resolve({
+      success: true,
+      disabled: true,
+      skipped: true,
+    });
+  }
+
+  void sendTelegramAndWait(message);
+
+  return Promise.resolve({
+    success: true,
+    queued: true,
+  });
+}
+
 module.exports = {
+  isTelegramEnabled,
   sendTelegram,
+  sendTelegramAndWait,
 };

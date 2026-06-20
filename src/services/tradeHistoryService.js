@@ -105,6 +105,10 @@ function createTrade(entry) {
     stopLossOrderId: entry.stopLossOrderId || null,
     premiumStopLoss: entry.premiumStopLoss || null,
     premiumStopLossCandle: entry.premiumStopLossCandle || null,
+    premiumSlInterval: entry.premiumSlInterval || null,
+    entryPremiumReference: entry.entryPremiumReference || null,
+    riskPoints: entry.riskPoints || null,
+    riskSource: entry.riskSource || null,
     exitSignal: null,
     exitTime: null,
     exitOrderId: null,
@@ -166,26 +170,63 @@ function markTradeStopLossHit(stopLossOrderId) {
   return trade;
 }
 
-function getDashboardTrades(limit = 3, tradeMode) {
+function markTradeFailed(entryOrderId, failureReason) {
+  const history = getTradeHistoryForToday();
+  const trade = history.trades.find(
+    (item) => item.entryOrderId && item.entryOrderId === entryOrderId,
+  );
+
+  if (!trade) {
+    return null;
+  }
+
+  trade.status = "FAILED";
+  trade.failureReason = failureReason || "Entry order failed";
+  trade.exitTime = nowIso();
+  saveTradeHistory(history);
+  return trade;
+}
+
+function getDashboardTrades(limit = 3, tradeMode, fallbackPremiumSlInterval) {
   const history = getTradeHistoryForToday();
   const normalizedMode = tradeMode ? normalizeTradeMode(tradeMode) : null;
   const trades = normalizedMode
     ? history.trades.filter((trade) => trade.tradeMode === normalizedMode)
     : history.trades;
 
-  return trades.slice(-limit).map((trade) => ({
-    id: trade.id,
-    sequence: trade.sequence,
-    tradeMode: trade.tradeMode,
-    label: getOrdinalLabel(trade.sequence),
-    status: trade.status,
-    displayStatus: getDisplayStatus(trade.status),
-    entrySignal: trade.entrySignal,
-    entryTime: trade.entryTime,
-    exitTime: trade.exitTime,
-    optionSymbol: trade.optionSymbol,
-    quantity: trade.quantity,
-  }));
+  return trades.slice(-limit).map((trade) => {
+    const riskPoints = Number(trade.riskPoints);
+    const quantity = Number(trade.quantity);
+    const riskAmount =
+      Number.isFinite(riskPoints) &&
+      riskPoints > 0 &&
+      Number.isFinite(quantity) &&
+      quantity > 0
+        ? Number((riskPoints * quantity).toFixed(2))
+        : null;
+
+    return {
+      id: trade.id,
+      sequence: trade.sequence,
+      tradeMode: trade.tradeMode,
+      label: getOrdinalLabel(trade.sequence),
+      status: trade.status,
+      displayStatus: getDisplayStatus(trade.status),
+      entrySignal: trade.entrySignal,
+      entryTime: trade.entryTime,
+      exitTime: trade.exitTime,
+      optionSymbol: trade.optionSymbol,
+      quantity: trade.quantity,
+      riskPoints: trade.riskPoints,
+      riskAmount,
+      premiumSlActive:
+        ["RUNNING", "RUNNING_UNPROTECTED"].includes(trade.status) &&
+        Boolean(trade.stopLossOrderId),
+      premiumSlInterval:
+        trade.premiumSlInterval ||
+        (trade.premiumStopLoss ? fallbackPremiumSlInterval || null : null),
+    };
+  });
 }
 
 module.exports = {
@@ -193,5 +234,6 @@ module.exports = {
   getDashboardTrades,
   getDisplayStatus,
   markLatestOpenTradeExited,
+  markTradeFailed,
   markTradeStopLossHit,
 };

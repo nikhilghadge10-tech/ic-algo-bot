@@ -27,6 +27,12 @@ var int tradeState  = 0 // 0 = Idle, 1 = Waiting for Breakout, 2 = In Long, 3 = 
 var float targetPrice = na
 var float stopPrice = na
 
+// Persist alert locks across real-time updates so one candle cannot emit the same event repeatedly.
+varip int lastLongEntryAlertBar = na
+varip int lastShortEntryAlertBar = na
+varip int lastLongExitAlertBar = na
+varip int lastShortExitAlertBar = na
+
 // === Time Session Management ===
 // Use the selected timezone, or the symbol exchange timezone when "Exchange" is selected.
 tz = timeZoneInput == "Exchange" ? syminfo.timezone : timeZoneInput
@@ -76,7 +82,6 @@ if tradeState == 1
 
     // Long entry: price breaks above the child candle high.
     else if high > childHigh
-        long_entry  := true
         tradeState  := 2
 
         // Calculate child candle size and reduce SL risk by half when the child candle is above threshold.
@@ -89,9 +94,12 @@ if tradeState == 1
         // Long target uses the actual adjusted SL risk so the risk-reward ratio stays correct.
         targetPrice := childHigh + slRange * RiRe
 
+        if lastLongEntryAlertBar != bar_index
+            long_entry := true
+            lastLongEntryAlertBar := bar_index
+
     // Short entry: price breaks below the child candle low.
     else if low < childLow
-        short_entry := true
         tradeState  := 3
 
         // Calculate child candle size and reduce SL risk by half when the child candle is above threshold.
@@ -104,12 +112,19 @@ if tradeState == 1
         // Short target uses the actual adjusted SL risk so the risk-reward ratio stays correct.
         targetPrice := childLow - slRange * RiRe
 
+        if lastShortEntryAlertBar != bar_index
+            short_entry := true
+            lastShortEntryAlertBar := bar_index
+
 // === 3. Long Trade Exit Engine ===
 // Once in a long trade, exit immediately when wick touches SL or target.
 else if tradeState == 2
     if low < stopPrice or high >= targetPrice
-        long_exit   := true
         tradeState  := 0
+
+        if lastLongExitAlertBar != bar_index
+            long_exit := true
+            lastLongExitAlertBar := bar_index
 
         // Clear setup and trade levels after the long trade completes.
         childHigh   := na
@@ -121,8 +136,11 @@ else if tradeState == 2
 // Once in a short trade, exit immediately when wick touches SL or target.
 else if tradeState == 3
     if high > stopPrice or low <= targetPrice
-        short_exit  := true
         tradeState  := 0
+
+        if lastShortExitAlertBar != bar_index
+            short_exit := true
+            lastShortExitAlertBar := bar_index
 
         // Clear setup and trade levels after the short trade completes.
         childHigh   := na

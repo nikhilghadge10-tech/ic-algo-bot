@@ -651,7 +651,9 @@
           }
 
           const getValue = (key) => {
-            const match = line.match(new RegExp(`${key}=(\\S+)`, "i"));
+            const match = line.match(
+              new RegExp(`(?:^|\\s)${key}=(\\S+)`, "i"),
+            );
             return match ? match[1] : "";
           };
 
@@ -1260,20 +1262,26 @@
         }
 
         function getConciseSignalBlocks(lines) {
-          const signalTimestamps = Array.from(
-            new Set(
-              lines
-                .filter((line) => /Webhook received:/i.test(line))
-                .map(getLogTimestamp)
-                .filter(Boolean),
-            ),
-          ).sort(
-            (a, b) => getTimestampSortValue(b) - getTimestampSortValue(a),
-          );
+          const webhookIndexes = lines.reduce((indexes, line, index) => {
+            if (/Webhook received:/i.test(line)) {
+              indexes.push(index);
+            }
+            return indexes;
+          }, []);
 
-          if (!signalTimestamps.length) {
+          if (!webhookIndexes.length) {
             return getConciseSignalBlock(lines);
           }
+
+          // A normal log section contains one signal. Keep its complete section
+          // together because processing can cross into the next second.
+          if (webhookIndexes.length === 1) {
+            return getConciseSignalBlock(lines);
+          }
+
+          const signalTimestamps = webhookIndexes
+            .map((index) => getLogTimestamp(lines[index]))
+            .filter(Boolean);
 
           return signalTimestamps.flatMap((timestamp) =>
             getConciseSignalBlock(
@@ -2669,6 +2677,7 @@
                             items: [
                               new sap.m.SegmentedButtonItem({
                                 text: "Bullish",
+                                icon: "sap-icon://trend-up",
                                 key: "BULLISH",
                                 width: "100px",
                               }),
@@ -2679,6 +2688,7 @@
                               }),
                               new sap.m.SegmentedButtonItem({
                                 text: "Bearish",
+                                icon: "sap-icon://trend-down",
                                 key: "BEARISH",
                                 width: "100px",
                               }),
@@ -2821,6 +2831,55 @@
 
         // Manual signal sender. In live mode, these buttons can place real orders.
         function testCenterCard() {
+          const spotInput = new sap.m.Input({
+            value: "{/TEST_PRICE}",
+            type: "Text",
+            width: "100%",
+            placeholder: "23,500",
+          }).addStyleClass("manualSpotInput");
+
+          const spotRefreshButton = new sap.m.Button({
+            icon: "sap-icon://refresh",
+            tooltip: "Refresh NIFTY spot from Dhan",
+            type: "Transparent",
+            press: refreshNiftySpotPrice,
+            enabled: {
+              path: "/NIFTY_SPOT_LOADING",
+              formatter: (v) => !v,
+            },
+          });
+
+          const intervalSelector = new sap.m.SegmentedButton({
+            selectedKey: "{/TEST_INTERVAL}",
+            width: "100%",
+            items: [
+              new sap.m.SegmentedButtonItem({
+                key: "1",
+                text: "1m",
+              }),
+              new sap.m.SegmentedButtonItem({
+                key: "3",
+                text: "3m",
+              }),
+              new sap.m.SegmentedButtonItem({
+                key: "5",
+                text: "5m",
+              }),
+              new sap.m.SegmentedButtonItem({
+                key: "15",
+                text: "15m",
+              }),
+            ],
+          }).addStyleClass("manualIntervalSelector");
+
+          const createManualSignalButton = (text, icon, type, signal) =>
+            new sap.m.Button({
+              text,
+              icon,
+              type,
+              press: () => sendTestSignal(signal),
+            }).addStyleClass("manualSignalButton");
+
           return new sap.m.VBox({
             items: [
               new sap.m.Title({
@@ -2832,130 +2891,133 @@
                 text: "These buttons send webhook signals into the bot. Paper Trade ON simulates orders; Paper Trade OFF sends orders to the selected Dhan environment.",
                 type: "Warning",
                 showIcon: true,
-              }).addStyleClass("sapUiSmallMarginBottom"),
+              }).addStyleClass("manualSignalWarning"),
 
-              new sap.m.HBox({
-                alignItems: "Center",
+              new sap.m.VBox({
                 items: [
-                  createLabelWithInfo(
-                    "NIFTY Spot",
-                    "Fetched from Dhan LTP when this tab is opened. The bot uses this spot price to round and select the nearest ATM option contract for manual entry signals.",
-                    "webhookLabel",
-                  ),
-
-                  new sap.m.Input({
-                    value: "{/TEST_PRICE}",
-                    type: "Text",
-                    width: "160px",
-                    placeholder: "23,500",
-                  }),
-
-                  new sap.m.Button({
-                    icon: "sap-icon://refresh",
-                    tooltip: "Refresh NIFTY spot from Dhan",
-                    type: "Transparent",
-                    press: refreshNiftySpotPrice,
-                    enabled: {
-                      path: "/NIFTY_SPOT_LOADING",
-                      formatter: (v) => !v,
-                    },
-                  }),
-                ],
-              }).addStyleClass("webhookBox"),
-
-              new sap.m.Text({
-                text: {
-                  parts: [
-                    { path: "/NIFTY_SPOT_ERROR" },
-                    { path: "/NIFTY_SPOT_LTP" },
-                    { path: "/NIFTY_SPOT_CHECKED_AT" },
-                  ],
-                  formatter: function (error, ltp, checkedAt) {
-                    if (error) return error;
-                    if (!ltp) return "NIFTY spot will load when this tab opens.";
-
-                    const checkedText = checkedAt
-                      ? new Date(checkedAt).toLocaleString("en-IN", {
-                          timeZone: "Asia/Kolkata",
-                          hour12: true,
-                        })
-                      : "-";
-
-                    return `Fetched from Dhan: ${formatIndianWholeNumber(
-                      ltp,
-                    )} at ${checkedText}`;
-                  },
-                },
-              }).addStyleClass("manualSpotStatus"),
-
-              new sap.m.HBox({
-                alignItems: "Center",
-                items: [
-                  createLabelWithInfo(
-                    "Signal Timeframe",
-                    "Used to select the previous completed option-premium candle for stop-loss planning.",
-                    "webhookLabel",
-                  ),
-
-                  new sap.m.SegmentedButton({
-                    selectedKey: "{/TEST_INTERVAL}",
-                    width: "360px",
+                  new sap.m.HBox({
                     items: [
-                      new sap.m.SegmentedButtonItem({
-                        key: "1",
-                        text: "1 Min",
-                        width: "90px",
-                      }),
-                      new sap.m.SegmentedButtonItem({
-                        key: "3",
-                        text: "3 Min",
-                        width: "90px",
-                      }),
-                      new sap.m.SegmentedButtonItem({
-                        key: "5",
-                        text: "5 Min",
-                        width: "90px",
-                      }),
-                      new sap.m.SegmentedButtonItem({
-                        key: "15",
-                        text: "15 Min",
-                        width: "90px",
-                      }),
+                      new sap.m.VBox({
+                        items: [
+                          createLabelWithInfo(
+                            "NIFTY Spot",
+                            "Fetched from Dhan LTP when this tab is opened. The bot uses this spot price to round and select the nearest ATM option contract for manual entry signals.",
+                          ),
+
+                          new sap.m.HBox({
+                            alignItems: "Center",
+                            items: [spotInput, spotRefreshButton],
+                          }).addStyleClass("manualSpotControl"),
+
+                          new sap.m.Text({
+                            text: {
+                              parts: [
+                                { path: "/NIFTY_SPOT_ERROR" },
+                                { path: "/NIFTY_SPOT_LTP" },
+                                { path: "/NIFTY_SPOT_CHECKED_AT" },
+                              ],
+                              formatter: function (error, ltp, checkedAt) {
+                                if (error) return error;
+                                if (!ltp) return "Loads when this tab opens";
+
+                                const checkedText = checkedAt
+                                  ? new Date(checkedAt).toLocaleString("en-IN", {
+                                      timeZone: "Asia/Kolkata",
+                                      hour12: true,
+                                    })
+                                  : "-";
+
+                                return `Dhan LTP ${formatIndianWholeNumber(
+                                  ltp,
+                                )} at ${checkedText}`;
+                              },
+                            },
+                          }).addStyleClass("manualSpotStatus"),
+                        ],
+                      }).addStyleClass("manualControlGroup manualSpotGroup"),
+
+                      new sap.m.VBox({
+                        items: [
+                          createLabelWithInfo(
+                            "Signal Timeframe",
+                            "Used to select the previous completed option-premium candle for stop-loss planning.",
+                          ),
+                          intervalSelector,
+                        ],
+                      }).addStyleClass("manualControlGroup manualIntervalGroup"),
                     ],
-                  }),
+                  }).addStyleClass("manualConfigGrid"),
+
+                  new sap.m.HBox({
+                    items: [
+                      new sap.m.VBox({
+                        items: [
+                          new sap.m.Text({
+                            text: "LONG",
+                          }).addStyleClass("manualActionTitle manualLongTitle"),
+
+                          new sap.m.HBox({
+                            items: [
+                              createManualSignalButton(
+                                "Entry",
+                                "sap-icon://trend-up",
+                                "Accept",
+                                "LONG_ENTRY",
+                              ),
+                              createManualSignalButton(
+                                "Exit",
+                                "sap-icon://sys-cancel-2",
+                                "Default",
+                                "LONG_EXIT",
+                              ),
+                            ],
+                          }).addStyleClass("manualActionButtons"),
+                        ],
+                      }).addStyleClass("manualActionGroup manualLongGroup"),
+
+                      new sap.m.VBox({
+                        items: [
+                          new sap.m.Text({
+                            text: "SHORT",
+                          }).addStyleClass("manualActionTitle manualShortTitle"),
+
+                          new sap.m.HBox({
+                            items: [
+                              createManualSignalButton(
+                                "Entry",
+                                "sap-icon://trend-down",
+                                "Reject",
+                                "SHORT_ENTRY",
+                              ),
+                              createManualSignalButton(
+                                "Exit",
+                                "sap-icon://sys-cancel-2",
+                                "Default",
+                                "SHORT_EXIT",
+                              ),
+                            ],
+                          }).addStyleClass("manualActionButtons"),
+                        ],
+                      }).addStyleClass("manualActionGroup manualShortGroup"),
+
+                      new sap.m.VBox({
+                        items: [
+                          new sap.m.Text({
+                            text: "DIAGNOSTIC",
+                          }).addStyleClass("manualActionTitle"),
+
+                          createManualSignalButton(
+                            "Unknown",
+                            "sap-icon://question-mark",
+                            "Default",
+                            "RANDOM_SIGNAL",
+                          ),
+                        ],
+                      }).addStyleClass("manualActionGroup manualDiagnosticGroup"),
+                    ],
+                  }).addStyleClass("manualActionGrid"),
                 ],
-              }).addStyleClass("webhookBox"),
-
-              new sap.m.HBox({
-                items: [
-                  new sap.m.Button({
-                    text: "LONG ENTRY",
-                    type: "Accept",
-                    press: () => sendTestSignal("LONG_ENTRY"),
-                  }),
-
-                  new sap.m.Button({
-                    text: "LONG EXIT",
-                    press: () => sendTestSignal("LONG_EXIT"),
-                  }),
-
-                  new sap.m.Button({
-                    text: "SHORT ENTRY",
-                    type: "Reject",
-                    press: () => sendTestSignal("SHORT_ENTRY"),
-                  }),
-
-                  new sap.m.Button({
-                    text: "SHORT EXIT",
-                    press: () => sendTestSignal("SHORT_EXIT"),
-                  }),
-
-                  new sap.m.Button({
-                    text: "UNKNOWN",
-                    press: () => sendTestSignal("RANDOM_SIGNAL"),
-                  }),
-                ],
-              }).addStyleClass("buttonRow"),
+              }).addStyleClass("manualSignalComposer"),
             ],
           }).addStyleClass("card");
         }

@@ -63,6 +63,10 @@ async function placeMarketBuyOrder(contract, quantity) {
     validity: "DAY",
     securityId: contract.SEM_SMST_SECURITY_ID,
     quantity,
+    disclosedQuantity: 0,
+    price: 0,
+    triggerPrice: 0,
+    afterMarketOrder: false,
   };
 
   // Paper trading stops here and returns the payload for logging/debugging.
@@ -124,6 +128,10 @@ async function placeMarketSellOrder(securityId, quantity) {
     validity: "DAY",
     securityId,
     quantity,
+    disclosedQuantity: 0,
+    price: 0,
+    triggerPrice: 0,
+    afterMarketOrder: false,
   };
 
   // Paper exits mirror live exits but avoid the broker API call.
@@ -182,8 +190,10 @@ async function placeStopLossLimitSellOrder(
     validity: "DAY",
     securityId,
     quantity,
+    disclosedQuantity: 0,
     price: limitPrice,
     triggerPrice,
+    afterMarketOrder: false,
   };
 
   if (isPaperTrade(env)) {

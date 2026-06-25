@@ -107,6 +107,7 @@ function createTrade(entry) {
     premiumStopLossCandle: entry.premiumStopLossCandle || null,
     premiumSlInterval: entry.premiumSlInterval || null,
     entryPremiumReference: entry.entryPremiumReference || null,
+    entryPrice: entry.entryPrice || entry.entryPremiumReference || null,
     riskPoints: entry.riskPoints || null,
     riskSource: entry.riskSource || null,
     exitSignal: null,
@@ -217,6 +218,9 @@ function getDashboardTrades(limit = 3, tradeMode, fallbackPremiumSlInterval) {
       exitTime: trade.exitTime,
       optionSymbol: trade.optionSymbol,
       quantity: trade.quantity,
+      entryPrice: trade.entryPrice || trade.entryPremiumReference || null,
+      exitPrice: trade.exitPrice || null,
+      realizedProfit: trade.realizedProfit || null,
       riskPoints: trade.riskPoints,
       riskAmount,
       premiumSlActive:

@@ -23,22 +23,251 @@
 
     <script>
       sap.ui.getCore().attachInit(async function () {
+        const LOG_FILTER_STORAGE_KEY = "icAlgoBot.activityLogFilters";
+        const ACTIVE_TAB_STORAGE_KEY = "icAlgoBot.activeTab";
+        const DEFAULT_ACTIVE_TAB = "tradingDesk";
+        const DASHBOARD_TAB_KEYS = [
+          "tradingDesk",
+          "planning",
+          "manualSignals",
+          "monitoring",
+        ];
+        const LOG_FILTER_PATHS = [
+          "SHOW_TRADINGVIEW_SIGNAL_LOGS",
+          "SHOW_MANUAL_SIGNAL_LOGS",
+          "SHOW_PAPER_TRADE_LOGS",
+          "SHOW_IGNORED_SIGNAL_LOGS",
+          "SHOW_READINESS_LOGS",
+          "SHOW_DETAILED_SIGNAL_LOGS",
+        ];
+
+        function getLocalDateKey(date = new Date()) {
+          const year = date.getFullYear();
+          const month = String(date.getMonth() + 1).padStart(2, "0");
+          const day = String(date.getDate()).padStart(2, "0");
+
+          return `${year}-${month}-${day}`;
+        }
+
+        function formatMarketDate(date = new Date()) {
+          return date.toLocaleDateString("en-IN", {
+            weekday: "long",
+            day: "2-digit",
+            month: "long",
+          });
+        }
+
+        function formatExpiryDate(dateKey) {
+          if (!dateKey) return "Expiry unavailable";
+
+          return formatMarketDate(new Date(`${dateKey}T12:00:00+05:30`));
+        }
+
+        function getDaysUntil(dateKey) {
+          if (!dateKey) return null;
+
+          const today = new Date(`${getLocalDateKey()}T00:00:00+05:30`);
+          const target = new Date(`${dateKey}T00:00:00+05:30`);
+          const days = Math.round((target - today) / 86400000);
+
+          return Number.isFinite(days) ? days : null;
+        }
+
+        function formatExpiryDistance(dateKey) {
+          const days = getDaysUntil(dateKey);
+
+          if (days === null) return "";
+          if (days === 0) return "Expiry today";
+          if (days === 1) return "Tomorrow";
+
+          return `${days} days away`;
+        }
+
+        function getMarketEventState({ holiday, rbiIntel } = {}) {
+          const policyDateKeys = rbiIntel?.policyDateKeys || [];
+          const todayKey = getLocalDateKey();
+          const tomorrow = new Date(`${todayKey}T12:00:00+05:30`);
+
+          tomorrow.setDate(tomorrow.getDate() + 1);
+
+          const tomorrowKey = getLocalDateKey(tomorrow);
+
+          if (policyDateKeys.includes(todayKey)) {
+            return {
+              visible: true,
+              label: "RBI Policy Today",
+              meta: "Do Not Trade",
+              severity: "danger",
+              emergencyVisible: true,
+            };
+          }
+
+          if (policyDateKeys.includes(tomorrowKey)) {
+            return {
+              visible: true,
+              label: "RBI Policy Tomorrow",
+              meta: "Avoid Trading",
+              severity: "danger",
+              emergencyVisible: true,
+            };
+          }
+
+          if (holiday?.date) {
+            const daysUntilHoliday = getDaysUntil(holiday.date);
+
+            if (daysUntilHoliday === 0) {
+              return {
+                visible: true,
+                label: "Market Holiday Today",
+                meta: holiday.description || "Trading closed",
+                severity: "danger",
+                emergencyVisible: false,
+              };
+            }
+
+            if (daysUntilHoliday === 1) {
+              return {
+                visible: true,
+                label: "Market Holiday Tomorrow",
+                meta: holiday.description || "Plan around closure",
+                severity: "warning",
+                emergencyVisible: false,
+              };
+            }
+          }
+
+          return {
+            visible: false,
+            label: "",
+            meta: "",
+            severity: "none",
+            emergencyVisible: false,
+          };
+        }
+
+        function setMarketEventState(eventState) {
+          model.setProperty("/MARKET_EVENT_VISIBLE", eventState.visible);
+          model.setProperty("/MARKET_EVENT_LABEL", eventState.label);
+          model.setProperty("/MARKET_EVENT_META", eventState.meta);
+          model.setProperty("/MARKET_EVENT_SEVERITY", eventState.severity);
+          model.setProperty(
+            "/MARKET_EVENT_EMERGENCY_VISIBLE",
+            eventState.emergencyVisible,
+          );
+        }
+
+        function formatIndiaVix(vix) {
+          const value = Number(vix?.value);
+
+          if (!Number.isFinite(value)) {
+            return {
+              label: "India VIX unavailable",
+              meta: "NSE check failed",
+            };
+          }
+
+          const change = Number(vix.changePercent);
+          const changeText = Number.isFinite(change)
+            ? `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`
+            : "";
+
+          return {
+            label: `India VIX ${value.toFixed(2)}`,
+            meta: changeText || vix.source || "",
+          };
+        }
+
+        function getDefaultLogFilterPrefs() {
+          return {
+            SHOW_TRADINGVIEW_SIGNAL_LOGS: true,
+            SHOW_MANUAL_SIGNAL_LOGS: false,
+            SHOW_PAPER_TRADE_LOGS: false,
+            SHOW_IGNORED_SIGNAL_LOGS: false,
+            SHOW_READINESS_LOGS: false,
+            SHOW_DETAILED_SIGNAL_LOGS: false,
+          };
+        }
+
+        function getDailyLogFilterPrefs() {
+          const defaultPrefs = getDefaultLogFilterPrefs();
+
+          try {
+            const savedPrefs = JSON.parse(
+              localStorage.getItem(LOG_FILTER_STORAGE_KEY) || "null",
+            );
+
+            if (savedPrefs?.date === getLocalDateKey() && savedPrefs.filters) {
+              return LOG_FILTER_PATHS.reduce((prefs, path) => {
+                prefs[path] =
+                  typeof savedPrefs.filters[path] === "boolean"
+                    ? savedPrefs.filters[path]
+                    : defaultPrefs[path];
+                return prefs;
+              }, {});
+            }
+          } catch (error) {
+            // Ignore malformed local preferences and fall back to today's default.
+          }
+
+          return defaultPrefs;
+        }
+
+        function applyLogFilterPrefs(target, prefs) {
+          LOG_FILTER_PATHS.forEach((path) => {
+            target[path] = prefs[path] === true;
+          });
+        }
+
+        function getSavedActiveTab() {
+          try {
+            const savedTab = localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
+
+            return DASHBOARD_TAB_KEYS.includes(savedTab)
+              ? savedTab
+              : DEFAULT_ACTIVE_TAB;
+          } catch (error) {
+            return DEFAULT_ACTIVE_TAB;
+          }
+        }
+
+        function saveActiveTab(tabKey) {
+          if (!DASHBOARD_TAB_KEYS.includes(tabKey)) return;
+
+          try {
+            localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tabKey);
+          } catch (error) {
+            // Ignore storage failures; tab persistence is only a convenience.
+          }
+        }
+
         // Load dashboard config first; it becomes the single UI model.
         const config = await fetch("/api/config").then((r) => r.json());
+        applyLogFilterPrefs(config, getDailyLogFilterPrefs());
         config.algoLiveStatus = {};
         config.ngrokUrl = config.ngrokUrl || "";
         config.dhanHealth = null;
         config.RAW_LOGS = "";
         config.LIVE_LOGS = "";
-        config.SHOW_READINESS_LOGS = false;
-        config.SHOW_MANUAL_SIGNAL_LOGS = true;
-        config.SHOW_TRADINGVIEW_SIGNAL_LOGS = true;
-        config.SHOW_PAPER_TRADE_LOGS = true;
-        config.SHOW_IGNORED_SIGNAL_LOGS = true;
-        config.SHOW_DETAILED_SIGNAL_LOGS = false;
+        config.MARKET_TODAY_LABEL = formatMarketDate();
+        config.NIFTY_NEXT_EXPIRY_LABEL = "Loading expiry...";
+        config.NIFTY_NEXT_EXPIRY_META = "";
+        config.NSE_NEXT_HOLIDAY_LABEL = "Loading holiday...";
+        config.NSE_NEXT_HOLIDAY_META = "";
+        config.RBI_MARKET_LABEL = "Loading RBI...";
+        config.RBI_MARKET_META = "";
+        config.MARKET_EVENT_VISIBLE = false;
+        config.MARKET_EVENT_LABEL = "";
+        config.MARKET_EVENT_META = "";
+        config.MARKET_EVENT_SEVERITY = "none";
+        config.MARKET_EVENT_EMERGENCY_VISIBLE = false;
+        config.INDIA_VIX_LABEL = "India VIX loading...";
+        config.INDIA_VIX_META = "";
         config.TEST_INTERVAL = config.PREMIUM_SL_INTERVAL || "15";
         config.NIFTY_SPOT_LOADING = false;
         config.NIFTY_SPOT_ERROR = "";
+        config.TRAIL_MODE = "MANUAL";
+        config.TRAIL_TRIGGER_PRICE = "";
+        config.TRAIL_LIMIT_PRICE = "";
         config.TOKEN_COUNTDOWN_TICK = Date.now();
         config.NETWORK_PUBLIC_IP = "";
         config.NETWORK_LOCAL_IPS = [];
@@ -63,17 +292,22 @@
           fresh.dhanHealth = currentData.dhanHealth || null;
           fresh.RAW_LOGS = currentData.RAW_LOGS || "";
           fresh.LIVE_LOGS = currentData.LIVE_LOGS || "";
-          fresh.SHOW_READINESS_LOGS = currentData.SHOW_READINESS_LOGS === true;
-          fresh.SHOW_MANUAL_SIGNAL_LOGS =
-            currentData.SHOW_MANUAL_SIGNAL_LOGS !== false;
-          fresh.SHOW_TRADINGVIEW_SIGNAL_LOGS =
-            currentData.SHOW_TRADINGVIEW_SIGNAL_LOGS !== false;
-          fresh.SHOW_PAPER_TRADE_LOGS =
-            currentData.SHOW_PAPER_TRADE_LOGS !== false;
-          fresh.SHOW_IGNORED_SIGNAL_LOGS =
-            currentData.SHOW_IGNORED_SIGNAL_LOGS !== false;
-          fresh.SHOW_DETAILED_SIGNAL_LOGS =
-            currentData.SHOW_DETAILED_SIGNAL_LOGS === true;
+          applyLogFilterPrefs(fresh, currentData);
+          fresh.MARKET_TODAY_LABEL = currentData.MARKET_TODAY_LABEL;
+          fresh.NIFTY_NEXT_EXPIRY_LABEL = currentData.NIFTY_NEXT_EXPIRY_LABEL;
+          fresh.NIFTY_NEXT_EXPIRY_META = currentData.NIFTY_NEXT_EXPIRY_META;
+          fresh.NSE_NEXT_HOLIDAY_LABEL = currentData.NSE_NEXT_HOLIDAY_LABEL;
+          fresh.NSE_NEXT_HOLIDAY_META = currentData.NSE_NEXT_HOLIDAY_META;
+          fresh.RBI_MARKET_LABEL = currentData.RBI_MARKET_LABEL;
+          fresh.RBI_MARKET_META = currentData.RBI_MARKET_META;
+          fresh.MARKET_EVENT_VISIBLE = currentData.MARKET_EVENT_VISIBLE;
+          fresh.MARKET_EVENT_LABEL = currentData.MARKET_EVENT_LABEL;
+          fresh.MARKET_EVENT_META = currentData.MARKET_EVENT_META;
+          fresh.MARKET_EVENT_SEVERITY = currentData.MARKET_EVENT_SEVERITY;
+          fresh.MARKET_EVENT_EMERGENCY_VISIBLE =
+            currentData.MARKET_EVENT_EMERGENCY_VISIBLE;
+          fresh.INDIA_VIX_LABEL = currentData.INDIA_VIX_LABEL;
+          fresh.INDIA_VIX_META = currentData.INDIA_VIX_META;
           fresh.TEST_PRICE = currentData.TEST_PRICE || "";
           fresh.TEST_INTERVAL =
             currentData.TEST_INTERVAL || fresh.PREMIUM_SL_INTERVAL || "15";
@@ -81,6 +315,9 @@
           fresh.NIFTY_SPOT_CHECKED_AT = currentData.NIFTY_SPOT_CHECKED_AT;
           fresh.NIFTY_SPOT_LOADING = currentData.NIFTY_SPOT_LOADING || false;
           fresh.NIFTY_SPOT_ERROR = currentData.NIFTY_SPOT_ERROR || "";
+          fresh.TRAIL_MODE = currentData.TRAIL_MODE || "MANUAL";
+          fresh.TRAIL_TRIGGER_PRICE = currentData.TRAIL_TRIGGER_PRICE || "";
+          fresh.TRAIL_LIMIT_PRICE = currentData.TRAIL_LIMIT_PRICE || "";
           fresh.CALC_RISK_AMOUNT = currentData.CALC_RISK_AMOUNT;
           fresh.CALC_LOSS_PER_LOT = currentData.CALC_LOSS_PER_LOT;
           fresh.CALC_ACTUAL_RISK = currentData.CALC_ACTUAL_RISK;
@@ -144,6 +381,127 @@
             model.setProperty("/NETWORK_LOCAL_IPS", []);
             model.setProperty("/NETWORK_IP_ERROR", "Public IP unavailable");
           }
+        }
+
+        async function refreshMarketCalendar() {
+          model.setProperty("/MARKET_TODAY_LABEL", formatMarketDate());
+          let nextHoliday = null;
+          let rbiIntel = null;
+
+          try {
+            const expiryResult = await fetch("/api/nifty-expiry").then((r) =>
+              r.json(),
+            );
+
+            if (expiryResult.success && expiryResult.expiry?.date) {
+              model.setProperty(
+                "/NIFTY_NEXT_EXPIRY_LABEL",
+                formatExpiryDate(expiryResult.expiry.date),
+              );
+              model.setProperty(
+                "/NIFTY_NEXT_EXPIRY_META",
+                formatExpiryDistance(expiryResult.expiry.date),
+              );
+            } else {
+              model.setProperty("/NIFTY_NEXT_EXPIRY_LABEL", "Expiry unavailable");
+              model.setProperty(
+                "/NIFTY_NEXT_EXPIRY_META",
+                expiryResult.message || "Instrument master check failed",
+              );
+            }
+          } catch (error) {
+            model.setProperty("/NIFTY_NEXT_EXPIRY_LABEL", "Expiry unavailable");
+            model.setProperty(
+              "/NIFTY_NEXT_EXPIRY_META",
+              "Instrument master check failed",
+            );
+          }
+
+          try {
+            const holidayResult = await fetch("/api/next-market-holiday").then(
+              (r) => r.json(),
+            );
+
+            if (holidayResult.success && holidayResult.holiday?.date) {
+              nextHoliday = holidayResult.holiday;
+              model.setProperty(
+                "/NSE_NEXT_HOLIDAY_LABEL",
+                holidayResult.holiday.description || "Trading holiday",
+              );
+              model.setProperty(
+                "/NSE_NEXT_HOLIDAY_META",
+                `${formatExpiryDate(holidayResult.holiday.date)} • ${formatExpiryDistance(
+                  holidayResult.holiday.date,
+                )}`,
+              );
+            } else {
+              model.setProperty("/NSE_NEXT_HOLIDAY_LABEL", "Holiday unavailable");
+              model.setProperty(
+                "/NSE_NEXT_HOLIDAY_META",
+                holidayResult.message || "NSE holiday check failed",
+              );
+            }
+          } catch (error) {
+            model.setProperty("/NSE_NEXT_HOLIDAY_LABEL", "Holiday unavailable");
+            model.setProperty(
+              "/NSE_NEXT_HOLIDAY_META",
+              "NSE holiday check failed",
+            );
+          }
+
+          try {
+            const rbiResult = await fetch("/api/rbi-market-intel").then((r) =>
+              r.json(),
+            );
+            const intel = rbiResult.intel || {};
+            const label = intel.latestPolicyEvent || "";
+
+            if (rbiResult.success && label) {
+              rbiIntel = intel;
+              model.setProperty("/RBI_MARKET_LABEL", label);
+              model.setProperty(
+                "/RBI_MARKET_META",
+                "RBI policy feed checked",
+              );
+            } else {
+              model.setProperty("/RBI_MARKET_LABEL", "RBI unavailable");
+              model.setProperty(
+                "/RBI_MARKET_META",
+                rbiResult.message || "RBI current-rates check failed",
+              );
+            }
+          } catch (error) {
+            model.setProperty("/RBI_MARKET_LABEL", "RBI unavailable");
+            model.setProperty(
+              "/RBI_MARKET_META",
+              "RBI current-rates check failed",
+            );
+          }
+
+          try {
+            const vixResult = await fetch("/api/india-vix").then((r) =>
+              r.json(),
+            );
+            const vixText = formatIndiaVix(vixResult.vix);
+
+            model.setProperty("/INDIA_VIX_LABEL", vixText.label);
+            model.setProperty(
+              "/INDIA_VIX_META",
+              vixResult.success
+                ? vixText.meta
+                : vixResult.message || vixText.meta,
+            );
+          } catch (error) {
+            model.setProperty("/INDIA_VIX_LABEL", "India VIX unavailable");
+            model.setProperty("/INDIA_VIX_META", "NSE check failed");
+          }
+
+          setMarketEventState(
+            getMarketEventState({
+              holiday: nextHoliday,
+              rbiIntel,
+            }),
+          );
         }
 
         // Ask the algo server whether the Dhan access token is currently valid.
@@ -873,7 +1231,18 @@
           }
 
           if (/premium stop-loss setup failed/i.test(line)) {
-            return "Premium stop-loss setup failed";
+            const reasonMatch = line.match(
+              /premium stop-loss setup failed:\s*reason=(.+?)(?:\s+contract=|\s+securityId=|\s+optionLtp=|\s+premiumSL=|\s+previousCandleLow=|\s+previousCandleHigh=|\s+previousCandleRange=|\s+interval=|$)/i,
+            );
+            const legacyReasonMatch = line.match(
+              /premium stop-loss setup failed:\s*"([^"]+)"/i,
+            );
+
+            return (
+              reasonMatch?.[1] ||
+              legacyReasonMatch?.[1] ||
+              "Premium stop-loss setup failed"
+            );
           }
 
           if (/premium stop-loss is active/i.test(line)) {
@@ -1430,8 +1799,31 @@
           );
         }
 
+        function saveDailyLogFilterPrefs() {
+          try {
+            const data = model.getData();
+            const filters = LOG_FILTER_PATHS.reduce((prefs, path) => {
+              prefs[path] = data[path] === true;
+              return prefs;
+            }, {});
+
+            localStorage.setItem(
+              LOG_FILTER_STORAGE_KEY,
+              JSON.stringify({
+                date: getLocalDateKey(),
+                filters,
+              }),
+            );
+          } catch (error) {
+            // Filtering should still work if localStorage is unavailable.
+          }
+        }
+
         function updateLogFilters() {
-          setTimeout(applyLogFilters, 0);
+          setTimeout(() => {
+            saveDailyLogFilterPrefs();
+            applyLogFilters();
+          }, 0);
         }
 
         async function copyDisplayedLogs() {
@@ -1452,6 +1844,11 @@
 
         async function handlePermissionSwitchChange(path, state) {
           model.setProperty("/" + path, state ? "true" : "false");
+
+          if (path === "PAPER_TRADE") {
+            model.setProperty("/AUTO_PREMIUM_SL", state ? "false" : "true");
+          }
+
           await saveConfig({ silent: true });
 
           if (path === "PAPER_TRADE") {
@@ -1547,6 +1944,40 @@
           await refreshLogs();
         }
 
+        async function trailStopLoss() {
+          const data = model.getData();
+          const triggerPrice = Number(
+            String(data.TRAIL_TRIGGER_PRICE || "").replace(/,/g, ""),
+          );
+          const limitPrice = Number(
+            String(data.TRAIL_LIMIT_PRICE || "").replace(/,/g, ""),
+          );
+
+          if (!triggerPrice || !limitPrice) {
+            sap.m.MessageToast.show("Enter trigger and limit prices");
+            return;
+          }
+
+          const result = await fetch("/api/trail-stop-loss", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              triggerPrice,
+              limitPrice,
+            }),
+          }).then((r) => r.json());
+
+          sap.m.MessageToast.show(result.message || "Stop-loss trail request sent");
+
+          if (result.success) {
+            model.setProperty("/TRAIL_TRIGGER_PRICE", "");
+            model.setProperty("/TRAIL_LIMIT_PRICE", "");
+          }
+
+          await refreshAlgoStatus();
+          await refreshLogs();
+        }
+
         // Safety button that disables trading and entry permissions together.
         async function emergencyStop() {
           const result = await fetch("/api/emergency-stop", {
@@ -1610,7 +2041,14 @@
         }
 
         // Permission switch tile used for BUY, SELL, and paper/live controls.
-        function createPermissionTile(label, onText, offText, path, infoText) {
+        function createPermissionTile(
+          label,
+          onText,
+          offText,
+          path,
+          infoText,
+          enabled,
+        ) {
           return new sap.m.VBox({
             items: [
               new sap.m.HBox({
@@ -1626,6 +2064,7 @@
               new sap.m.Switch({
                 customTextOn: onText,
                 customTextOff: offText,
+                enabled: enabled === undefined ? true : enabled,
                 state: {
                   path: "/" + path,
                   formatter: function (value) {
@@ -1944,7 +2383,14 @@
 	                          formatter: function (running, trade) {
 	                            if (!running) return "Algo server not running";
 	                            if (!trade) return "-";
-	                            return `${trade.label}: ${trade.displayStatus}`;
+                              const profit = Number(trade.realizedProfit);
+                              const profitText = Number.isFinite(profit)
+                                ? ` • P&L ₹${profit.toLocaleString("en-IN", {
+                                    minimumFractionDigits: 2,
+                                    maximumFractionDigits: 2,
+                                  })}`
+                                : "";
+	                            return `${trade.label}: ${trade.displayStatus}${profitText}`;
                           },
                         },
                       }).addStyleClass("lastTradeLine"),
@@ -2476,6 +2922,10 @@
                     "OFF",
                     "AUTO_PREMIUM_SL",
                     "Places a protective option SL-Limit order from the previous premium candle",
+                    {
+                      path: "/PAPER_TRADE",
+                      formatter: (paperTrade) => paperTrade !== "true",
+                    },
                   ),
                 ],
               }).addStyleClass("permissionRow"),
@@ -3000,22 +3450,122 @@
                         ],
                       }).addStyleClass("manualActionGroup manualShortGroup"),
 
-                      new sap.m.VBox({
-                        items: [
-                          new sap.m.Text({
-                            text: "DIAGNOSTIC",
-                          }).addStyleClass("manualActionTitle"),
-
-                          createManualSignalButton(
-                            "Unknown",
-                            "sap-icon://question-mark",
-                            "Default",
-                            "RANDOM_SIGNAL",
-                          ),
-                        ],
-                      }).addStyleClass("manualActionGroup manualDiagnosticGroup"),
                     ],
                   }).addStyleClass("manualActionGrid"),
+
+                  new sap.m.VBox({
+                    items: [
+                      new sap.m.HBox({
+                        alignItems: "Center",
+                        justifyContent: "SpaceBetween",
+                        items: [
+                          new sap.m.Text({
+                            text: "TRAIL STOP LOSS",
+                          }).addStyleClass("manualActionTitle"),
+                          new sap.m.ObjectStatus({
+                            text: {
+                              path: "/algoLiveStatus/activePosition",
+                              formatter: function (position) {
+                                if (!position?.stopLossOrderId) {
+                                  return "No active SL";
+                                }
+
+                                return `${position.optionSymbol || "-"} • SL ${position.premiumStopLoss || "-"}`;
+                              },
+                            },
+                            state: {
+                              path: "/algoLiveStatus/activePosition/stopLossOrderId",
+                              formatter: (orderId) =>
+                                orderId ? "Warning" : "None",
+                            },
+                          }),
+                        ],
+                      }).addStyleClass("trailSlHeader"),
+
+                      new sap.m.SegmentedButton({
+                        width: "100%",
+                        selectedKey: "{/TRAIL_MODE}",
+                        items: [
+                          new sap.m.SegmentedButtonItem({
+                            key: "MANUAL",
+                            text: "Manual",
+                          }),
+                          new sap.m.SegmentedButtonItem({
+                            key: "CONSERVATIVE",
+                            text: "Conservative",
+                          }),
+                          new sap.m.SegmentedButtonItem({
+                            key: "AGGRESSIVE",
+                            text: "Aggressive",
+                          }),
+                          new sap.m.SegmentedButtonItem({
+                            key: "CLASSIC",
+                            text: "Classic",
+                          }),
+                        ],
+                      }).addStyleClass("trailModeSelector"),
+
+                      new sap.m.Text({
+                        text: {
+                          path: "/TRAIL_MODE",
+                          formatter: function (mode) {
+                            if (mode === "CONSERVATIVE") {
+                              return "Planned: move SL to cost-to-cost when unrealised profit crosses 7%.";
+                            }
+
+                            if (mode === "AGGRESSIVE") {
+                              return "Planned: cost-to-cost after 7%, then candle-by-candle trailing.";
+                            }
+
+                            if (mode === "CLASSIC") {
+                              return "Planned: 1:3 moves SL to 1:1, 1:5 moves SL to 1:3, 1:7 moves SL to 1:5.";
+                            }
+
+                            return "Live now: enter Dhan SL trigger and limit prices manually.";
+                          },
+                        },
+                      }).addStyleClass("trailModeDescription"),
+
+                      new sap.m.HBox({
+                        visible: {
+                          path: "/TRAIL_MODE",
+                          formatter: (mode) => mode === "MANUAL",
+                        },
+                        items: [
+                          new sap.m.Input({
+                            value: "{/TRAIL_TRIGGER_PRICE}",
+                            type: "Number",
+                            placeholder: "Trigger price",
+                          }).addStyleClass("trailSlInput"),
+
+                          new sap.m.Text({
+                            text: ">",
+                          }).addStyleClass("trailPriceOperator"),
+
+                          new sap.m.Input({
+                            value: "{/TRAIL_LIMIT_PRICE}",
+                            type: "Number",
+                            placeholder: "Limit price",
+                          }).addStyleClass("trailSlInput"),
+
+                          new sap.m.Button({
+                            text: "Trail SL",
+                            icon: "sap-icon://trend-up",
+                            type: "Emphasized",
+                            press: trailStopLoss,
+                            enabled: {
+                              parts: [
+                                { path: "/algoLiveStatus/activePosition/stopLossOrderId" },
+                                { path: "/TRAIL_MODE" },
+                              ],
+                              formatter: (orderId, mode) =>
+                                Boolean(orderId) && mode === "MANUAL",
+                            },
+                          }).addStyleClass("trailSlButton"),
+                        ],
+                      }).addStyleClass("trailSlControls"),
+                    ],
+                  }).addStyleClass("manualActionGroup trailSlGroup"),
                 ],
               }).addStyleClass("manualSignalComposer"),
             ],
@@ -3025,8 +3575,11 @@
         // Assemble the dashboard page and group cards into tabs.
         cockpitTabs = new sap.m.IconTabBar({
           expanded: true,
+          selectedKey: getSavedActiveTab(),
           select: function (e) {
             const selectedKey = e.getParameter("key");
+
+            saveActiveTab(selectedKey);
 
             if (selectedKey === "planning") {
               calculateRisk();
@@ -3090,15 +3643,99 @@
                     new sap.m.VBox({
                       items: [
                         new sap.m.Title({
-                          text: "Nikhil Algo Trading Cockpit",
+                          text: "Algo Trading Cockpit",
                           level: "H2",
                         }).addStyleClass("heroTitle"),
 
                         new sap.m.Text({
-                          text: "Inside Candle Strategy Automation • Risk Management • Broker Monitoring",
+                          text: "Inside Candle Automation • NIFTY Risk Console",
                         }).addStyleClass("heroText"),
+
+                        new sap.m.HBox({
+                          items: [
+                            new sap.m.VBox({
+                              items: [
+                                new sap.m.Text({
+                                  text: "Today",
+                                }).addStyleClass("marketChipLabel"),
+                                new sap.m.Text({
+                                  text: "{/MARKET_TODAY_LABEL}",
+                                }).addStyleClass("marketChipValue"),
+                              ],
+                            }).addStyleClass("marketChip marketChipToday"),
+
+                            new sap.m.VBox({
+                              items: [
+                                new sap.m.Text({
+                                  text: "Next Expiry",
+                                }).addStyleClass("marketChipLabel"),
+                                new sap.m.Text({
+                                  text: {
+                                    parts: [
+                                      { path: "/NIFTY_NEXT_EXPIRY_LABEL" },
+                                      { path: "/NIFTY_NEXT_EXPIRY_META" },
+                                    ],
+                                    formatter: (label, meta) =>
+                                      meta ? `${label} • ${meta}` : label,
+                                  },
+                                }).addStyleClass("marketChipValue"),
+                              ],
+                            }).addStyleClass("marketChip marketChipExpiry"),
+                          ],
+                        }).addStyleClass("marketDayStrip"),
                       ],
-                    }),
+                    }).addStyleClass("heroMainContent"),
+
+                    new sap.m.VBox({
+                      visible: {
+                        parts: [
+                          { path: "/MARKET_EVENT_VISIBLE" },
+                          { path: "/INDIA_VIX_LABEL" },
+                        ],
+                        formatter: (eventVisible, vixLabel) =>
+                          Boolean(eventVisible || vixLabel),
+                      },
+                      customData: [
+                        new sap.ui.core.CustomData({
+                          key: "severity",
+                          value: "{/MARKET_EVENT_SEVERITY}",
+                          writeToDom: true,
+                        }),
+                      ],
+                      items: [
+                        new sap.m.Text({
+                          text: "Market Events",
+                        }).addStyleClass("marketChipLabel"),
+                        new sap.m.Text({
+                          text: {
+                            parts: [
+                              { path: "/MARKET_EVENT_LABEL" },
+                              { path: "/MARKET_EVENT_META" },
+                            ],
+                            formatter: (label, meta) =>
+                              meta ? `${label} • ${meta}` : label,
+                          },
+                          visible: "{/MARKET_EVENT_VISIBLE}",
+                        }).addStyleClass("marketChipValue marketEventValue"),
+                        new sap.m.Text({
+                          text: {
+                            parts: [
+                              { path: "/INDIA_VIX_LABEL" },
+                              { path: "/INDIA_VIX_META" },
+                            ],
+                            formatter: (label, meta) =>
+                              meta ? `${label} • ${meta}` : label,
+                          },
+                        }).addStyleClass("marketChipValue marketVixValue"),
+                        new sap.m.Button({
+                          text: "Emergency Stop",
+                          icon: "sap-icon://alert",
+                          type: "Reject",
+                          visible: "{/MARKET_EVENT_EMERGENCY_VISIBLE}",
+                          press: emergencyStop,
+                        }).addStyleClass("marketEventStopButton"),
+                      ],
+                    }).addStyleClass("marketEventsPanel"),
                   ],
                 }).addStyleClass("heroCard"),
 
@@ -3113,6 +3750,7 @@
         await refreshAlgoStatus();
         await refreshNgrokUrl();
         await refreshNetworkIp();
+        await refreshMarketCalendar();
         await refreshLogs();
         await refreshDhanHealth();
 
@@ -3120,6 +3758,7 @@
         setInterval(refreshAlgoStatus, 5000);
         setInterval(refreshNgrokUrl, 5000);
         setInterval(refreshNetworkIp, 5000);
+        setInterval(refreshMarketCalendar, 300000);
         setInterval(refreshLogs, 5000);
         setInterval(refreshDhanHealth, 60000);
         setInterval(() => {

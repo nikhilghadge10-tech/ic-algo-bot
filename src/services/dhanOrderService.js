@@ -255,6 +255,81 @@ async function placeStopLossLimitSellOrder(
   }
 }
 
+async function modifyStopLossLimitSellOrder({
+  orderId,
+  quantity,
+  triggerPrice,
+  limitPrice,
+}) {
+  const env = getRuntimeEnv();
+
+  const payload = {
+    dhanClientId: "",
+    orderId,
+    orderType: "STOP_LOSS",
+    validity: "DAY",
+    quantity,
+    disclosedQuantity: 0,
+    price: limitPrice,
+    triggerPrice,
+  };
+
+  if (isPaperTrade(env) || String(orderId).startsWith("PAPER-")) {
+    console.log("\n==============================");
+    console.log("PAPER MODIFY STOP LOSS LIMIT SELL ORDER");
+    console.log("==============================");
+    console.log(payload);
+    console.log("==============================\n");
+
+    return {
+      success: true,
+      paperTrade: true,
+      data: {
+        orderId,
+        orderStatus: "PENDING",
+      },
+      payload,
+    };
+  }
+
+  const dhan = requireDhanRuntimeConfig();
+  payload.dhanClientId = dhan.clientId;
+
+  try {
+    logger.info(
+      `DHAN option SL-Limit modify request: ${JSON.stringify({
+        orderId: payload.orderId,
+        orderType: payload.orderType,
+        validity: payload.validity,
+        quantity: payload.quantity,
+        triggerPrice: payload.triggerPrice,
+        price: payload.price,
+        environment: dhan.environment,
+      })}`,
+    );
+
+    const response = await callDhan(dhan, {
+      method: "PUT",
+      endpoint: `/v2/orders/${orderId}`,
+      data: payload,
+    });
+
+    console.log("DHAN MODIFY STOP LOSS SELL RESPONSE");
+    console.log(response.data);
+    logger.info(
+      `DHAN option SL-Limit modified: ${JSON.stringify(response.data)}`,
+    );
+
+    return {
+      success: true,
+      data: response.data,
+      payload,
+    };
+  } catch (error) {
+    return handleDhanError(error, payload, "MODIFY_STOP_LOSS_SELL");
+  }
+}
+
 async function cancelOrder(orderId) {
   const env = getRuntimeEnv();
 
@@ -343,9 +418,39 @@ async function getOrderStatus(orderId) {
   }
 }
 
+async function getPositions() {
+  const env = getRuntimeEnv();
+
+  if (isPaperTrade(env)) {
+    return {
+      success: true,
+      paperTrade: true,
+      data: [],
+    };
+  }
+
+  const dhan = requireDhanRuntimeConfig();
+
+  try {
+    const response = await callDhan(dhan, {
+      method: "GET",
+      endpoint: "/v2/positions",
+    });
+
+    return {
+      success: true,
+      data: response.data,
+    };
+  } catch (error) {
+    return handleDhanError(error, {}, "POSITIONS");
+  }
+}
+
 module.exports = {
   cancelOrder,
+  getPositions,
   getOrderStatus,
+  modifyStopLossLimitSellOrder,
   placeMarketBuyOrder,
   placeMarketSellOrder,
   placeStopLossLimitSellOrder,

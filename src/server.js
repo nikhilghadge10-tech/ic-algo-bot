@@ -24,6 +24,8 @@ const { getOptionDetails } = require("./services/optionSelector");
 const {
   cancelOrder,
   getOrderStatus,
+  getPositions,
+  modifyStopLossLimitSellOrder,
   placeMarketBuyOrder,
   placeMarketSellOrder,
   placeStopLossLimitSellOrder,
@@ -80,6 +82,9 @@ let lastSignalTime = 0;
 let server = null;
 const recentWebhookSignals = new Map();
 const WEBHOOK_DEDUPE_WINDOW_MS = 15 * 60 * 1000;
+const BROKER_POSITION_SYNC_INTERVAL_MS =
+  Number(process.env.BROKER_POSITION_SYNC_INTERVAL_MS || 15000) || 15000;
+let brokerPositionSyncInFlight = false;
 
 // All incoming webhook/control payloads are JSON.
 app.use(express.json());
@@ -138,6 +143,7 @@ app.get("/status", async (req, res) => {
   };
 
   await syncActiveStopLossStatus();
+  await syncActiveBrokerPosition("STATUS");
 
   const activeTradeMode = getTradeMode(statusConfig);
   const positionBelongsToActiveMode =
@@ -167,6 +173,155 @@ app.get("/status", async (req, res) => {
     autoPremiumSl: statusConfig.AUTO_PREMIUM_SL,
     premiumSlInterval: statusConfig.PREMIUM_SL_INTERVAL,
     premiumSlLimitBand: statusConfig.PREMIUM_SL_LIMIT_BAND,
+    activePosition: positionBelongsToActiveMode
+      ? {
+          currentPosition,
+          tradeMode: currentPositionMode,
+          securityId,
+          quantity,
+          optionSymbol,
+          stopLossOrderId,
+          premiumStopLoss,
+        }
+      : null,
+  });
+});
+
+app.post("/trail-stop-loss", async (req, res) => {
+  await syncActiveStopLossStatus();
+
+  if (!currentPosition || !stopLossOrderId) {
+    return res.status(400).json({
+      success: false,
+      message: "No active protective stop-loss order to trail",
+    });
+  }
+
+  const triggerPrice = Number(req.body?.triggerPrice);
+  const limitPrice = Number(req.body?.limitPrice);
+
+  if (
+    !Number.isFinite(triggerPrice) ||
+    triggerPrice <= 0 ||
+    !Number.isFinite(limitPrice) ||
+    limitPrice <= 0
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: "Enter valid trigger and limit prices",
+    });
+  }
+
+  if (limitPrice >= triggerPrice) {
+    return res.status(400).json({
+      success: false,
+      message: "For SELL SL-Limit, limit price must be below trigger price",
+    });
+  }
+
+  if (premiumStopLoss && triggerPrice <= Number(premiumStopLoss)) {
+    return res.status(400).json({
+      success: false,
+      message: `New trigger must be above current tracked SL ${premiumStopLoss}`,
+    });
+  }
+
+  const statusResult = await getOrderStatus(stopLossOrderId);
+
+  if (!statusResult.success) {
+    return res.status(502).json({
+      success: false,
+      message: "Unable to verify current stop-loss order status",
+      error: statusResult.error,
+    });
+  }
+
+  const orderStatus = getBrokerOrderStatus(statusResult);
+
+  if (["TRADED", "EXECUTED", "FILLED", "COMPLETE", "COMPLETED"].includes(orderStatus)) {
+    markTradeStopLossHit(stopLossOrderId);
+    clearOpenPosition();
+    return res.status(409).json({
+      success: false,
+      message: "Stop-loss order is already executed; position was synced flat",
+      status: orderStatus,
+    });
+  }
+
+  if (["CANCELLED", "REJECTED", "EXPIRED"].includes(orderStatus)) {
+    return res.status(409).json({
+      success: false,
+      message: `Stop-loss order cannot be modified because it is ${orderStatus}`,
+      status: orderStatus,
+    });
+  }
+
+  const activeTradeMode = getTradeMode(getRuntimeConfig());
+
+  if (activeTradeMode !== "PAPER") {
+    const brokerPosition = await getBrokerOpenQuantityForSecurity(securityId);
+
+    if (!brokerPosition.success) {
+      return res.status(502).json({
+        success: false,
+        message: "Unable to verify broker position before trailing SL",
+        error: brokerPosition.error,
+      });
+    }
+
+    if (brokerPosition.quantity <= 0) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "Dhan positions show no open quantity for this security. Do not trail this SL.",
+      });
+    }
+  }
+
+  const modifyResult = await modifyStopLossLimitSellOrder({
+    orderId: stopLossOrderId,
+    quantity,
+    triggerPrice,
+    limitPrice,
+  });
+
+  if (!modifyResult.success) {
+    return res.status(502).json({
+      success: false,
+      message: "Dhan rejected stop-loss trail request",
+      error: modifyResult.error,
+    });
+  }
+
+  saveOpenPositionTrailUpdate({ triggerPrice });
+
+  logger.info(
+    `Manual SL trail: orderId=${stopLossOrderId} trigger=${triggerPrice} limit=${limitPrice}`,
+  );
+
+  await sendTelegram(
+    `✅ Stop Loss Trailed
+
+Contract :
+${optionSymbol}
+
+SL Order ID :
+${stopLossOrderId}
+
+Trigger :
+${triggerPrice}
+
+Limit :
+${limitPrice}`,
+  );
+
+  return res.json({
+    success: true,
+    message: `Stop-loss trailed to ${triggerPrice}`,
+    orderId: stopLossOrderId,
+    triggerPrice,
+    limitPrice,
+    result: modifyResult.data,
   });
 });
 
@@ -349,6 +504,10 @@ function isBrokerOrderExecuted(orderStatus) {
     "COMPLETE",
     "COMPLETED",
   ].includes(orderStatus);
+}
+
+function isBrokerOrderInactive(orderStatus) {
+  return ["CANCELLED", "REJECTED", "EXPIRED"].includes(orderStatus);
 }
 
 function getBrokerOrderRecord(orderStatusResult) {
@@ -716,6 +875,24 @@ function clearOpenPosition() {
   });
 }
 
+function saveOpenPositionTrailUpdate({ triggerPrice }) {
+  const existingPosition = loadPosition();
+
+  premiumStopLoss = triggerPrice;
+
+  savePosition({
+    ...existingPosition,
+    currentPosition,
+    tradeMode: currentPositionMode,
+    securityId,
+    quantity,
+    optionSymbol,
+    stopLossOrderId,
+    premiumStopLoss,
+    premiumStopLossCandle,
+  });
+}
+
 async function syncActiveStopLossStatus() {
   if (!stopLossOrderId || !currentPosition) {
     return;
@@ -741,6 +918,218 @@ async function syncActiveStopLossStatus() {
   logger.info(`Premium stop-loss hit: ${trackedStopLossOrderId}`);
   markTradeStopLossHit(trackedStopLossOrderId);
   clearOpenPosition();
+}
+
+async function cancelStaleStopLossAfterBrokerFlat({
+  trackedStopLossOrderId,
+  trackedOptionSymbol,
+  source,
+}) {
+  if (!trackedStopLossOrderId) {
+    return {
+      success: true,
+      skipped: true,
+    };
+  }
+
+  const statusResult = await getOrderStatus(trackedStopLossOrderId);
+
+  if (statusResult.success) {
+    const orderStatus = getBrokerOrderStatus(statusResult);
+
+    if (isBrokerOrderExecuted(orderStatus)) {
+      markTradeStopLossHit(trackedStopLossOrderId);
+      clearOpenPosition();
+
+      await sendTelegram(
+        `✅ Stop Loss Executed
+
+Broker sync source :
+${source}
+
+Contract :
+${trackedOptionSymbol}
+
+Stop Loss Order ID :
+${trackedStopLossOrderId}
+
+Bot position cleared.`,
+      );
+
+      return {
+        success: true,
+        stopLossExecuted: true,
+      };
+    }
+
+    if (isBrokerOrderInactive(orderStatus)) {
+      logger.warn(
+        `Broker-flat sync found protective SL ${trackedStopLossOrderId} already ${orderStatus}`,
+      );
+
+      return {
+        success: true,
+        alreadyInactive: true,
+        status: orderStatus,
+      };
+    }
+  }
+
+  const cancelResult = await cancelOrder(trackedStopLossOrderId);
+
+  if (!cancelResult.success && !isAlreadyCancelledError(cancelResult)) {
+    logger.warn(
+      `Broker-flat sync could not cancel stale protective SL ${trackedStopLossOrderId}: ${JSON.stringify(cancelResult.error)}`,
+    );
+
+    await sendTelegram(
+      `⚠️ Stale Stop Loss Cancel Failed
+
+Dhan positions show the tracked bot position is already flat, but the bot could not cancel the old protective SL order.
+
+Contract :
+${trackedOptionSymbol}
+
+Stop Loss Order ID :
+${trackedStopLossOrderId}
+
+Reason:
+${JSON.stringify(cancelResult.error, null, 2)}
+
+Please check Dhan orders manually.`,
+    );
+
+    return {
+      success: false,
+      error: cancelResult.error,
+    };
+  }
+
+  logger.info(
+    `Broker-flat sync cancelled stale protective SL ${trackedStopLossOrderId}`,
+  );
+
+  return {
+    success: true,
+    cancelled: true,
+    alreadyCancelled: isAlreadyCancelledError(cancelResult),
+  };
+}
+
+async function syncActiveBrokerPosition(source = "AUTO") {
+  if (brokerPositionSyncInFlight) {
+    return {
+      synced: false,
+      skipped: true,
+      reason: "sync already running",
+    };
+  }
+
+  brokerPositionSyncInFlight = true;
+
+  try {
+    return await reconcileActiveBrokerPosition(source);
+  } finally {
+    brokerPositionSyncInFlight = false;
+  }
+}
+
+async function reconcileActiveBrokerPosition(source = "AUTO") {
+  if (!currentPosition || !securityId) {
+    return {
+      synced: false,
+      skipped: true,
+    };
+  }
+
+  const activeTradeMode = normalizeTradeMode(currentPositionMode);
+
+  if (activeTradeMode === "PAPER") {
+    return {
+      synced: false,
+      skipped: true,
+      reason: "paper trade",
+    };
+  }
+
+  const trackedPosition = currentPosition;
+  const trackedSecurityId = securityId;
+  const trackedQuantity = quantity;
+  const trackedOptionSymbol = optionSymbol;
+  const trackedStopLossOrderId = stopLossOrderId;
+  const brokerPosition = await getBrokerOpenQuantityForSecurity(trackedSecurityId);
+
+  if (!brokerPosition.success) {
+    logger.warn(
+      `Broker position sync skipped because Dhan position check failed: ${JSON.stringify(brokerPosition.error)}`,
+    );
+
+    return {
+      synced: false,
+      error: brokerPosition.error,
+    };
+  }
+
+  if (brokerPosition.quantity > 0) {
+    return {
+      synced: false,
+      brokerQuantity: brokerPosition.quantity,
+    };
+  }
+
+  logger.warn(
+    `Broker position sync clearing ${trackedPosition}; Dhan shows zero open quantity for securityId=${trackedSecurityId}`,
+  );
+
+  const stopLossCleanup = await cancelStaleStopLossAfterBrokerFlat({
+    trackedStopLossOrderId,
+    trackedOptionSymbol,
+    source,
+  });
+
+  if (stopLossCleanup.stopLossExecuted) {
+    return {
+      synced: true,
+      stopLossExecuted: true,
+    };
+  }
+
+  markLatestOpenTradeExited({
+    signal: "BROKER_POSITION_FLAT",
+    exitOrderId: null,
+    manual: true,
+    tradeMode: activeTradeMode,
+  });
+  clearOpenPosition();
+
+  await sendTelegram(
+    `⚠️ Bot Position Synced Flat
+
+Dhan positions show no open quantity for the bot-tracked option. This usually means the position was closed manually on Dhan.
+
+Contract :
+${trackedOptionSymbol}
+
+Security ID :
+${trackedSecurityId}
+
+Tracked Qty :
+${trackedQuantity}
+
+Protective SL :
+${trackedStopLossOrderId || "-"}
+
+Source :
+${source}
+
+Bot dashboard position cleared.`,
+  );
+
+  return {
+    synced: true,
+    brokerQuantity: brokerPosition.quantity,
+    stopLossCleanup,
+  };
 }
 
 function normalizeTickSize(tickSize) {
@@ -880,11 +1269,63 @@ async function getPremiumStopLossPlan(
   };
 }
 
-async function rejectPremiumStopLossFailure(res, signal, symbol, price, result) {
+function getPremiumStopLossFailureReason(result) {
+  const reason = result?.error || result;
+
+  return typeof reason === "string" ? reason : JSON.stringify(reason);
+}
+
+function getPremiumStopLossFailureDetails(result, context = {}) {
+  const details = [
+    `reason=${getPremiumStopLossFailureReason(result)}`,
+  ];
+
+  if (context.contract?.SEM_CUSTOM_SYMBOL) {
+    details.push(`contract=${context.contract.SEM_CUSTOM_SYMBOL}`);
+  }
+
+  if (context.contract?.SEM_SMST_SECURITY_ID) {
+    details.push(`securityId=${context.contract.SEM_SMST_SECURITY_ID}`);
+  }
+
+  if (result?.entryPremium != null) {
+    details.push(`optionLtp=${result.entryPremium}`);
+  }
+
+  if (result?.stopLossPremium != null) {
+    details.push(`premiumSL=${result.stopLossPremium}`);
+  }
+
+  if (context.stopLossPlan?.candle?.low != null) {
+    details.push(`previousCandleLow=${context.stopLossPlan.candle.low}`);
+  }
+
+  if (context.stopLossPlan?.candle?.high != null) {
+    details.push(`previousCandleHigh=${context.stopLossPlan.candle.high}`);
+  }
+
+  if (context.stopLossPlan?.candleRange != null) {
+    details.push(`previousCandleRange=${context.stopLossPlan.candleRange}`);
+  }
+
+  if (context.stopLossPlan?.interval != null) {
+    details.push(`interval=${context.stopLossPlan.interval}`);
+  }
+
+  return details.join(" ");
+}
+
+async function rejectPremiumStopLossFailure(
+  res,
+  signal,
+  symbol,
+  price,
+  result,
+  context = {},
+) {
   logger.warn(
-    `${signal} ignored because premium stop-loss setup failed: ${JSON.stringify(
-      result.error || result,
-    )}`,
+    `${signal} ignored because premium stop-loss setup failed: ` +
+      getPremiumStopLossFailureDetails(result, context),
   );
 
   await sendTelegram(
@@ -893,6 +1334,12 @@ async function rejectPremiumStopLossFailure(res, signal, symbol, price, result) 
 Signal : ${signal}
 Symbol : ${symbol}
 Price  : ${price}
+Contract : ${context.contract?.SEM_CUSTOM_SYMBOL || "-"}
+Security ID : ${context.contract?.SEM_SMST_SECURITY_ID || "-"}
+Option LTP : ${result.entryPremium ?? "-"}
+Premium SL : ${result.stopLossPremium ?? context.stopLossPlan?.triggerPrice ?? "-"}
+Previous Candle Low : ${context.stopLossPlan?.candle?.low ?? "-"}
+Previous Candle High : ${context.stopLossPlan?.candle?.high ?? "-"}
 
 Reason:
 ${JSON.stringify(result.error || result, null, 2)}
@@ -1009,6 +1456,18 @@ async function cancelProtectiveStopLossForTradingViewExit(
 
   const cancelResult = await cancelOrder(stopLossOrderId);
 
+  if (!cancelResult.success && isAlreadyCancelledError(cancelResult)) {
+    logger.warn(
+      `${signal} continuing because protective stop-loss order ${stopLossOrderId} is already cancelled`,
+    );
+
+    return {
+      ...cancelResult,
+      success: true,
+      alreadyCancelled: true,
+    };
+  }
+
   if (!cancelResult.success) {
     await sendTelegram(
       `❌ ${signal} blocked
@@ -1093,6 +1552,258 @@ function getOrderPlacementNote(config) {
     : "Real order placed on Dhan.";
 }
 
+function getBrokerErrorText(result) {
+  const error = result?.error;
+
+  if (!error) {
+    return "";
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  return [
+    error.errorType,
+    error.errorCode,
+    error.errorMessage,
+    error.message,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function isAlreadyCancelledError(result) {
+  const text = getBrokerErrorText(result).toLowerCase();
+
+  return (
+    text.includes("dh-906") ||
+    (text.includes("order") && text.includes("cancelled"))
+  );
+}
+
+function isNoBrokerPositionExitError(result) {
+  const text = getBrokerErrorText(result).toLowerCase();
+
+  return (
+    text.includes("no position") ||
+    text.includes("no open position") ||
+    text.includes("insufficient position") ||
+    text.includes("insufficient quantity") ||
+    text.includes("insufficient holdings") ||
+    text.includes("available quantity") ||
+    text.includes("quantity available") ||
+    text.includes("nothing to sell")
+  );
+}
+
+function normalizeBrokerPositionList(data) {
+  if (Array.isArray(data)) {
+    return data;
+  }
+
+  if (Array.isArray(data?.data)) {
+    return data.data;
+  }
+
+  if (Array.isArray(data?.positions)) {
+    return data.positions;
+  }
+
+  return [];
+}
+
+function getPositionSecurityId(position) {
+  return String(
+    position?.securityId ||
+      position?.security_id ||
+      position?.drvSecurityId ||
+      position?.dhanSecurityId ||
+      "",
+  );
+}
+
+function getPositionOpenQuantity(position) {
+  const quantityFields = [
+    position?.netQty,
+    position?.netQuantity,
+    position?.quantity,
+    position?.openQty,
+    position?.dayBuyQty != null || position?.daySellQty != null
+      ? Number(position?.dayBuyQty || 0) - Number(position?.daySellQty || 0)
+      : null,
+    position?.buyQty != null || position?.sellQty != null
+      ? Number(position?.buyQty || 0) - Number(position?.sellQty || 0)
+      : null,
+  ];
+
+  for (const value of quantityFields) {
+    const parsed = Number(value);
+
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return 0;
+}
+
+async function getBrokerOpenQuantityForSecurity(securityIdToCheck) {
+  const result = await getPositions();
+
+  if (!result.success) {
+    return {
+      success: false,
+      error: result.error,
+    };
+  }
+
+  const positions = normalizeBrokerPositionList(result.data);
+  const matchingPosition = positions.find(
+    (position) => getPositionSecurityId(position) === String(securityIdToCheck),
+  );
+
+  if (!matchingPosition) {
+    return {
+      success: true,
+      quantity: 0,
+      position: null,
+    };
+  }
+
+  return {
+    success: true,
+    quantity: getPositionOpenQuantity(matchingPosition),
+    position: matchingPosition,
+  };
+}
+
+async function syncManualExitAlreadyFlat({
+  signal,
+  activeTradeMode,
+  exitOptionSymbol,
+  exitSecurityId,
+  exitQuantity,
+  exitResult,
+}) {
+  logger.warn(
+    `${signal} broker rejected SELL as already flat; clearing local position for ${exitOptionSymbol}`,
+  );
+
+  markLatestOpenTradeExited({
+    signal,
+    exitOrderId: getOrderId(exitResult),
+    manual: true,
+    tradeMode: activeTradeMode,
+  });
+  clearOpenPosition();
+
+  await sendTelegram(
+    `⚠️ ${signal} synced to FLAT
+
+Dhan rejected the bot SELL in a way that indicates the broker position is already closed.
+
+Contract :
+${exitOptionSymbol}
+
+Security ID :
+${exitSecurityId}
+
+Qty :
+${exitQuantity}
+
+Reason:
+${JSON.stringify(exitResult.error, null, 2)}
+
+Bot position cleared.`,
+  );
+}
+
+async function guardExitAgainstBrokerFlat({
+  signal,
+  activeTradeMode,
+  exitOptionSymbol,
+  exitSecurityId,
+  exitQuantity,
+}) {
+  if (activeTradeMode === "PAPER") {
+    return {
+      success: true,
+      exitQuantity,
+    };
+  }
+
+  const brokerPosition = await getBrokerOpenQuantityForSecurity(exitSecurityId);
+
+  if (!brokerPosition.success) {
+    logger.warn(
+      `${signal} blocked because broker position check failed: ${JSON.stringify(brokerPosition.error)}`,
+    );
+
+    await sendTelegram(
+      `❌ ${signal} blocked
+
+Could not verify the current Dhan position before placing SELL.
+
+Contract :
+${exitOptionSymbol}
+
+Security ID :
+${exitSecurityId}
+
+Reason:
+${JSON.stringify(brokerPosition.error, null, 2)}
+
+Position still marked OPEN. No SELL order placed.`,
+    );
+
+    return {
+      success: false,
+      responseText: `${signal} broker position check failed\n`,
+    };
+  }
+
+  if (brokerPosition.quantity <= 0) {
+    await syncManualExitAlreadyFlat({
+      signal,
+      activeTradeMode,
+      exitOptionSymbol,
+      exitSecurityId,
+      exitQuantity,
+      exitResult: {
+        success: false,
+        error: {
+          errorMessage:
+            "Dhan positions show no open long quantity for this security",
+          brokerQuantity: brokerPosition.quantity,
+        },
+      },
+    });
+
+    return {
+      success: false,
+      responseText: `${signal} synced flat\n`,
+      syncedFlat: true,
+    };
+  }
+
+  const verifiedExitQuantity = Math.min(
+    Number(exitQuantity),
+    Number(brokerPosition.quantity),
+  );
+
+  if (verifiedExitQuantity !== Number(exitQuantity)) {
+    logger.warn(
+      `${signal} reducing exit quantity from ${exitQuantity} to broker quantity ${verifiedExitQuantity}`,
+    );
+  }
+
+  return {
+    success: true,
+    exitQuantity: verifiedExitQuantity,
+  };
+}
+
 // Main trading webhook. Signals are validated, gated, converted to contracts,
 // sent to Dhan, and then reflected in local position state only after success.
 app.post("/webhook", async (req, res) => {
@@ -1153,6 +1864,9 @@ No order placed.`,
     logger.info(`Last Signal Updated: ${signal}`);
     const config = getRuntimeConfig();
     const activeTradeMode = getTradeMode(config);
+    await syncActiveStopLossStatus();
+    await syncActiveBrokerPosition("WEBHOOK");
+
     const effectiveInterval = normalizeAlertIntervalMinutes(
       alertInterval,
       config.PREMIUM_SL_INTERVAL || 15,
@@ -1297,6 +2011,7 @@ No order placed.`,
               symbol,
               price,
               stopLossPlan,
+              { contract, stopLossPlan },
             );
           }
 
@@ -1313,6 +2028,7 @@ No order placed.`,
               symbol,
               price,
               riskPlan,
+              { contract, stopLossPlan },
             );
           }
 
@@ -1335,6 +2051,7 @@ No order placed.`,
                 entryPremium: riskPlan.entryPremium,
                 stopLossPremium: riskPlan.stopLossPremium,
               },
+              { contract, stopLossPlan },
             );
           }
 
@@ -1729,6 +2446,7 @@ No order placed.`,
               symbol,
               price,
               stopLossPlan,
+              { contract, stopLossPlan },
             );
           }
 
@@ -1745,6 +2463,7 @@ No order placed.`,
               symbol,
               price,
               riskPlan,
+              { contract, stopLossPlan },
             );
           }
 
@@ -1767,6 +2486,7 @@ No order placed.`,
                 entryPremium: riskPlan.entryPremium,
                 stopLossPremium: riskPlan.stopLossPremium,
               },
+              { contract, stopLossPlan },
             );
           }
 
@@ -2099,7 +2819,7 @@ ${getOrderPlacementNote(config)}`,
         console.log("EXIT QUANTITY =", quantity);
 
         const exitSecurityId = securityId;
-        const exitQuantity = quantity;
+        let exitQuantity = quantity;
         const exitOptionSymbol = optionSymbol;
 
         if (shouldIgnoreTradingViewExit(config) && !manualSignal) {
@@ -2128,6 +2848,22 @@ ${getOrderPlacementNote(config)}`,
           return res.status(200).send("Stop loss cancel failed\n");
         }
 
+        const brokerExitGuard = await guardExitAgainstBrokerFlat({
+          signal,
+          activeTradeMode,
+          exitOptionSymbol,
+          exitSecurityId,
+          exitQuantity,
+        });
+
+        if (!brokerExitGuard.success) {
+          return res
+            .status(200)
+            .send(brokerExitGuard.responseText || "Broker position check failed\n");
+        }
+
+        exitQuantity = brokerExitGuard.exitQuantity;
+
         // Attempt the broker/paper SELL before changing local position state.
         const exitResult = await placeMarketSellOrder(
           exitSecurityId,
@@ -2137,6 +2873,19 @@ ${getOrderPlacementNote(config)}`,
 
         // If Dhan rejects the exit, keep the bot position open for retry/manual action.
         if (!exitResult.success) {
+          if (manualSignal && isNoBrokerPositionExitError(exitResult)) {
+            await syncManualExitAlreadyFlat({
+              signal,
+              activeTradeMode,
+              exitOptionSymbol,
+              exitSecurityId,
+              exitQuantity,
+              exitResult,
+            });
+
+            return res.status(200).send("LONG_EXIT synced flat\n");
+          }
+
           await sendTelegram(
             `❌ LONG_EXIT failed
 
@@ -2161,6 +2910,7 @@ Position still marked OPEN.`,
         markLatestOpenTradeExited({
           signal,
           exitOrderId: getOrderId(exitResult),
+          manual: manualSignal,
           tradeMode: activeTradeMode,
         });
         clearOpenPosition();
@@ -2200,7 +2950,7 @@ Position Closed`,
         console.log("EXIT QUANTITY =", quantity);
 
         const exitSecurityId = securityId;
-        const exitQuantity = quantity;
+        let exitQuantity = quantity;
         const exitOptionSymbol = optionSymbol;
 
         if (shouldIgnoreTradingViewExit(config) && !manualSignal) {
@@ -2229,6 +2979,22 @@ Position Closed`,
           return res.status(200).send("Stop loss cancel failed\n");
         }
 
+        const brokerExitGuard = await guardExitAgainstBrokerFlat({
+          signal,
+          activeTradeMode,
+          exitOptionSymbol,
+          exitSecurityId,
+          exitQuantity,
+        });
+
+        if (!brokerExitGuard.success) {
+          return res
+            .status(200)
+            .send(brokerExitGuard.responseText || "Broker position check failed\n");
+        }
+
+        exitQuantity = brokerExitGuard.exitQuantity;
+
         // Attempt the broker/paper SELL before changing local position state.
         const exitResult = await placeMarketSellOrder(
           exitSecurityId,
@@ -2239,6 +3005,19 @@ Position Closed`,
 
         // If Dhan rejects the exit, keep the bot position open for retry/manual action.
         if (!exitResult.success) {
+          if (manualSignal && isNoBrokerPositionExitError(exitResult)) {
+            await syncManualExitAlreadyFlat({
+              signal,
+              activeTradeMode,
+              exitOptionSymbol,
+              exitSecurityId,
+              exitQuantity,
+              exitResult,
+            });
+
+            return res.status(200).send("SHORT_EXIT synced flat\n");
+          }
+
           await sendTelegram(
             `❌ SHORT_EXIT failed
 
@@ -2263,6 +3042,7 @@ Position still marked OPEN.`,
         markLatestOpenTradeExited({
           signal,
           exitOrderId: getOrderId(exitResult),
+          manual: manualSignal,
           tradeMode: activeTradeMode,
         });
         clearOpenPosition();
@@ -2346,6 +3126,15 @@ server = app.listen(PORT, () => {
   logger.info(`LIFECYCLE Algo server listening on port ${PORT}`);
   console.log(`Server running on port ${PORT}`);
 });
+
+setInterval(async () => {
+  try {
+    await syncActiveStopLossStatus();
+    await syncActiveBrokerPosition("POLL");
+  } catch (error) {
+    logger.warn(`Broker position poll failed: ${error.message}`);
+  }
+}, BROKER_POSITION_SYNC_INTERVAL_MS);
 
 function shutdown(signal) {
   logger.info(`LIFECYCLE Algo server received ${signal}, shutting down`);

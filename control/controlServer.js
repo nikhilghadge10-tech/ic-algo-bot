@@ -21,6 +21,7 @@ let algoProcess = null;
 let ngrokProcess = null;
 let ngrokUrl = "";
 const logPath = path.join(__dirname, "..", "logs", "app.log");
+const instrumentMasterPath = path.join(__dirname, "..", "api-scrip-master.csv");
 const positionPath = path.join(__dirname, "..", "src", "data", "position.json");
 const tradeStatePath = path.join(__dirname, "..", "src", "data", "tradeState.json");
 const tradeHistoryPath = path.join(
@@ -103,6 +104,277 @@ function readJsonFile(filePath) {
   } catch (error) {
     return null;
   }
+}
+
+function getLocalDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function parseNseHolidayDate(value) {
+  const monthIndexes = {
+    Jan: 0,
+    Feb: 1,
+    Mar: 2,
+    Apr: 3,
+    May: 4,
+    Jun: 5,
+    Jul: 6,
+    Aug: 7,
+    Sep: 8,
+    Oct: 9,
+    Nov: 10,
+    Dec: 11,
+  };
+  const [day, month, year] = String(value || "").split("-");
+  const date = new Date(
+    Number(year),
+    monthIndexes[month],
+    Number(day),
+    12,
+    0,
+    0,
+  );
+
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function cleanHtmlText(html) {
+  return String(html || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n\s+/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+function matchRate(text, label) {
+  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = text.match(new RegExp(`${escapedLabel}\\s*:\\s*([0-9.]+%?)`, "i"));
+
+  return match?.[1] || "";
+}
+
+function getLatestRbiPolicyEvent(text) {
+  return (
+    text
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) =>
+        /Monetary Policy Committee|Monetary Policy Statement|MPC/i.test(line),
+      ) || ""
+  );
+}
+
+function getRbiPolicyDateKeys(text) {
+  const monthIndexes = {
+    January: 0,
+    February: 1,
+    March: 2,
+    April: 3,
+    May: 4,
+    June: 5,
+    July: 6,
+    August: 7,
+    September: 8,
+    October: 9,
+    November: 10,
+    December: 11,
+  };
+  const policyLines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) =>
+      /Monetary Policy Committee|Monetary Policy Statement|MPC/i.test(line),
+    );
+  const dateKeys = new Set();
+
+  policyLines.forEach((line) => {
+    line.replace(
+      /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})(?:\s+to\s+(\d{1,2}))?,\s*(\d{4})/gi,
+      (match, month, startDay, endDay, year) => {
+        const start = Number(startDay);
+        const end = Number(endDay || startDay);
+
+        for (let day = start; day <= end; day += 1) {
+          dateKeys.add(
+            getLocalDateKey(
+              new Date(Number(year), monthIndexes[month], day, 12, 0, 0),
+            ),
+          );
+        }
+
+        return match;
+      },
+    );
+  });
+
+  return [...dateKeys].sort();
+}
+
+function getNextNiftyExpiry(now = new Date()) {
+  const content = fs.readFileSync(instrumentMasterPath, "utf8");
+  const [headerLine, ...lines] = content.split(/\r?\n/);
+  const headers = headerLine.split(",");
+  const indexes = {
+    instrument: headers.indexOf("SEM_INSTRUMENT_NAME"),
+    symbol: headers.indexOf("SEM_CUSTOM_SYMBOL"),
+    expiry: headers.indexOf("SEM_EXPIRY_DATE"),
+    optionType: headers.indexOf("SEM_OPTION_TYPE"),
+  };
+  const expiryDates = new Set();
+
+  lines.forEach((line) => {
+    if (!line) return;
+
+    const columns = line.split(",");
+    const expiryValue = columns[indexes.expiry];
+    const dateKey = expiryValue?.slice(0, 10);
+
+    if (
+      columns[indexes.instrument] === "OPTIDX" &&
+      columns[indexes.symbol]?.startsWith("NIFTY ") &&
+      ["CE", "PE"].includes(columns[indexes.optionType]) &&
+      /^\d{4}-\d{2}-\d{2}$/.test(dateKey)
+    ) {
+      expiryDates.add(dateKey);
+    }
+  });
+
+  const marketCloseToday = new Date(`${getLocalDateKey(now)}T15:30:00+05:30`);
+  const eligibleDates = [...expiryDates]
+    .filter((dateKey) => {
+      const expiryMarketClose = new Date(`${dateKey}T15:30:00+05:30`);
+
+      return dateKey === getLocalDateKey(now)
+        ? now <= marketCloseToday
+        : expiryMarketClose > now;
+    })
+    .sort();
+
+  if (!eligibleDates.length) {
+    return null;
+  }
+
+  const dateKey = eligibleDates[0];
+  const expiryDate = new Date(`${dateKey}T12:00:00+05:30`);
+
+  return {
+    date: dateKey,
+    day: expiryDate.toLocaleDateString("en-IN", { weekday: "long" }),
+    isToday: dateKey === getLocalDateKey(now),
+  };
+}
+
+async function getNextNseHoliday(now = new Date()) {
+  const response = await axios.get(
+    "https://www.nseindia.com/api/holiday-master?type=trading",
+    {
+      timeout: 7000,
+      headers: {
+        Accept: "application/json,text/plain,*/*",
+        Referer: "https://www.nseindia.com/",
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
+      },
+    },
+  );
+  const holidays = response.data?.FO || response.data?.CM || [];
+  const today = new Date(`${getLocalDateKey(now)}T00:00:00+05:30`);
+  const next = holidays
+    .map((holiday) => ({
+      ...holiday,
+      date: parseNseHolidayDate(holiday.tradingDate),
+    }))
+    .filter((holiday) => holiday.date && holiday.date >= today)
+    .sort((a, b) => a.date - b.date)[0];
+
+  if (!next) {
+    return null;
+  }
+
+  const dateKey = getLocalDateKey(next.date);
+
+  return {
+    date: dateKey,
+    day: next.weekDay || next.date.toLocaleDateString("en-IN", { weekday: "long" }),
+    description: next.description || "Trading holiday",
+    segment: response.data?.FO ? "FO" : "CM",
+    source: "NSE holiday calendar",
+  };
+}
+
+async function getIndiaVix() {
+  const response = await axios.get("https://www.nseindia.com/api/allIndices", {
+    timeout: 7000,
+    headers: {
+      Accept: "application/json,text/plain,*/*",
+      Referer: "https://www.nseindia.com/",
+      "User-Agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
+    },
+  });
+  const rows = Array.isArray(response.data?.data) ? response.data.data : [];
+  const vix = rows.find((row) =>
+    /india\s*vix/i.test(String(row?.index || row?.indexSymbol || "")),
+  );
+  const value = Number(vix?.last || vix?.lastPrice || vix?.lastPriceValue);
+  const changePercent = Number(vix?.percentChange || vix?.perChange);
+
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+
+  return {
+    value,
+    changePercent: Number.isFinite(changePercent) ? changePercent : null,
+    source: "NSE allIndices",
+  };
+}
+
+async function getRbiMarketIntel() {
+  const response = await axios.get("https://www.rbi.org.in/", {
+    timeout: 7000,
+    headers: {
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "User-Agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
+    },
+  });
+  const text = cleanHtmlText(response.data);
+  const asOf = text.match(/\(As at\s+([^)]+)\)/i)?.[1] || "";
+  const source = text.match(/\(Source\s*:\s*([^)]+)\)/i)?.[1] || "";
+
+  return {
+    policyRates: {
+      repo: matchRate(text, "Policy Repo Rate"),
+      sdf: matchRate(text, "Standing Deposit Facility Rate"),
+      msf: matchRate(text, "Marginal Standing Facility Rate"),
+      bankRate: matchRate(text, "Bank Rate"),
+      reverseRepo: matchRate(text, "Fixed Reverse Repo Rate"),
+      crr: matchRate(text, "CRR"),
+      slr: matchRate(text, "SLR"),
+    },
+    exchangeRates: {
+      usdInr: matchRate(text, "INR / 1 USD"),
+      gbpInr: matchRate(text, "INR / 1 GBP"),
+      eurInr: matchRate(text, "INR / 1 EUR"),
+      jpyInr: matchRate(text, "INR / 100 JPY"),
+    },
+    asOf,
+    source,
+    latestPolicyEvent: getLatestRbiPolicyEvent(text),
+    policyDateKeys: getRbiPolicyDateKeys(text),
+  };
 }
 
 async function getAlgoSnapshot() {
@@ -558,6 +830,11 @@ app.post("/api/config", (req, res) => {
         : "LIVE";
   }
 
+  if (Object.prototype.hasOwnProperty.call(updates, "PAPER_TRADE")) {
+    updates.AUTO_PREMIUM_SL =
+      String(updates.PAPER_TRADE).toLowerCase() === "true" ? "false" : "true";
+  }
+
   writeEnv(updates);
   res.json({ success: true });
 });
@@ -806,6 +1083,28 @@ app.post("/api/test-signal", async (req, res) => {
   }
 });
 
+app.post("/api/trail-stop-loss", async (req, res) => {
+  try {
+    const response = await axios.post(
+      "http://localhost:3000/trail-stop-loss",
+      req.body,
+      {
+        timeout: 10000,
+      },
+    );
+
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    res.status(error.response?.status || 500).json({
+      success: false,
+      message:
+        error.response?.data?.message ||
+        "Stop-loss trail failed. Is algo server running?",
+      error: error.response?.data?.error || error.message,
+    });
+  }
+});
+
 // Return recent log entries newest-first for the dashboard log viewer.
 app.get("/api/logs", (req, res) => {
   try {
@@ -864,6 +1163,86 @@ app.get("/api/nifty-spot", async (req, res) => {
       success: false,
       message: "NIFTY spot price unavailable",
       error: error.response?.data || error.message,
+    });
+  }
+});
+
+// Return the nearest tradable NIFTY option expiry from the local instrument master.
+app.get("/api/nifty-expiry", (req, res) => {
+  try {
+    const expiry = getNextNiftyExpiry();
+
+    res.json({
+      success: !!expiry,
+      expiry,
+      message: expiry ? "Next NIFTY expiry found" : "No NIFTY expiry found",
+    });
+  } catch (error) {
+    res.json({
+      success: false,
+      expiry: null,
+      message: "NIFTY expiry unavailable",
+      error: error.message,
+    });
+  }
+});
+
+// Return the next NSE F&O trading holiday for planning around market closures.
+app.get("/api/next-market-holiday", async (req, res) => {
+  try {
+    const holiday = await getNextNseHoliday();
+
+    res.json({
+      success: !!holiday,
+      holiday,
+      message: holiday ? "Next market holiday found" : "No market holiday found",
+    });
+  } catch (error) {
+    res.json({
+      success: false,
+      holiday: null,
+      message: "Market holiday unavailable",
+      error: error.message,
+    });
+  }
+});
+
+// Return India VIX from NSE's index feed for quick volatility context.
+app.get("/api/india-vix", async (req, res) => {
+  try {
+    const vix = await getIndiaVix();
+
+    res.json({
+      success: !!vix,
+      vix,
+      message: vix ? "India VIX found" : "India VIX unavailable",
+    });
+  } catch (error) {
+    res.json({
+      success: false,
+      vix: null,
+      message: "India VIX unavailable",
+      error: error.message,
+    });
+  }
+});
+
+// Return RBI current policy rates and FBIL exchange rates from RBI's homepage.
+app.get("/api/rbi-market-intel", async (req, res) => {
+  try {
+    const intel = await getRbiMarketIntel();
+
+    res.json({
+      success: true,
+      intel,
+      message: "RBI market intel found",
+    });
+  } catch (error) {
+    res.json({
+      success: false,
+      intel: null,
+      message: "RBI market intel unavailable",
+      error: error.message,
     });
   }
 });

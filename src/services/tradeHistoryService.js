@@ -87,10 +87,143 @@ function getDisplayStatus(status) {
   }
 }
 
+function roundMoney(value) {
+  const number = Number(value);
+
+  return Number.isFinite(number) ? Number(number.toFixed(2)) : null;
+}
+
+function roundPercent(value) {
+  const number = Number(value);
+
+  return Number.isFinite(number) ? Number(number.toFixed(2)) : null;
+}
+
+function getTradeEntryPremium(trade) {
+  return Number(trade.entryPrice || trade.entryPremiumReference || 0);
+}
+
+function calculateTradeMetrics({
+  quantity,
+  entryPremium,
+  stopLossPremium,
+  currentPremium,
+  previousMetrics = {},
+}) {
+  const parsedQuantity = Number(quantity);
+  const parsedEntryPremium = Number(entryPremium);
+  const parsedStopLossPremium = Number(stopLossPremium);
+  const parsedCurrentPremium = Number(currentPremium);
+  const capitalDeployed =
+    Number.isFinite(parsedQuantity) &&
+    parsedQuantity > 0 &&
+    Number.isFinite(parsedEntryPremium) &&
+    parsedEntryPremium > 0
+      ? roundMoney(parsedQuantity * parsedEntryPremium)
+      : null;
+  const stopLossMoney =
+    Number.isFinite(parsedQuantity) &&
+    parsedQuantity > 0 &&
+    Number.isFinite(parsedEntryPremium) &&
+    parsedEntryPremium > 0 &&
+    Number.isFinite(parsedStopLossPremium) &&
+    parsedStopLossPremium > 0
+      ? roundMoney(
+          parsedQuantity * parsedEntryPremium -
+            parsedQuantity * parsedStopLossPremium,
+        )
+      : null;
+  const calculatedRiskPoints =
+    Number.isFinite(parsedEntryPremium) &&
+    Number.isFinite(parsedStopLossPremium) &&
+    parsedStopLossPremium > 0
+      ? roundMoney(parsedEntryPremium - parsedStopLossPremium)
+      : null;
+  const previousRiskPoints = Number(previousMetrics.riskPoints);
+  const riskPoints =
+    calculatedRiskPoints !== null
+      ? calculatedRiskPoints
+      : Number.isFinite(previousRiskPoints) && previousRiskPoints > 0
+        ? roundMoney(previousRiskPoints)
+        : null;
+
+  if (!Number.isFinite(parsedCurrentPremium) || parsedCurrentPremium <= 0) {
+    return {
+      ...previousMetrics,
+      capitalDeployed,
+      stopLossMoney,
+      riskPoints,
+    };
+  }
+
+  const runningProfitAmount =
+    Number.isFinite(parsedQuantity) &&
+    parsedQuantity > 0 &&
+    Number.isFinite(parsedEntryPremium) &&
+    parsedEntryPremium > 0
+      ? roundMoney((parsedCurrentPremium - parsedEntryPremium) * parsedQuantity)
+      : null;
+  const runningProfitPercent =
+    capitalDeployed && capitalDeployed > 0 && runningProfitAmount !== null
+      ? roundPercent((runningProfitAmount / capitalDeployed) * 100)
+      : null;
+  const rewardPoints =
+    Number.isFinite(parsedEntryPremium) && parsedEntryPremium > 0
+      ? roundMoney(parsedCurrentPremium - parsedEntryPremium)
+      : null;
+  const riskRewardRatio =
+    riskPoints && riskPoints > 0 && rewardPoints !== null
+      ? roundPercent(rewardPoints / riskPoints)
+      : null;
+  const riskReward =
+    riskRewardRatio !== null
+      ? `1:${riskRewardRatio.toFixed(2).replace(/\.?0+$/, "")}`
+      : null;
+
+  return {
+    ...previousMetrics,
+    capitalDeployed,
+    stopLossMoney,
+    riskPoints,
+    currentPremium: roundMoney(parsedCurrentPremium),
+    currentPremiumCheckedAt: nowIso(),
+    runningProfitAmount,
+    runningProfitPercent,
+    rewardPoints,
+    riskRewardRatio,
+    riskReward,
+  };
+}
+
+function applyTradeMetrics(trade, metrics) {
+  const fieldNames = [
+    "capitalDeployed",
+    "stopLossMoney",
+    "currentPremium",
+    "currentPremiumCheckedAt",
+    "runningProfitAmount",
+    "runningProfitPercent",
+    "rewardPoints",
+    "riskRewardRatio",
+    "riskReward",
+  ];
+
+  fieldNames.forEach((fieldName) => {
+    if (metrics[fieldName] !== undefined) {
+      trade[fieldName] = metrics[fieldName];
+    }
+  });
+
+  if (metrics.riskPoints !== null && metrics.riskPoints !== undefined) {
+    trade.riskPoints = metrics.riskPoints;
+  }
+}
+
 function createTrade(entry) {
   const history = getTradeHistoryForToday();
   const sequence = history.trades.length + 1;
   const tradeMode = normalizeTradeMode(entry.tradeMode);
+  const entryPrice = entry.entryPrice || entry.entryPremiumReference || null;
   const trade = {
     id: `${history.date}-${sequence}-${Date.now()}`,
     sequence,
@@ -107,13 +240,24 @@ function createTrade(entry) {
     premiumStopLossCandle: entry.premiumStopLossCandle || null,
     premiumSlInterval: entry.premiumSlInterval || null,
     entryPremiumReference: entry.entryPremiumReference || null,
-    entryPrice: entry.entryPrice || entry.entryPremiumReference || null,
+    entryPrice,
     riskPoints: entry.riskPoints || null,
     riskSource: entry.riskSource || null,
     exitSignal: null,
     exitTime: null,
     exitOrderId: null,
   };
+  applyTradeMetrics(
+    trade,
+    calculateTradeMetrics({
+      quantity: trade.quantity,
+      entryPremium: entryPrice,
+      stopLossPremium: trade.premiumStopLoss,
+      previousMetrics: {
+        riskPoints: trade.riskPoints,
+      },
+    }),
+  );
 
   history.trades.push(trade);
   saveTradeHistory(history);
@@ -188,6 +332,83 @@ function markTradeFailed(entryOrderId, failureReason) {
   return trade;
 }
 
+function updateLatestOpenTradeMarket({
+  securityId,
+  tradeMode,
+  currentPremium,
+}) {
+  const history = getTradeHistoryForToday();
+  const normalizedMode = tradeMode ? normalizeTradeMode(tradeMode) : null;
+  const trade = findLatestOpenTrade(
+    history.trades.filter((item) => {
+      if (normalizedMode && item.tradeMode !== normalizedMode) {
+        return false;
+      }
+
+      return securityId ? String(item.securityId) === String(securityId) : true;
+    }),
+  );
+
+  if (!trade) {
+    return null;
+  }
+
+  applyTradeMetrics(
+    trade,
+    calculateTradeMetrics({
+      quantity: trade.quantity,
+      entryPremium: getTradeEntryPremium(trade),
+      stopLossPremium: trade.premiumStopLoss,
+      currentPremium,
+      previousMetrics: {
+        capitalDeployed: trade.capitalDeployed,
+        stopLossMoney: trade.stopLossMoney,
+        riskPoints: trade.riskPoints,
+      },
+    }),
+  );
+
+  saveTradeHistory(history);
+  return trade;
+}
+
+function updateLatestOpenTradeStopLoss({ securityId, tradeMode, premiumStopLoss }) {
+  const history = getTradeHistoryForToday();
+  const normalizedMode = tradeMode ? normalizeTradeMode(tradeMode) : null;
+  const trade = findLatestOpenTrade(
+    history.trades.filter((item) => {
+      if (normalizedMode && item.tradeMode !== normalizedMode) {
+        return false;
+      }
+
+      return securityId ? String(item.securityId) === String(securityId) : true;
+    }),
+  );
+
+  if (!trade) {
+    return null;
+  }
+
+  trade.premiumStopLoss = premiumStopLoss || null;
+  applyTradeMetrics(
+    trade,
+    calculateTradeMetrics({
+      quantity: trade.quantity,
+      entryPremium: getTradeEntryPremium(trade),
+      stopLossPremium: premiumStopLoss,
+      currentPremium: trade.currentPremium,
+      previousMetrics: {
+        capitalDeployed: trade.capitalDeployed,
+        stopLossMoney: trade.stopLossMoney,
+        riskPoints: trade.riskPoints,
+      },
+    }),
+  );
+
+  saveTradeHistory(history);
+  return trade;
+}
+
 function getDashboardTrades(limit = 3, tradeMode, fallbackPremiumSlInterval) {
   const history = getTradeHistoryForToday();
   const normalizedMode = tradeMode ? normalizeTradeMode(tradeMode) : null;
@@ -223,6 +444,17 @@ function getDashboardTrades(limit = 3, tradeMode, fallbackPremiumSlInterval) {
       realizedProfit: trade.realizedProfit || null,
       riskPoints: trade.riskPoints,
       riskAmount,
+      capitalDeployed: trade.capitalDeployed || null,
+      stopLossMoney: trade.stopLossMoney || null,
+      currentPremium: trade.currentPremium || null,
+      currentPremiumCheckedAt: trade.currentPremiumCheckedAt || null,
+      runningProfitAmount: trade.runningProfitAmount || null,
+      runningProfitPercent:
+        trade.runningProfitPercent === 0 ? 0 : trade.runningProfitPercent || null,
+      rewardPoints: trade.rewardPoints === 0 ? 0 : trade.rewardPoints || null,
+      riskRewardRatio:
+        trade.riskRewardRatio === 0 ? 0 : trade.riskRewardRatio || null,
+      riskReward: trade.riskReward || null,
       premiumSlActive:
         ["RUNNING", "RUNNING_UNPROTECTED"].includes(trade.status) &&
         Boolean(trade.stopLossOrderId),
@@ -234,10 +466,13 @@ function getDashboardTrades(limit = 3, tradeMode, fallbackPremiumSlInterval) {
 }
 
 module.exports = {
+  calculateTradeMetrics,
   createTrade,
   getDashboardTrades,
   getDisplayStatus,
   markLatestOpenTradeExited,
   markTradeFailed,
   markTradeStopLossHit,
+  updateLatestOpenTradeMarket,
+  updateLatestOpenTradeStopLoss,
 };

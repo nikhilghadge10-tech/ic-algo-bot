@@ -58,6 +58,8 @@ const {
   markLatestOpenTradeExited,
   markTradeFailed,
   markTradeStopLossHit,
+  updateLatestOpenTradeMarket,
+  updateLatestOpenTradeStopLoss,
 } = require("./services/tradeHistoryService");
 
 const positionData = loadPosition();
@@ -85,6 +87,7 @@ const WEBHOOK_DEDUPE_WINDOW_MS = 15 * 60 * 1000;
 const BROKER_POSITION_SYNC_INTERVAL_MS =
   Number(process.env.BROKER_POSITION_SYNC_INTERVAL_MS || 15000) || 15000;
 let brokerPositionSyncInFlight = false;
+let lastMarketMetricsWarningAt = 0;
 
 // All incoming webhook/control payloads are JSON.
 app.use(express.json());
@@ -148,6 +151,7 @@ app.get("/status", async (req, res) => {
   const activeTradeMode = getTradeMode(statusConfig);
   const positionBelongsToActiveMode =
     currentPosition && normalizeTradeMode(currentPositionMode) === activeTradeMode;
+  const savedPosition = loadPosition();
 
   res.json({
     currentPosition: positionBelongsToActiveMode ? currentPosition : null,
@@ -173,6 +177,7 @@ app.get("/status", async (req, res) => {
     autoPremiumSl: statusConfig.AUTO_PREMIUM_SL,
     premiumSlInterval: statusConfig.PREMIUM_SL_INTERVAL,
     premiumSlLimitBand: statusConfig.PREMIUM_SL_LIMIT_BAND,
+    brokerPositionSyncIntervalMs: BROKER_POSITION_SYNC_INTERVAL_MS,
     activePosition: positionBelongsToActiveMode
       ? {
           currentPosition,
@@ -182,6 +187,14 @@ app.get("/status", async (req, res) => {
           optionSymbol,
           stopLossOrderId,
           premiumStopLoss,
+          capitalDeployed: savedPosition.capitalDeployed || null,
+          stopLossMoney: savedPosition.stopLossMoney || null,
+          currentPremium: savedPosition.currentPremium || null,
+          currentPremiumCheckedAt: savedPosition.currentPremiumCheckedAt || null,
+          runningProfitAmount: savedPosition.runningProfitAmount ?? null,
+          runningProfitPercent: savedPosition.runningProfitPercent ?? null,
+          riskRewardRatio: savedPosition.riskRewardRatio ?? null,
+          riskReward: savedPosition.riskReward || null,
         }
       : null,
   });
@@ -226,7 +239,8 @@ app.post("/trail-stop-loss", async (req, res) => {
     });
   }
 
-  const statusResult = await getOrderStatus(stopLossOrderId);
+  const trackedStopLossOrderId = stopLossOrderId;
+  const statusResult = await getOrderStatus(trackedStopLossOrderId);
 
   if (!statusResult.success) {
     return res.status(502).json({
@@ -239,7 +253,7 @@ app.post("/trail-stop-loss", async (req, res) => {
   const orderStatus = getBrokerOrderStatus(statusResult);
 
   if (["TRADED", "EXECUTED", "FILLED", "COMPLETE", "COMPLETED"].includes(orderStatus)) {
-    markTradeStopLossHit(stopLossOrderId);
+    markTradeStopLossHit(trackedStopLossOrderId);
     clearOpenPosition();
     return res.status(409).json({
       success: false,
@@ -279,7 +293,7 @@ app.post("/trail-stop-loss", async (req, res) => {
   }
 
   const modifyResult = await modifyStopLossLimitSellOrder({
-    orderId: stopLossOrderId,
+    orderId: trackedStopLossOrderId,
     quantity,
     triggerPrice,
     limitPrice,
@@ -293,10 +307,52 @@ app.post("/trail-stop-loss", async (req, res) => {
     });
   }
 
+  const trailVerification = await confirmStopLossTrailUpdate(
+    trackedStopLossOrderId,
+    triggerPrice,
+    limitPrice,
+  );
+
+  if (!trailVerification.success) {
+    if (trailVerification.executed) {
+      markTradeStopLossHit(trackedStopLossOrderId);
+      clearOpenPosition();
+    }
+
+    await sendTelegram(
+      `⚠️ Stop Loss Trail Not Confirmed
+
+Contract :
+${optionSymbol}
+
+SL Order ID :
+${trackedStopLossOrderId}
+
+Requested Trigger :
+${triggerPrice}
+
+Requested Limit :
+${limitPrice}
+
+Reason:
+${trailVerification.error || "Broker did not confirm the updated SL order"}
+
+Please check Dhan orders manually.`,
+    );
+
+    return res.status(409).json({
+      success: false,
+      message: "Dhan accepted the trail request, but the updated SL was not confirmed",
+      error: trailVerification.error,
+      status: trailVerification.status,
+      order: trailVerification.order,
+    });
+  }
+
   saveOpenPositionTrailUpdate({ triggerPrice });
 
   logger.info(
-    `Manual SL trail: orderId=${stopLossOrderId} trigger=${triggerPrice} limit=${limitPrice}`,
+    `Manual SL trail confirmed: orderId=${trackedStopLossOrderId} trigger=${triggerPrice} limit=${limitPrice} status=${trailVerification.status}`,
   );
 
   await sendTelegram(
@@ -306,7 +362,7 @@ Contract :
 ${optionSymbol}
 
 SL Order ID :
-${stopLossOrderId}
+${trackedStopLossOrderId}
 
 Trigger :
 ${triggerPrice}
@@ -318,9 +374,10 @@ ${limitPrice}`,
   return res.json({
     success: true,
     message: `Stop-loss trailed to ${triggerPrice}`,
-    orderId: stopLossOrderId,
-    triggerPrice,
-    limitPrice,
+    orderId: trackedStopLossOrderId,
+    triggerPrice: trailVerification.triggerPrice,
+    limitPrice: trailVerification.limitPrice,
+    status: trailVerification.status,
     result: modifyResult.data,
   });
 });
@@ -736,6 +793,97 @@ async function confirmProtectiveStopLoss(
   };
 }
 
+async function confirmStopLossTrailUpdate(
+  orderId,
+  expectedTriggerPrice,
+  expectedLimitPrice,
+) {
+  if (String(orderId).startsWith("PAPER-")) {
+    return {
+      success: true,
+      paperTrade: true,
+      orderId,
+      status: "PENDING",
+      triggerPrice: expectedTriggerPrice,
+      limitPrice: expectedLimitPrice,
+    };
+  }
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    if (attempt > 0) {
+      await delay(150);
+    }
+
+    const statusResult = await getOrderStatus(orderId);
+
+    if (!statusResult.success) {
+      continue;
+    }
+
+    const status = getBrokerOrderStatus(statusResult);
+    const order = getBrokerOrderRecord(statusResult);
+
+    if (isBrokerOrderExecuted(status)) {
+      return {
+        success: false,
+        executed: true,
+        status,
+        order,
+        error: "Stop-loss order executed while trail update was being verified",
+      };
+    }
+
+    if (isBrokerOrderInactive(status)) {
+      return {
+        success: false,
+        inactive: true,
+        status,
+        order,
+        error: getBrokerOrderFailureReason(statusResult),
+      };
+    }
+
+    if (["PENDING", "TRANSIT"].includes(status)) {
+      const reportedTrigger = Number(order?.triggerPrice || 0);
+      const reportedLimit = Number(order?.price || 0);
+      const orderType = String(order?.orderType || "").toUpperCase();
+      const triggerMatches =
+        Math.abs(reportedTrigger - Number(expectedTriggerPrice)) < 0.011;
+      const limitMatches =
+        Math.abs(reportedLimit - Number(expectedLimitPrice)) < 0.011;
+
+      if (orderType === "STOP_LOSS" && triggerMatches && limitMatches) {
+        return {
+          success: true,
+          orderId,
+          status,
+          triggerPrice: reportedTrigger,
+          limitPrice: reportedLimit,
+          order,
+        };
+      }
+
+      return {
+        success: false,
+        orderId,
+        status,
+        order,
+        error:
+          `Trail modify not reflected by broker: type=${orderType || "UNKNOWN"} ` +
+          `trigger=${reportedTrigger || "missing"} expectedTrigger=${expectedTriggerPrice} ` +
+          `limit=${reportedLimit || "missing"} expectedLimit=${expectedLimitPrice}`,
+      };
+    }
+  }
+
+  return {
+    success: false,
+    orderId,
+    status: "UNCONFIRMED",
+    error: "Modified stop-loss order could not be verified as pending",
+  };
+}
+
 async function getExecutedStopLossAfterCancel(orderId) {
   if (!orderId) {
     return null;
@@ -879,6 +1027,11 @@ function saveOpenPositionTrailUpdate({ triggerPrice }) {
   const existingPosition = loadPosition();
 
   premiumStopLoss = triggerPrice;
+  const updatedTrade = updateLatestOpenTradeStopLoss({
+    securityId,
+    tradeMode: currentPositionMode,
+    premiumStopLoss,
+  });
 
   savePosition({
     ...existingPosition,
@@ -890,7 +1043,81 @@ function saveOpenPositionTrailUpdate({ triggerPrice }) {
     stopLossOrderId,
     premiumStopLoss,
     premiumStopLossCandle,
+    capitalDeployed: updatedTrade?.capitalDeployed || existingPosition.capitalDeployed,
+    stopLossMoney: updatedTrade?.stopLossMoney || existingPosition.stopLossMoney,
+    riskPoints: updatedTrade?.riskPoints || existingPosition.riskPoints,
+    currentPremium: updatedTrade?.currentPremium || existingPosition.currentPremium,
+    currentPremiumCheckedAt:
+      updatedTrade?.currentPremiumCheckedAt ||
+      existingPosition.currentPremiumCheckedAt,
+    runningProfitAmount:
+      updatedTrade?.runningProfitAmount ?? existingPosition.runningProfitAmount,
+    runningProfitPercent:
+      updatedTrade?.runningProfitPercent ?? existingPosition.runningProfitPercent,
+    riskRewardRatio:
+      updatedTrade?.riskRewardRatio ?? existingPosition.riskRewardRatio,
+    riskReward: updatedTrade?.riskReward || existingPosition.riskReward,
   });
+}
+
+async function updateActiveTradeMarketMetrics(source = "POLL") {
+  if (!currentPosition || !securityId || !quantity) {
+    return null;
+  }
+
+  try {
+    const quote = await getOptionLtp({
+      SEM_SMST_SECURITY_ID: securityId,
+      SEM_INSTRUMENT_NAME: "OPTIDX",
+    });
+    const updatedTrade = updateLatestOpenTradeMarket({
+      securityId,
+      tradeMode: currentPositionMode,
+      currentPremium: quote.ltp,
+    });
+
+    if (!updatedTrade) {
+      return null;
+    }
+
+    const existingPosition = loadPosition();
+
+    savePosition({
+      ...existingPosition,
+      currentPosition,
+      tradeMode: currentPositionMode,
+      securityId,
+      quantity,
+      optionSymbol,
+      stopLossOrderId,
+      premiumStopLoss,
+      premiumStopLossCandle,
+      currentPremium: updatedTrade.currentPremium,
+      currentPremiumCheckedAt: updatedTrade.currentPremiumCheckedAt,
+      capitalDeployed: updatedTrade.capitalDeployed,
+      stopLossMoney: updatedTrade.stopLossMoney,
+      runningProfitAmount: updatedTrade.runningProfitAmount,
+      runningProfitPercent: updatedTrade.runningProfitPercent,
+      riskRewardRatio: updatedTrade.riskRewardRatio,
+      riskReward: updatedTrade.riskReward,
+      riskPoints: updatedTrade.riskPoints,
+      riskSource: updatedTrade.riskSource || existingPosition.riskSource,
+    });
+
+    return updatedTrade;
+  } catch (error) {
+    const now = Date.now();
+
+    if (now - lastMarketMetricsWarningAt > 60000) {
+      lastMarketMetricsWarningAt = now;
+      logger.warn(
+        `Trade market metrics refresh skipped: source=${source} securityId=${securityId} ` +
+          `reason=${error.message}`,
+      );
+    }
+
+    return null;
+  }
 }
 
 async function syncActiveStopLossStatus() {
@@ -3131,6 +3358,7 @@ setInterval(async () => {
   try {
     await syncActiveStopLossStatus();
     await syncActiveBrokerPosition("POLL");
+    await updateActiveTradeMarketMetrics("POLL");
   } catch (error) {
     logger.warn(`Broker position poll failed: ${error.message}`);
   }

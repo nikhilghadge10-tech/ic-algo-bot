@@ -978,6 +978,45 @@
   line-height: 1.35;
 }
 
+.trailStrategySettings {
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.trailSettingsTitle {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.trailSettingsRow {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.trailStepText {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.trailClassicStepRow {
+  gap: 8px;
+}
+
+.trailInlineNumberInput,
+.trailInlineNumberInput .sapMInputBaseInner {
+  min-width: 0;
+  width: 72px !important;
+}
+
 .trailSlControls {
   display: grid !important;
   grid-template-columns: minmax(120px, 1fr) auto minmax(120px, 1fr) minmax(112px, 0.58fr);
@@ -986,9 +1025,49 @@
   width: 100%;
 }
 
+.trailSlControls > .sapMFlexItem {
+  align-self: center;
+}
+
+.trailSlControls > .sapMFlexItem:has(.trailTriggerInput) {
+  grid-column: 1;
+}
+
+.trailSlControls > .sapMFlexItem:has(.trailPriceOperator) {
+  display: flex;
+  grid-column: 2;
+  align-items: center;
+  justify-content: center;
+  height: 2.25rem;
+}
+
+.trailSlControls > .sapMFlexItem:has(.trailLimitInput) {
+  grid-column: 3;
+}
+
+.trailSlControls > .sapMFlexItem:has(.trailManualButton) {
+  grid-column: 4;
+}
+
+.trailPlanStatus {
+  min-width: 0;
+}
+
+.trailStrategyControls {
+  grid-template-columns: minmax(180px, 1fr) minmax(112px, 0.32fr);
+}
+
 .trailPriceOperator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   min-width: 18px;
+  height: 2.25rem;
   color: var(--ink);
+}
+
+.trailPriceOperatorText {
+  display: block;
   font-size: 1.2rem;
   font-weight: 800;
   line-height: 1;

@@ -86,7 +86,14 @@ const recentWebhookSignals = new Map();
 const WEBHOOK_DEDUPE_WINDOW_MS = 15 * 60 * 1000;
 const BROKER_POSITION_SYNC_INTERVAL_MS =
   Number(process.env.BROKER_POSITION_SYNC_INTERVAL_MS || 15000) || 15000;
+const AUTO_TRAIL_INTERVAL_MS =
+  Number(process.env.AUTO_TRAIL_INTERVAL_MS || 15000) || 15000;
+const AUTO_TRAIL_MARKET_METRICS_FRESH_MS =
+  Number(process.env.AUTO_TRAIL_MARKET_METRICS_FRESH_MS || 10000) || 10000;
 let brokerPositionSyncInFlight = false;
+let autoTrailInFlight = false;
+let lastAutoTrailLogKey = "";
+let lastAutoTrailLogAt = 0;
 let lastMarketMetricsWarningAt = 0;
 
 // All incoming webhook/control payloads are JSON.
@@ -175,6 +182,8 @@ app.get("/status", async (req, res) => {
       statusConfig.PREMIUM_SL_INTERVAL,
     ),
     autoPremiumSl: statusConfig.AUTO_PREMIUM_SL,
+    autoTrailSl: statusConfig.AUTO_TRAIL_SL,
+    autoTrailIntervalMs: AUTO_TRAIL_INTERVAL_MS,
     premiumSlInterval: statusConfig.PREMIUM_SL_INTERVAL,
     premiumSlLimitBand: statusConfig.PREMIUM_SL_LIMIT_BAND,
     brokerPositionSyncIntervalMs: BROKER_POSITION_SYNC_INTERVAL_MS,
@@ -201,17 +210,32 @@ app.get("/status", async (req, res) => {
 });
 
 app.post("/trail-stop-loss", async (req, res) => {
+  const triggerPrice = Number(req.body?.triggerPrice);
+  const limitPrice = Number(req.body?.limitPrice);
+
+  const result = await trailStopLossOrder({
+    triggerPrice,
+    limitPrice,
+    source: "MANUAL",
+  });
+
+  return res.status(result.statusCode).json(result.body);
+});
+
+async function trailStopLossOrder({ triggerPrice, limitPrice, source = "MANUAL" }) {
+  const sourceLabel = source === "AUTO" ? "Automatic" : "Manual";
+
   await syncActiveStopLossStatus();
 
   if (!currentPosition || !stopLossOrderId) {
-    return res.status(400).json({
-      success: false,
-      message: "No active protective stop-loss order to trail",
-    });
+    return {
+      statusCode: 400,
+      body: {
+        success: false,
+        message: "No active protective stop-loss order to trail",
+      },
+    };
   }
-
-  const triggerPrice = Number(req.body?.triggerPrice);
-  const limitPrice = Number(req.body?.limitPrice);
 
   if (
     !Number.isFinite(triggerPrice) ||
@@ -219,55 +243,80 @@ app.post("/trail-stop-loss", async (req, res) => {
     !Number.isFinite(limitPrice) ||
     limitPrice <= 0
   ) {
-    return res.status(400).json({
-      success: false,
-      message: "Enter valid trigger and limit prices",
-    });
+    return {
+      statusCode: 400,
+      body: {
+        success: false,
+        message: "Enter valid trigger and limit prices",
+      },
+    };
   }
 
   if (limitPrice >= triggerPrice) {
-    return res.status(400).json({
-      success: false,
-      message: "For SELL SL-Limit, limit price must be below trigger price",
-    });
+    return {
+      statusCode: 400,
+      body: {
+        success: false,
+        message: "For SELL SL-Limit, limit price must be below trigger price",
+      },
+    };
   }
 
-  if (premiumStopLoss && triggerPrice <= Number(premiumStopLoss)) {
-    return res.status(400).json({
-      success: false,
-      message: `New trigger must be above current tracked SL ${premiumStopLoss}`,
-    });
+  if (
+    source !== "MANUAL" &&
+    premiumStopLoss &&
+    triggerPrice <= Number(premiumStopLoss)
+  ) {
+    return {
+      statusCode: 400,
+      body: {
+        success: false,
+        message: `New trigger must be above current tracked SL ${premiumStopLoss}`,
+      },
+    };
   }
 
   const trackedStopLossOrderId = stopLossOrderId;
   const statusResult = await getOrderStatus(trackedStopLossOrderId);
 
   if (!statusResult.success) {
-    return res.status(502).json({
-      success: false,
-      message: "Unable to verify current stop-loss order status",
-      error: statusResult.error,
-    });
+    return {
+      statusCode: 502,
+      body: {
+        success: false,
+        message: "Unable to verify current stop-loss order status",
+        error: statusResult.error,
+      },
+    };
   }
 
   const orderStatus = getBrokerOrderStatus(statusResult);
 
   if (["TRADED", "EXECUTED", "FILLED", "COMPLETE", "COMPLETED"].includes(orderStatus)) {
-    markTradeStopLossHit(trackedStopLossOrderId);
-    clearOpenPosition();
-    return res.status(409).json({
-      success: false,
-      message: "Stop-loss order is already executed; position was synced flat",
-      status: orderStatus,
+    markTradeStopLossHit({
+      orderId: trackedStopLossOrderId,
+      exitPrice: getExecutedPrice(statusResult, premiumStopLoss),
     });
+    clearOpenPosition();
+    return {
+      statusCode: 409,
+      body: {
+        success: false,
+        message: "Stop-loss order is already executed; position was synced flat",
+        status: orderStatus,
+      },
+    };
   }
 
   if (["CANCELLED", "REJECTED", "EXPIRED"].includes(orderStatus)) {
-    return res.status(409).json({
-      success: false,
-      message: `Stop-loss order cannot be modified because it is ${orderStatus}`,
-      status: orderStatus,
-    });
+    return {
+      statusCode: 409,
+      body: {
+        success: false,
+        message: `Stop-loss order cannot be modified because it is ${orderStatus}`,
+        status: orderStatus,
+      },
+    };
   }
 
   const activeTradeMode = getTradeMode(getRuntimeConfig());
@@ -276,19 +325,25 @@ app.post("/trail-stop-loss", async (req, res) => {
     const brokerPosition = await getBrokerOpenQuantityForSecurity(securityId);
 
     if (!brokerPosition.success) {
-      return res.status(502).json({
-        success: false,
-        message: "Unable to verify broker position before trailing SL",
-        error: brokerPosition.error,
-      });
+      return {
+        statusCode: 502,
+        body: {
+          success: false,
+          message: "Unable to verify broker position before trailing SL",
+          error: brokerPosition.error,
+        },
+      };
     }
 
     if (brokerPosition.quantity <= 0) {
-      return res.status(409).json({
-        success: false,
-        message:
-          "Dhan positions show no open quantity for this security. Do not trail this SL.",
-      });
+      return {
+        statusCode: 409,
+        body: {
+          success: false,
+          message:
+            "Dhan positions show no open quantity for this security. Do not trail this SL.",
+        },
+      };
     }
   }
 
@@ -300,11 +355,14 @@ app.post("/trail-stop-loss", async (req, res) => {
   });
 
   if (!modifyResult.success) {
-    return res.status(502).json({
-      success: false,
-      message: "Dhan rejected stop-loss trail request",
-      error: modifyResult.error,
-    });
+    return {
+      statusCode: 502,
+      body: {
+        success: false,
+        message: "Dhan rejected stop-loss trail request",
+        error: modifyResult.error,
+      },
+    };
   }
 
   const trailVerification = await confirmStopLossTrailUpdate(
@@ -315,12 +373,15 @@ app.post("/trail-stop-loss", async (req, res) => {
 
   if (!trailVerification.success) {
     if (trailVerification.executed) {
-      markTradeStopLossHit(trackedStopLossOrderId);
+      markTradeStopLossHit({
+        orderId: trackedStopLossOrderId,
+        exitPrice: getExecutedPrice(trailVerification, premiumStopLoss),
+      });
       clearOpenPosition();
     }
 
     await sendTelegram(
-      `⚠️ Stop Loss Trail Not Confirmed
+      `⚠️ ${sourceLabel} Stop Loss Trail Not Confirmed
 
 Contract :
 ${optionSymbol}
@@ -340,23 +401,26 @@ ${trailVerification.error || "Broker did not confirm the updated SL order"}
 Please check Dhan orders manually.`,
     );
 
-    return res.status(409).json({
-      success: false,
-      message: "Dhan accepted the trail request, but the updated SL was not confirmed",
-      error: trailVerification.error,
-      status: trailVerification.status,
-      order: trailVerification.order,
-    });
+    return {
+      statusCode: 409,
+      body: {
+        success: false,
+        message: "Dhan accepted the trail request, but the updated SL was not confirmed",
+        error: trailVerification.error,
+        status: trailVerification.status,
+        order: trailVerification.order,
+      },
+    };
   }
 
   saveOpenPositionTrailUpdate({ triggerPrice });
 
   logger.info(
-    `Manual SL trail confirmed: orderId=${trackedStopLossOrderId} trigger=${triggerPrice} limit=${limitPrice} status=${trailVerification.status}`,
+    `${sourceLabel} SL trail confirmed: orderId=${trackedStopLossOrderId} trigger=${triggerPrice} limit=${limitPrice} status=${trailVerification.status}`,
   );
 
   await sendTelegram(
-    `✅ Stop Loss Trailed
+    `✅ ${sourceLabel} Stop Loss Trailed
 
 Contract :
 ${optionSymbol}
@@ -371,16 +435,187 @@ Limit :
 ${limitPrice}`,
   );
 
-  return res.json({
-    success: true,
-    message: `Stop-loss trailed to ${triggerPrice}`,
-    orderId: trackedStopLossOrderId,
-    triggerPrice: trailVerification.triggerPrice,
-    limitPrice: trailVerification.limitPrice,
-    status: trailVerification.status,
-    result: modifyResult.data,
-  });
-});
+  return {
+    statusCode: 200,
+    body: {
+      success: true,
+      message: `Stop-loss trailed to ${triggerPrice}`,
+      orderId: trackedStopLossOrderId,
+      triggerPrice: trailVerification.triggerPrice,
+      limitPrice: trailVerification.limitPrice,
+      status: trailVerification.status,
+      result: modifyResult.data,
+    },
+  };
+}
+
+function buildAutoCostToCostTrailPlan(config, updatedTrade) {
+  const trailMode = String(config.TRAIL_MODE || "CONSERVATIVE").toUpperCase();
+
+  if (!["CONSERVATIVE", "AGGRESSIVE"].includes(trailMode)) {
+    return {
+      eligible: false,
+      logKey: `mode:${trailMode}`,
+      message: `AUTO_TRAIL skipped: mode=${trailMode} is not a cost-to-cost mode`,
+    };
+  }
+
+  const savedPosition = loadPosition();
+  const entryPremium = Number(
+    savedPosition.entryPremiumReference ||
+      savedPosition.entryPrice ||
+      updatedTrade?.entryPrice,
+  );
+  const currentOptionPremium = Number(
+    updatedTrade?.currentPremium || savedPosition.currentPremium,
+  );
+  const currentStopLoss = Number(premiumStopLoss || savedPosition.premiumStopLoss);
+  const thresholdPercent = Number(config.TRAIL_COST_TO_COST_PERCENT || 7);
+  const limitBand = Number(config.PREMIUM_SL_LIMIT_BAND || 1) || 1;
+
+  if (
+    !currentPosition ||
+    !stopLossOrderId ||
+    !Number.isFinite(entryPremium) ||
+    entryPremium <= 0 ||
+    !Number.isFinite(currentOptionPremium) ||
+    currentOptionPremium <= 0 ||
+    !Number.isFinite(currentStopLoss) ||
+    currentStopLoss <= 0 ||
+    !Number.isFinite(thresholdPercent) ||
+    thresholdPercent < 0
+  ) {
+    return {
+      eligible: false,
+      logKey: "waiting-metrics",
+      message: "AUTO_TRAIL waiting: active trade premium metrics are incomplete",
+    };
+  }
+
+  const targetPremium = roundToTick(
+    entryPremium * (1 + thresholdPercent / 100),
+    0.05,
+  );
+  const triggerPrice = roundToTick(entryPremium, 0.05);
+  const limitPrice = roundToTick(triggerPrice - limitBand, 0.05);
+
+  if (currentOptionPremium < targetPremium) {
+    return {
+      eligible: false,
+      logKey: `below:${currentOptionPremium}:${targetPremium}`,
+      message:
+        `AUTO_TRAIL waiting: premium=${currentOptionPremium} ` +
+        `target=${targetPremium} threshold=${thresholdPercent}%`,
+    };
+  }
+
+  if (triggerPrice <= currentStopLoss) {
+    return {
+      eligible: false,
+      logKey: `already-protected:${triggerPrice}:${currentStopLoss}`,
+      message:
+        `AUTO_TRAIL skipped: cost SL=${triggerPrice} is not above ` +
+        `current SL=${currentStopLoss}`,
+    };
+  }
+
+  if (!limitPrice || limitPrice <= 0 || limitPrice >= triggerPrice) {
+    return {
+      eligible: false,
+      logKey: `invalid-prices:${triggerPrice}:${limitPrice}`,
+      message:
+        `AUTO_TRAIL skipped: invalid SL-Limit prices ` +
+        `trigger=${triggerPrice} limit=${limitPrice}`,
+    };
+  }
+
+  return {
+    eligible: true,
+    triggerPrice,
+    limitPrice,
+    targetPremium,
+    currentOptionPremium,
+    thresholdPercent,
+    logKey: `trail:${triggerPrice}:${limitPrice}:${currentOptionPremium}`,
+    message:
+      `AUTO_TRAIL eligible: premium=${currentOptionPremium} ` +
+      `target=${targetPremium} trigger=${triggerPrice} limit=${limitPrice}`,
+  };
+}
+
+function logAutoTrailDecision(plan, level = "info") {
+  const now = Date.now();
+
+  if (
+    plan.logKey === lastAutoTrailLogKey &&
+    now - lastAutoTrailLogAt < 60 * 1000
+  ) {
+    return;
+  }
+
+  lastAutoTrailLogKey = plan.logKey;
+  lastAutoTrailLogAt = now;
+  logger[level](plan.message);
+}
+
+async function runAutoTrailWorker() {
+  if (autoTrailInFlight) {
+    return;
+  }
+
+  const config = getRuntimeConfig();
+
+  if (!isEnabled(config.AUTO_TRAIL_SL)) {
+    return;
+  }
+
+  autoTrailInFlight = true;
+
+  try {
+    await syncActiveStopLossStatus();
+
+    if (!currentPosition || !stopLossOrderId) {
+      return;
+    }
+
+    const savedPosition = loadPosition();
+    const metricsCheckedAt = Date.parse(savedPosition.currentPremiumCheckedAt || "");
+    const metricsAgeMs = Number.isFinite(metricsCheckedAt)
+      ? Date.now() - metricsCheckedAt
+      : Infinity;
+    const updatedTrade =
+      metricsAgeMs <= AUTO_TRAIL_MARKET_METRICS_FRESH_MS
+        ? {
+            currentPremium: savedPosition.currentPremium,
+            entryPrice: savedPosition.entryPremiumReference,
+          }
+        : await updateActiveTradeMarketMetrics("AUTO_TRAIL");
+    const plan = buildAutoCostToCostTrailPlan(config, updatedTrade);
+
+    if (!plan.eligible) {
+      logAutoTrailDecision(plan);
+      return;
+    }
+
+    logger.info(plan.message);
+
+    const result = await trailStopLossOrder({
+      triggerPrice: plan.triggerPrice,
+      limitPrice: plan.limitPrice,
+      source: "AUTO",
+    });
+
+    if (!result.body.success) {
+      logger.warn(
+        `AUTO_TRAIL failed: status=${result.statusCode} message=${result.body.message}`,
+      );
+    }
+  } catch (error) {
+    logger.warn(`AUTO_TRAIL worker failed: ${error.message}`);
+  } finally {
+    autoTrailInFlight = false;
+  }
+}
 
 // Merge process env with the latest .env file values written by the dashboard.
 function getRuntimeConfig() {
@@ -1143,7 +1378,10 @@ async function syncActiveStopLossStatus() {
   }
 
   logger.info(`Premium stop-loss hit: ${trackedStopLossOrderId}`);
-  markTradeStopLossHit(trackedStopLossOrderId);
+  markTradeStopLossHit({
+    orderId: trackedStopLossOrderId,
+    exitPrice: getExecutedPrice(result, premiumStopLoss),
+  });
   clearOpenPosition();
 }
 
@@ -1165,7 +1403,10 @@ async function cancelStaleStopLossAfterBrokerFlat({
     const orderStatus = getBrokerOrderStatus(statusResult);
 
     if (isBrokerOrderExecuted(orderStatus)) {
-      markTradeStopLossHit(trackedStopLossOrderId);
+      markTradeStopLossHit({
+        orderId: trackedStopLossOrderId,
+        exitPrice: getExecutedPrice(statusResult, premiumStopLoss),
+      });
       clearOpenPosition();
 
       await sendTelegram(
@@ -2442,7 +2683,10 @@ Position NOT changed.`,
               riskSource: "ACTUAL_FILL",
             });
             recordSuccessfulEntry(activeTradeMode);
-            markTradeStopLossHit(stopLossOrderId);
+            markTradeStopLossHit({
+              orderId: stopLossOrderId,
+              exitPrice: getExecutedPrice(slVerification, premiumStopLoss),
+            });
             clearOpenPosition();
             logger.warn(
               `LONG_ENTRY premium SL executed immediately: ${stopLossOrderId}`,
@@ -2482,7 +2726,10 @@ Position NOT changed.`,
                 riskSource: "ACTUAL_FILL",
               });
               recordSuccessfulEntry(activeTradeMode);
-              markTradeStopLossHit(stopLossOrderId);
+              markTradeStopLossHit({
+                orderId: stopLossOrderId,
+                exitPrice: getExecutedPrice(executedStopLoss, premiumStopLoss),
+              });
               clearOpenPosition();
               logger.warn(
                 `LONG_ENTRY premium SL traded during verification: ${stopLossOrderId}`,
@@ -2877,7 +3124,10 @@ Position NOT changed.`,
               riskSource: "ACTUAL_FILL",
             });
             recordSuccessfulEntry(activeTradeMode);
-            markTradeStopLossHit(stopLossOrderId);
+            markTradeStopLossHit({
+              orderId: stopLossOrderId,
+              exitPrice: getExecutedPrice(slVerification, premiumStopLoss),
+            });
             clearOpenPosition();
             logger.warn(
               `SHORT_ENTRY premium SL executed immediately: ${stopLossOrderId}`,
@@ -2917,7 +3167,10 @@ Position NOT changed.`,
                 riskSource: "ACTUAL_FILL",
               });
               recordSuccessfulEntry(activeTradeMode);
-              markTradeStopLossHit(stopLossOrderId);
+              markTradeStopLossHit({
+                orderId: stopLossOrderId,
+                exitPrice: getExecutedPrice(executedStopLoss, premiumStopLoss),
+              });
               clearOpenPosition();
               logger.warn(
                 `SHORT_ENTRY premium SL traded during verification: ${stopLossOrderId}`,
@@ -3363,6 +3616,11 @@ setInterval(async () => {
     logger.warn(`Broker position poll failed: ${error.message}`);
   }
 }, BROKER_POSITION_SYNC_INTERVAL_MS);
+
+setTimeout(() => {
+  runAutoTrailWorker();
+  setInterval(runAutoTrailWorker, AUTO_TRAIL_INTERVAL_MS);
+}, Math.min(5000, AUTO_TRAIL_INTERVAL_MS)).unref();
 
 function shutdown(signal) {
   logger.info(`LIFECYCLE Algo server received ${signal}, shutting down`);

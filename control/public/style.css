@@ -346,6 +346,17 @@
   font-weight: 500 !important;
 }
 
+.lastTradesList {
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.lastTradeSummaryLine .sapMObjStatusText {
+  font-size: 0.86rem;
+  font-weight: 800 !important;
+  white-space: normal;
+}
+
 /* Buttons, inputs, and OpenUI5 control polish. */
 .sapMBtnInner {
   border-radius: 6px !important;

@@ -940,7 +940,7 @@
         }
 
         function isSignalLogLine(line) {
-          return /Webhook received:|Last Signal Updated:|Execution context:|Selected Option:|Entry sizing:|Position changed to|Position closed|ignored because|Unknown signal|DHAN .* ERROR|Telegram Error|failed/i.test(
+          return /Webhook received:|Last Signal Updated:|Execution context:|Selected Option:|Entry sizing:|Position changed to|Position closed|Premium stop-loss hit|Manual SL trail confirmed|Automatic SL trail confirmed|DHAN option SL-Limit modify|Duplicate webhook ignored|ignored because|Unknown signal|DHAN .* ERROR|Telegram Error|failed/i.test(
             line,
           );
         }
@@ -1331,6 +1331,18 @@
             return "Unknown signal";
           }
 
+          if (/Duplicate webhook ignored/i.test(line)) {
+            return "Duplicate signal ignored";
+          }
+
+          const noPositionMatch = line.match(
+            /(LONG_EXIT|SHORT_EXIT) ignored because no (LONG|SHORT) position is open/i,
+          );
+
+          if (noPositionMatch) {
+            return `No ${noPositionMatch[2].toUpperCase()} position is open`;
+          }
+
           if (/disabled/i.test(line)) {
             return "Trading permission disabled";
           }
@@ -1426,7 +1438,9 @@
             closeOptionLine || openOptionLine,
           );
           const ignoredLine = signalLines.find((line) =>
-            /ignored because|Unknown signal/i.test(line),
+            /ignored because|Unknown signal|Duplicate webhook ignored/i.test(
+              line,
+            ),
           );
           const orderErrorLine = signalLines.find((line) =>
             /DHAN .* ERROR/i.test(line),
@@ -2002,6 +2016,7 @@
 
           if (path === "PAPER_TRADE") {
             model.setProperty("/AUTO_PREMIUM_SL", state ? "false" : "true");
+            model.setProperty("/AUTO_TRAIL_SL", "false");
           }
 
           await saveConfig({ silent: true });
@@ -2020,6 +2035,7 @@
             DHAN_ENV: data.DHAN_ENV,
             NO_TRADE_TODAY: data.NO_TRADE_TODAY,
             AUTO_PREMIUM_SL: data.AUTO_PREMIUM_SL,
+            AUTO_TRAIL_SL: data.AUTO_TRAIL_SL,
             MAX_DAILY_TRADES: data.MAX_DAILY_TRADES,
             MAX_OPEN_POSITIONS: data.MAX_OPEN_POSITIONS,
             NUMBER_OF_LOTS: data.NUMBER_OF_LOTS,
@@ -2790,6 +2806,83 @@
           return `${number >= 0 ? "+" : ""}${number.toFixed(2)}%`;
         }
 
+        function getTradeProfitNumber(trade) {
+          const profit = Number(trade?.realizedProfit);
+
+          return Number.isFinite(profit) ? profit : null;
+        }
+
+        function getTradeOutcomeLabel(trade) {
+          if (!trade) return "";
+
+          const profit = getTradeProfitNumber(trade);
+          const riskAmount = Number(trade.riskAmount);
+          const rewardMultiple =
+            Number.isFinite(profit) &&
+            profit > 0 &&
+            Number.isFinite(riskAmount) &&
+            riskAmount > 0
+              ? profit / riskAmount
+              : null;
+
+          if (profit === 0) {
+            return "Cost to cost";
+          }
+
+          if (trade.status === "SL_HIT") {
+            if (profit !== null && profit > 0) {
+              return "Profit locked";
+            }
+
+            return "SL was hit";
+          }
+
+          if (rewardMultiple !== null && rewardMultiple >= 1) {
+            return `1:${Math.floor(rewardMultiple)} target hit`;
+          }
+
+          if (profit !== null && profit > 0) {
+            return "Profit booked";
+          }
+
+          return trade.displayStatus || trade.status || "Recorded";
+        }
+
+        function formatSignedRupeeValue(value) {
+          const number = Number(value);
+
+          if (!Number.isFinite(number)) return "";
+
+          if (number === 0) return "₹0.00";
+
+          return `${number > 0 ? "+" : "-"}${formatRupeeValue(
+            Math.abs(number),
+          )}`;
+        }
+
+        function formatLastTradeSummary(trade) {
+          if (!trade) return "";
+
+          const profit = getTradeProfitNumber(trade);
+          const profitText =
+            profit !== null ? ` : ${formatSignedRupeeValue(profit)}` : "";
+
+          return `${trade.label || "Trade"} : ${getTradeOutcomeLabel(
+            trade,
+          )}${profitText}`;
+        }
+
+        function getLastTradeState(trade) {
+          const profit = getTradeProfitNumber(trade);
+
+          if (profit > 0) return "Success";
+          if (profit < 0) return "Error";
+          if (profit === 0) return "None";
+          if (trade?.status === "RUNNING") return "Warning";
+
+          return "None";
+        }
+
         function liveTradingStatusCard() {
           return new sap.m.VBox({
             items: [
@@ -2945,9 +3038,13 @@
                         text: {
                           path: "/algoLiveStatus/lastTrades/0/stopLossMoney",
                           formatter: function (stopLossMoney) {
-                            const value = formatRupeeValue(stopLossMoney);
+                            const parsed = Number(stopLossMoney);
+                            const value = formatRupeeValue(Math.abs(parsed));
                             return value
-                              ? formatActiveTradeDetail("SL Money", value)
+                              ? formatActiveTradeDetail(
+                                  parsed < 0 ? "SL Lock" : "SL Risk",
+                                  value,
+                                )
                               : "";
                           },
                         },
@@ -3018,22 +3115,59 @@
                         text: {
                           parts: [
                             { path: "/algoLiveStatus/running" },
-                            { path: "/algoLiveStatus/lastTrades/0" },
+                            { path: "/algoLiveStatus/lastTrades" },
                           ],
-                          formatter: function (running, trade) {
+                          formatter: function (running, trades) {
                             if (!running) return "Algo server not running";
-                            if (!trade) return "-";
-                            const profit = Number(trade.realizedProfit);
-                            const profitText = Number.isFinite(profit)
-                              ? ` • P&L ₹${profit.toLocaleString("en-IN", {
-                                  minimumFractionDigits: 2,
-                                  maximumFractionDigits: 2,
-                                })}`
-                              : "";
-                            return `${trade.label}: ${trade.displayStatus}${profitText}`;
+                            return Array.isArray(trades) && trades.length
+                              ? ""
+                              : "No trades recorded";
+                          },
+                        },
+                        visible: {
+                          parts: [
+                            { path: "/algoLiveStatus/running" },
+                            { path: "/algoLiveStatus/lastTrades" },
+                          ],
+                          formatter: function (running, trades) {
+                            return (
+                              !running ||
+                              !Array.isArray(trades) ||
+                              !trades.length
+                            );
                           },
                         },
                       }).addStyleClass("lastTradeLine"),
+                      new sap.m.VBox({
+                        visible: {
+                          parts: [
+                            { path: "/algoLiveStatus/running" },
+                            { path: "/algoLiveStatus/lastTrades" },
+                          ],
+                          formatter: function (running, trades) {
+                            return (
+                              Boolean(running) &&
+                              Array.isArray(trades) &&
+                              trades.length > 0
+                            );
+                          },
+                        },
+                        items: {
+                          path: "/algoLiveStatus/lastTrades",
+                          factory: function (id, context) {
+                            return new sap.m.ObjectStatus(id, {
+                              text: {
+                                path: context.getPath(),
+                                formatter: formatLastTradeSummary,
+                              },
+                              state: {
+                                path: context.getPath(),
+                                formatter: getLastTradeState,
+                              },
+                            }).addStyleClass("lastTradeSummaryLine");
+                          },
+                        },
+                      }).addStyleClass("lastTradesList"),
                     ],
                   }).addStyleClass("statusTile"),
 
@@ -3562,6 +3696,18 @@
                     "OFF",
                     "AUTO_PREMIUM_SL",
                     "Places a protective option SL-Limit order from the previous premium candle",
+                    {
+                      path: "/PAPER_TRADE",
+                      formatter: (paperTrade) => paperTrade !== "true",
+                    },
+                  ),
+
+                  createPermissionTile(
+                    "Auto Trail SL",
+                    "ON",
+                    "OFF",
+                    "AUTO_TRAIL_SL",
+                    "Moves the protective SL to cost when the trail plan is eligible",
                     {
                       path: "/PAPER_TRADE",
                       formatter: (paperTrade) => paperTrade !== "true",

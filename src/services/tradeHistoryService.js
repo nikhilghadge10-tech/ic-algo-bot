@@ -103,6 +103,25 @@ function getTradeEntryPremium(trade) {
   return Number(trade.entryPrice || trade.entryPremiumReference || 0);
 }
 
+function calculateRealizedProfit({ quantity, entryPremium, exitPremium }) {
+  const parsedQuantity = Number(quantity);
+  const parsedEntryPremium = Number(entryPremium);
+  const parsedExitPremium = Number(exitPremium);
+
+  if (
+    !Number.isFinite(parsedQuantity) ||
+    parsedQuantity <= 0 ||
+    !Number.isFinite(parsedEntryPremium) ||
+    parsedEntryPremium <= 0 ||
+    !Number.isFinite(parsedExitPremium) ||
+    parsedExitPremium <= 0
+  ) {
+    return null;
+  }
+
+  return roundMoney((parsedExitPremium - parsedEntryPremium) * parsedQuantity);
+}
+
 function calculateTradeMetrics({
   quantity,
   entryPremium,
@@ -141,7 +160,7 @@ function calculateTradeMetrics({
       : null;
   const previousRiskPoints = Number(previousMetrics.riskPoints);
   const riskPoints =
-    calculatedRiskPoints !== null
+    calculatedRiskPoints !== null && calculatedRiskPoints > 0
       ? calculatedRiskPoints
       : Number.isFinite(previousRiskPoints) && previousRiskPoints > 0
         ? roundMoney(previousRiskPoints)
@@ -296,7 +315,11 @@ function markLatestOpenTradeExited({ signal, exitOrderId, manual = false, tradeM
   return trade;
 }
 
-function markTradeStopLossHit(stopLossOrderId) {
+function markTradeStopLossHit(stopLossOrder) {
+  const stopLossOrderId =
+    typeof stopLossOrder === "object" ? stopLossOrder.orderId : stopLossOrder;
+  const requestedExitPrice =
+    typeof stopLossOrder === "object" ? Number(stopLossOrder.exitPrice) : null;
   const history = getTradeHistoryForToday();
   const trade = history.trades.find(
     (item) => item.stopLossOrderId && item.stopLossOrderId === stopLossOrderId,
@@ -310,6 +333,22 @@ function markTradeStopLossHit(stopLossOrderId) {
   trade.exitSignal = "PREMIUM_SL";
   trade.exitTime = nowIso();
   trade.exitOrderId = stopLossOrderId;
+  const fallbackExitPrice = Number(
+    trade.premiumStopLoss || trade.currentPremium || 0,
+  );
+  const exitPrice =
+    Number.isFinite(requestedExitPrice) && requestedExitPrice > 0
+      ? requestedExitPrice
+      : fallbackExitPrice;
+
+  if (Number.isFinite(exitPrice) && exitPrice > 0) {
+    trade.exitPrice = roundMoney(exitPrice);
+    trade.realizedProfit = calculateRealizedProfit({
+      quantity: trade.quantity,
+      entryPremium: getTradeEntryPremium(trade),
+      exitPremium: trade.exitPrice,
+    });
+  }
 
   saveTradeHistory(history);
   return trade;
@@ -440,12 +479,15 @@ function getDashboardTrades(limit = 3, tradeMode, fallbackPremiumSlInterval) {
       optionSymbol: trade.optionSymbol,
       quantity: trade.quantity,
       entryPrice: trade.entryPrice || trade.entryPremiumReference || null,
-      exitPrice: trade.exitPrice || null,
-      realizedProfit: trade.realizedProfit || null,
+      exitPrice: trade.exitPrice === 0 ? 0 : trade.exitPrice || null,
+      realizedProfit:
+        trade.realizedProfit === 0 ? 0 : trade.realizedProfit || null,
       riskPoints: trade.riskPoints,
       riskAmount,
       capitalDeployed: trade.capitalDeployed || null,
       stopLossMoney: trade.stopLossMoney || null,
+      lockedProfitAmount:
+        Number(trade.stopLossMoney) < 0 ? roundMoney(Math.abs(trade.stopLossMoney)) : null,
       currentPremium: trade.currentPremium || null,
       currentPremiumCheckedAt: trade.currentPremiumCheckedAt || null,
       runningProfitAmount: trade.runningProfitAmount || null,

@@ -509,6 +509,33 @@ function isTradeTerminalResult(line) {
   );
 }
 
+function getStopLossOrderIdFromLogLine(line) {
+  const patterns = [
+    /Premium stop-loss hit:\s*([A-Z0-9-]+)/i,
+    /Manual SL trail confirmed:\s*orderId=([A-Z0-9-]+)/i,
+    /Automatic SL trail confirmed:\s*orderId=([A-Z0-9-]+)/i,
+    /"orderId"\s*:\s*"([^"]+)"/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = line.match(pattern);
+
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+
+  return null;
+}
+
+function rememberTradeStopLossOrder(tradesByStopLossOrderId, trade, line) {
+  const stopLossOrderId = getStopLossOrderIdFromLogLine(line);
+
+  if (stopLossOrderId) {
+    tradesByStopLossOrderId.set(stopLossOrderId, trade);
+  }
+}
+
 function isReadinessLifecycle(line) {
   return /LIFECYCLE/i.test(line) && !/MANUAL_SIGNAL/i.test(line);
 }
@@ -597,6 +624,7 @@ function formatDashboardLogs(content, telegramEnabled = false) {
   }
 
   const daysByKey = new Map();
+  const tradesByStopLossOrderId = new Map();
   let currentTrade = null;
   let pendingTrade = null;
 
@@ -618,6 +646,25 @@ function formatDashboardLogs(content, telegramEnabled = false) {
     // signal/trade block left over from earlier activity.
     if (isReadinessLifecycle(line)) {
       day.general.push(parsedLine);
+      return;
+    }
+
+    const stopLossOrderId = getStopLossOrderIdFromLogLine(line);
+    const matchedTrade = stopLossOrderId
+      ? tradesByStopLossOrderId.get(stopLossOrderId)
+      : null;
+
+    if (matchedTrade && !isEntryWebhook(line)) {
+      matchedTrade.lines.push(parsedLine);
+      matchedTrade.latestMs = Math.max(
+        matchedTrade.latestMs,
+        parsedLine.timestampMs,
+      );
+
+      if (isTradeTerminalResult(line) && currentTrade === matchedTrade) {
+        currentTrade = null;
+      }
+
       return;
     }
 
@@ -680,6 +727,7 @@ function formatDashboardLogs(content, telegramEnabled = false) {
         currentTrade.latestMs,
         parsedLine.timestampMs,
       );
+      rememberTradeStopLossOrder(tradesByStopLossOrderId, currentTrade, line);
 
       if (isTradeTerminalResult(line)) {
         currentTrade = null;
@@ -763,6 +811,8 @@ app.get("/api/config", async (req, res) => {
     PREMIUM_HUGE_CANDLE_3M: env.PREMIUM_HUGE_CANDLE_3M || "12",
     PREMIUM_HUGE_CANDLE_5M: env.PREMIUM_HUGE_CANDLE_5M || "15",
     PREMIUM_HUGE_CANDLE_15M: env.PREMIUM_HUGE_CANDLE_15M || "25",
+    AUTO_TRAIL_SL: env.AUTO_TRAIL_SL || "false",
+    AUTO_TRAIL_INTERVAL_MS: env.AUTO_TRAIL_INTERVAL_MS || "15000",
     TRAIL_MODE: env.TRAIL_MODE || "CONSERVATIVE",
     TRAIL_COST_TO_COST_PERCENT: env.TRAIL_COST_TO_COST_PERCENT || "7",
     TRAIL_CLASSIC_TRIGGER_RR_1: env.TRAIL_CLASSIC_TRIGGER_RR_1 || "3",
@@ -839,8 +889,10 @@ app.post("/api/config", (req, res) => {
   }
 
   if (Object.prototype.hasOwnProperty.call(updates, "PAPER_TRADE")) {
-    updates.AUTO_PREMIUM_SL =
-      String(updates.PAPER_TRADE).toLowerCase() === "true" ? "false" : "true";
+    const paperTradeEnabled = String(updates.PAPER_TRADE).toLowerCase() === "true";
+
+    updates.AUTO_PREMIUM_SL = paperTradeEnabled ? "false" : "true";
+    updates.AUTO_TRAIL_SL = paperTradeEnabled ? "false" : updates.AUTO_TRAIL_SL;
   }
 
   writeEnv(updates);

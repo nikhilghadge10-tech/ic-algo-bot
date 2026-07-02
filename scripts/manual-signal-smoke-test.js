@@ -7,6 +7,7 @@ const CONTROL_PORT = 4000;
 const ALGO_HOST = "localhost";
 const ALGO_PORT = 3000;
 const PRICE = Number(process.env.TEST_PRICE || 24085.7);
+const SYMBOL = process.env.TEST_SYMBOL || process.env.UNDERLYING_SYMBOL || "NIFTY";
 const WAIT_MS = Number(process.env.TEST_WAIT_MS || 1200);
 
 const args = new Set(process.argv.slice(2));
@@ -134,7 +135,7 @@ async function sendSignal(signal, mode) {
     body: {
       signal,
       source: "MANUAL_SIGNAL",
-      symbol: "NIFTY",
+      symbol: SYMBOL,
       price: PRICE,
       time: new Date().toISOString(),
     },

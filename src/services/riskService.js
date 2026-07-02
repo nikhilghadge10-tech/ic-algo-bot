@@ -4,11 +4,15 @@
  * The dashboard and live entry path use this same calculation.
  * Returned values include the intermediate math for dashboard display/debugging.
  */
+const { getUnderlyingProfile } = require("./underlyingService");
+
 function calculateLots({ signal, riskPoints, settings = process.env }) {
+  const underlyingProfile = getUnderlyingProfile(settings);
+
   // Pull numeric risk settings from environment with conservative defaults.
   const capital = Number(settings.TRADING_CAPITAL || 0);
   const riskPercent = Number(settings.RISK_PERCENT || 1);
-  const lotSize = Number(settings.LOT_SIZE || 65);
+  const lotSize = Number(settings.LOT_SIZE || underlyingProfile.lotSize);
   const maxTrades = Number(settings.MAX_DAILY_TRADES || 1);
 
   const riskMode = settings.RISK_MODE || "PER_TRADE";

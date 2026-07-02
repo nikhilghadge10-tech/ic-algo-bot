@@ -1,6 +1,6 @@
 /*
  * Loads the Dhan instrument master CSV into memory.
- * The webhook uses this cache to find a matching NIFTY option contract.
+ * The webhook uses this cache to find a matching index option contract.
  * Contract lookup is based on strike and CE/PE option type.
  * The nearest expiry is selected from the matching contracts.
  */
@@ -28,14 +28,15 @@ function loadInstruments() {
   });
 }
 
-// Finds the nearest-expiry NIFTY option matching the requested strike and type.
-function getNiftyOption(strike, optionType) {
+// Finds the nearest-expiry option matching the requested underlying, strike, and type.
+function getIndexOption(strike, optionType, profile = {}) {
   const today = new Date();
   const marketCloseToday = new Date(today);
+  const optionSymbolPrefix = profile.optionSymbolPrefix || "NIFTY ";
 
   marketCloseToday.setHours(15, 30, 0, 0);
 
-  // Filter down to NIFTY options for the exact strike and CE/PE direction.
+  // Filter down to the selected index options for the exact strike and CE/PE direction.
   const matches = instruments.filter((row) => {
     const expiry = new Date(row.SEM_EXPIRY_DATE);
     const expiryMarketClose = new Date(expiry);
@@ -51,7 +52,7 @@ function getNiftyOption(strike, optionType) {
         : today <= marketCloseToday);
 
     return (
-      row.SEM_CUSTOM_SYMBOL?.startsWith("NIFTY ") &&
+      row.SEM_CUSTOM_SYMBOL?.startsWith(optionSymbolPrefix) &&
       row.SEM_OPTION_TYPE === optionType &&
       Number(row.SEM_STRIKE_PRICE) === strike &&
       isTradableExpiry
@@ -73,7 +74,14 @@ function getNiftyOption(strike, optionType) {
   return matches[0];
 }
 
+function getNiftyOption(strike, optionType) {
+  return getIndexOption(strike, optionType, {
+    optionSymbolPrefix: "NIFTY ",
+  });
+}
+
 module.exports = {
   loadInstruments,
+  getIndexOption,
   getNiftyOption,
 };

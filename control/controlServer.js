@@ -31,6 +31,7 @@ const tradeHistoryPath = path.join(
   "data",
   "tradeHistory.json",
 );
+const { getUnderlyingProfile } = require("../src/services/underlyingService");
 
 // Accept JSON API requests and serve the dashboard assets from control/public.
 app.use(express.json());
@@ -104,6 +105,12 @@ function readJsonFile(filePath) {
   } catch (error) {
     return null;
   }
+}
+
+function roundMoney(value) {
+  const number = Number(value);
+
+  return Number.isFinite(number) ? Number(number.toFixed(2)) : 0;
 }
 
 function getLocalDateKey(date = new Date()) {
@@ -221,7 +228,7 @@ function getRbiPolicyDateKeys(text) {
   return [...dateKeys].sort();
 }
 
-function getNextNiftyExpiry(now = new Date()) {
+function getNextNiftyExpiry(profile = getUnderlyingProfile(readEnv()), now = new Date()) {
   const content = fs.readFileSync(instrumentMasterPath, "utf8");
   const [headerLine, ...lines] = content.split(/\r?\n/);
   const headers = headerLine.split(",");
@@ -242,7 +249,7 @@ function getNextNiftyExpiry(now = new Date()) {
 
     if (
       columns[indexes.instrument] === "OPTIDX" &&
-      columns[indexes.symbol]?.startsWith("NIFTY ") &&
+      columns[indexes.symbol]?.startsWith(profile.optionSymbolPrefix) &&
       ["CE", "PE"].includes(columns[indexes.optionType]) &&
       /^\d{4}-\d{2}-\d{2}$/.test(dateKey)
     ) {
@@ -454,6 +461,210 @@ function getIstDaySeparator() {
 
 function getTradeSeparator(sequence) {
   return `---------------------------        Trade ${sequence}        ---------------------------`;
+}
+
+function getPeriodStartDateKey(period) {
+  const today = new Date(`${getIstIsoDateKey(new Date())}T00:00:00+05:30`);
+  const days = period === "month" ? 29 : 6;
+
+  today.setDate(today.getDate() - days);
+  return getIstIsoDateKey(today);
+}
+
+function isDateKeyInPeriod(dateKey, startDateKey) {
+  return Boolean(dateKey) && dateKey >= startDateKey;
+}
+
+function getTradeDateKey(trade) {
+  const timestamp = trade.exitTime || trade.entryTime;
+  const date = timestamp ? new Date(timestamp) : new Date();
+
+  return Number.isNaN(date.getTime())
+    ? getIstIsoDateKey(new Date())
+    : getIstIsoDateKey(date);
+}
+
+function getTradeDirection(trade) {
+  return String(trade.entrySignal || "").startsWith("SHORT") ? "SHORT" : "LONG";
+}
+
+function getTradeOutcome(trade) {
+  const profit = Number(trade.realizedProfit);
+
+  if (Number.isFinite(profit)) {
+    if (profit > 0) return "WIN";
+    if (profit < 0) return "LOSS";
+    return "BREAKEVEN";
+  }
+
+  if (trade.status === "FAILED") return "FAILED";
+  if (["RUNNING", "RUNNING_UNPROTECTED"].includes(trade.status)) return "OPEN";
+
+  return "UNKNOWN";
+}
+
+function getDashboardTradeLabel(sequence) {
+  const n = Number(sequence || 0);
+  const suffix =
+    n % 100 >= 11 && n % 100 <= 13
+      ? "th"
+      : { 1: "st", 2: "nd", 3: "rd" }[n % 10] || "th";
+
+  return `${n}${suffix}`;
+}
+
+function parseAnalyticsLogStats(startDateKey) {
+  const stats = {
+    successfulEntries: 0,
+    failedSignals: 0,
+    longSignals: 0,
+    shortSignals: 0,
+  };
+
+  if (!fs.existsSync(logPath)) {
+    return stats;
+  }
+
+  fs.readFileSync(logPath, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .forEach((line) => {
+      const timestampMatch = line.match(
+        /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)/,
+      );
+      const timestamp = timestampMatch ? new Date(timestampMatch[1]) : null;
+      const dateKey = timestamp ? getIstIsoDateKey(timestamp) : "";
+
+      if (!isDateKeyInPeriod(dateKey, startDateKey)) {
+        return;
+      }
+
+      if (/Position changed to LONG/i.test(line)) {
+        stats.successfulEntries += 1;
+        stats.longSignals += 1;
+      }
+
+      if (/Position changed to SHORT/i.test(line)) {
+        stats.successfulEntries += 1;
+        stats.shortSignals += 1;
+      }
+
+      if (
+        /ignored because|not filled|rejected|failed|Invalid webhook payload|Unknown signal/i.test(
+          line,
+        )
+      ) {
+        stats.failedSignals += 1;
+      }
+    });
+
+  return stats;
+}
+
+function buildTradeAnalytics(period = "week") {
+  const normalizedPeriod = period === "month" ? "month" : "week";
+  const startDateKey = getPeriodStartDateKey(normalizedPeriod);
+  const history = readJsonFile(tradeHistoryPath);
+  const trades = Array.isArray(history?.trades)
+    ? history.trades
+        .filter((trade) => isDateKeyInPeriod(getTradeDateKey(trade), startDateKey))
+        .map((trade) => ({
+          ...trade,
+          dateKey: getTradeDateKey(trade),
+          direction: getTradeDirection(trade),
+          outcome: getTradeOutcome(trade),
+          profit: Number.isFinite(Number(trade.realizedProfit))
+            ? roundMoney(trade.realizedProfit)
+            : null,
+        }))
+    : [];
+  const logStats = parseAnalyticsLogStats(startDateKey);
+  const realizedTrades = trades.filter((trade) => trade.profit !== null);
+  const winners = realizedTrades.filter((trade) => trade.profit > 0);
+  const losers = realizedTrades.filter((trade) => trade.profit < 0);
+  const breakeven = realizedTrades.filter((trade) => trade.profit === 0);
+  const grossProfit = roundMoney(
+    winners.reduce((sum, trade) => sum + Number(trade.profit || 0), 0),
+  );
+  const grossLoss = roundMoney(
+    losers.reduce((sum, trade) => sum + Math.abs(Number(trade.profit || 0)), 0),
+  );
+  const netPnl = roundMoney(grossProfit - grossLoss);
+  const totalTrades = Math.max(trades.length, logStats.successfulEntries);
+  const winRate = realizedTrades.length
+    ? roundMoney((winners.length / realizedTrades.length) * 100)
+    : 0;
+  const longTrades = trades.filter((trade) => trade.direction === "LONG").length;
+  const shortTrades = trades.filter((trade) => trade.direction === "SHORT").length;
+  const displayedLongTrades = longTrades || logStats.longSignals;
+  const displayedShortTrades = shortTrades || logStats.shortSignals;
+  const displayedPositionTotal = displayedLongTrades + displayedShortTrades;
+  const maxAbsPnl = Math.max(
+    1,
+    ...realizedTrades.map((trade) => Math.abs(Number(trade.profit || 0))),
+  );
+
+  return {
+    period: normalizedPeriod,
+    label: normalizedPeriod === "month" ? "Last 30 days" : "Last 7 days",
+    startDate: startDateKey,
+    endDate: getIstIsoDateKey(new Date()),
+    totals: {
+      tradesTaken: totalTrades,
+      successfulTrades: winners.length,
+      failedSignals: logStats.failedSignals,
+      openTrades: trades.filter((trade) =>
+        ["RUNNING", "RUNNING_UNPROTECTED"].includes(trade.status),
+      ).length,
+      winners: winners.length,
+      losers: losers.length,
+      breakeven: breakeven.length,
+      winRate,
+      netPnl,
+      grossProfit,
+      grossLoss,
+      profitFactor: grossLoss > 0 ? roundMoney(grossProfit / grossLoss) : null,
+      longTrades: displayedLongTrades,
+      shortTrades: displayedShortTrades,
+    },
+    charts: {
+      pnlByTrade: trades.slice(-10).map((trade, index) => ({
+        label: getDashboardTradeLabel(trade.sequence || index + 1),
+        value: trade.profit || 0,
+        widthPercent: Math.max(
+          4,
+          Math.round((Math.abs(Number(trade.profit || 0)) / maxAbsPnl) * 100),
+        ),
+        outcome: trade.outcome,
+      })),
+      positionMix: [
+        {
+          label: "LONG",
+          value: displayedLongTrades,
+          widthPercent: displayedPositionTotal
+            ? Math.round((displayedLongTrades / displayedPositionTotal) * 100)
+            : 0,
+        },
+        {
+          label: "SHORT",
+          value: displayedShortTrades,
+          widthPercent: displayedPositionTotal
+            ? Math.round((displayedShortTrades / displayedPositionTotal) * 100)
+            : 0,
+        },
+      ],
+    },
+    recentTrades: trades.slice(-6).reverse().map((trade) => ({
+      label: `${getDashboardTradeLabel(trade.sequence)} Trade`,
+      direction: trade.direction,
+      status: trade.status,
+      optionSymbol: trade.optionSymbol,
+      profit: trade.profit,
+      outcome: trade.outcome,
+      dateKey: trade.dateKey,
+    })),
+  };
 }
 
 function getIstTimeLabel(timestampMs) {
@@ -790,6 +1001,7 @@ function formatDashboardLogs(content, telegramEnabled = false) {
 // Dashboard bootstrap endpoint: config plus live process/tunnel status.
 app.get("/api/config", async (req, res) => {
   const env = readEnv();
+  const underlyingProfile = getUnderlyingProfile(env);
 
   const algoRunning = await isAlgoActuallyRunning();
   const ngrokHealth = await getNgrokHealth();
@@ -825,13 +1037,18 @@ app.get("/api/config", async (req, res) => {
     MAX_DAILY_TRADES: env.MAX_DAILY_TRADES,
     MAX_OPEN_POSITIONS: env.MAX_OPEN_POSITIONS,
 
+    UNDERLYING_SYMBOL: underlyingProfile.symbol,
+    UNDERLYING_DISPLAY_NAME: underlyingProfile.displayName,
+    UNDERLYING_SPOT_SEGMENT: underlyingProfile.spotSegment,
+    UNDERLYING_SPOT_SECURITY_ID: underlyingProfile.spotSecurityId,
+    STRIKE_STEP: String(underlyingProfile.strikeStep),
     NUMBER_OF_LOTS: env.NUMBER_OF_LOTS,
-    LOT_SIZE: env.LOT_SIZE,
+    LOT_SIZE: String(underlyingProfile.lotSize),
 
     TRADING_CAPITAL: env.TRADING_CAPITAL,
     RISK_MODE: env.RISK_MODE,
     RISK_PERCENT: env.RISK_PERCENT,
-    PLANNING_SL_POINTS: env.PLANNING_SL_POINTS,
+    PLANNING_SL_POINTS: String(underlyingProfile.planningSlPoints),
     MARKET_BIAS: env.MARKET_BIAS,
 
     DHAN_TOKEN_UPDATED_AT: env.DHAN_TOKEN_UPDATED_AT,
@@ -886,6 +1103,13 @@ app.post("/api/config", (req, res) => {
       String(updates.DHAN_ENV).toUpperCase() === "SANDBOX"
         ? "SANDBOX"
         : "LIVE";
+  }
+
+  if (updates.UNDERLYING_SYMBOL) {
+    updates.UNDERLYING_SYMBOL =
+      String(updates.UNDERLYING_SYMBOL).toUpperCase() === "BANKNIFTY"
+        ? "BANKNIFTY"
+        : "NIFTY";
   }
 
   if (Object.prototype.hasOwnProperty.call(updates, "PAPER_TRADE")) {
@@ -1109,10 +1333,18 @@ app.post("/api/test-signal", async (req, res) => {
       },
     );
 
+    const webhookResult = response.data;
+    const webhookRejected =
+      webhookResult &&
+      typeof webhookResult === "object" &&
+      webhookResult.success === false;
+
     res.json({
-      success: true,
-      message: `Test signal sent: ${payload.signal}`,
-      response: response.data,
+      success: !webhookRejected,
+      message: webhookRejected
+        ? webhookResult.message || `Test signal rejected: ${payload.signal}`
+        : `Test signal sent: ${payload.signal}`,
+      response: webhookResult,
     });
     appendLifecycleLog(`MANUAL_SIGNAL completed signal=${payload.signal || "unknown"}`);
   } catch (error) {
@@ -1194,6 +1426,20 @@ app.get("/api/logs", (req, res) => {
   }
 });
 
+app.get("/api/trade-analytics", (req, res) => {
+  try {
+    res.json({
+      success: true,
+      analytics: buildTradeAnalytics(req.query.period),
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
 // Proxy Dhan health from the algo server so the dashboard has one API host.
 app.get("/api/dhan-health", async (req, res) => {
   try {
@@ -1210,7 +1456,7 @@ app.get("/api/dhan-health", async (req, res) => {
   }
 });
 
-// Fetch NIFTY spot LTP through the algo server for manual signal price prefill.
+// Fetch active underlying spot LTP through the algo server for manual signal price prefill.
 app.get("/api/nifty-spot", async (req, res) => {
   try {
     const response = await axios.get("http://localhost:3000/nifty-spot", {
@@ -1221,27 +1467,36 @@ app.get("/api/nifty-spot", async (req, res) => {
   } catch (error) {
     res.json({
       success: false,
-      message: "NIFTY spot price unavailable",
+      message: `${getUnderlyingProfile(readEnv()).displayName} spot price unavailable`,
       error: error.response?.data || error.message,
     });
   }
 });
 
-// Return the nearest tradable NIFTY option expiry from the local instrument master.
+// Return the nearest tradable option expiry for the active underlying.
 app.get("/api/nifty-expiry", (req, res) => {
   try {
-    const expiry = getNextNiftyExpiry();
+    const profile = getUnderlyingProfile(readEnv());
+    const expiry = getNextNiftyExpiry(profile);
 
     res.json({
       success: !!expiry,
       expiry,
-      message: expiry ? "Next NIFTY expiry found" : "No NIFTY expiry found",
+      underlyingSymbol: profile.symbol,
+      underlyingDisplayName: profile.displayName,
+      message: expiry
+        ? `Next ${profile.displayName} expiry found`
+        : `No ${profile.displayName} expiry found`,
     });
   } catch (error) {
+    const profile = getUnderlyingProfile(readEnv());
+
     res.json({
       success: false,
       expiry: null,
-      message: "NIFTY expiry unavailable",
+      underlyingSymbol: profile.symbol,
+      underlyingDisplayName: profile.displayName,
+      message: `${profile.displayName} expiry unavailable`,
       error: error.message,
     });
   }

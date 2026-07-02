@@ -2,8 +2,10 @@
 
 Use these payloads when creating TradingView alerts for the algo bot.
 
-The bot accepts only NIFTY symbols. Keep `symbol` as `{{ticker}}` so alerts from
-non-NIFTY charts can be ignored safely by the webhook guard.
+The bot accepts only the configured underlying symbol (`UNDERLYING_SYMBOL`,
+default `NIFTY`; supported values: `NIFTY`, `BANKNIFTY`). Keep `symbol` as
+`{{ticker}}` so alerts from other charts can be ignored safely by the webhook
+guard.
 
 ## LONG_ENTRY
 

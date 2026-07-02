@@ -351,10 +351,42 @@
   margin-top: 4px;
 }
 
-.lastTradeSummaryLine .sapMObjStatusText {
+.lastTradeSummaryLine {
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  flex-wrap: nowrap !important;
+}
+
+.lastTradeSummaryText,
+.lastTradeProfitText {
   font-size: 0.86rem;
   font-weight: 800 !important;
-  white-space: normal;
+  white-space: nowrap !important;
+}
+
+.lastTradeSummaryText {
+  color: #4d5b6d;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lastTradeProfitText {
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.lastTradeProfitPositive {
+  color: var(--green) !important;
+}
+
+.lastTradeProfitNegative {
+  color: var(--red) !important;
+}
+
+.lastTradeProfitNeutral {
+  color: #4d5b6d !important;
 }
 
 /* Buttons, inputs, and OpenUI5 control polish. */
@@ -656,6 +688,23 @@
   width: 100%;
 }
 
+.planningModeFieldsRow {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  gap: 12px;
+  align-items: end;
+  width: 100%;
+}
+
+.planningModeControl {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.planningModeControl .sapMSegB {
+  max-width: 100%;
+}
+
 .planningSlFieldsRow {
   grid-template-columns: repeat(4, minmax(112px, 1fr));
 }
@@ -665,6 +714,7 @@
 }
 
 .premiumThresholdGroup {
+  margin-top: 16px;
   margin-bottom: 16px;
 }
 
@@ -676,14 +726,6 @@
 
 .planningModeBox {
   margin-bottom: 16px;
-}
-
-.planningModeFieldsRow {
-  display: grid !important;
-  grid-template-columns: repeat(2, minmax(240px, 1fr));
-  gap: 12px;
-  width: 100%;
-  align-items: end;
 }
 
 /* Give the selected market direction an immediate visual cue. */
@@ -744,6 +786,113 @@
 
 .planningEmbeddedMetricTile .planningMetricValue {
   font-size: 1.1rem;
+}
+
+/* Trade analytics tab. */
+.analyticsHeader {
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.analyticsRangeText {
+  display: block;
+  margin-bottom: 14px;
+  color: #667085;
+  font-size: 0.86rem;
+}
+
+.analyticsMetricGrid,
+.analyticsChartGrid {
+  display: grid !important;
+  gap: 12px;
+  width: 100%;
+  margin-bottom: 16px;
+}
+
+.analyticsMetricGrid {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.analyticsChartGrid {
+  grid-template-columns: minmax(0, 1.4fr) minmax(220px, 0.7fr);
+}
+
+.analyticsMetricGrid > .sapMFlexItem,
+.analyticsChartGrid > .sapMFlexItem {
+  min-width: 0;
+}
+
+.analyticsMetricTile,
+.analyticsPanel {
+  min-height: 104px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #ffffff, var(--panel-soft));
+}
+
+.analyticsMetricValue {
+  color: var(--ink);
+  font-size: 1.45rem;
+  font-weight: 850;
+  line-height: 1.2;
+}
+
+.analyticsPnlTile .analyticsMetricValue {
+  color: var(--green);
+}
+
+.analyticsBarList,
+.analyticsOutcomeList {
+  gap: 10px;
+}
+
+.analyticsBarRow {
+  gap: 5px;
+}
+
+.analyticsBarLabel,
+.analyticsBarValue {
+  color: #4d5b6d;
+  font-size: 0.82rem;
+  font-weight: 750 !important;
+}
+
+.analyticsBarTrack {
+  width: 100%;
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7ecf3;
+}
+
+.analyticsBarFill {
+  height: 9px;
+  border-radius: 999px;
+}
+
+.analyticsBarFillPositive {
+  background: var(--green);
+}
+
+.analyticsBarFillNegative {
+  background: var(--red);
+}
+
+.analyticsOutcomeRow {
+  gap: 12px;
+  min-width: 0;
+  width: 100%;
+}
+
+.analyticsOutcomeText {
+  min-width: 0;
+  overflow: hidden;
+  color: #4d5b6d;
+  font-size: 0.86rem;
+  font-weight: 700 !important;
+  text-overflow: ellipsis;
+  white-space: nowrap !important;
 }
 
 .riskInputRow {
@@ -871,7 +1020,10 @@
 }
 
 .manualConfigGrid {
-  grid-template-columns: minmax(250px, 1.1fr) minmax(260px, 0.9fr);
+  grid-template-columns:
+    minmax(220px, 0.72fr)
+    minmax(250px, 1fr)
+    minmax(240px, 0.78fr);
 }
 
 .manualActionGrid {
@@ -896,6 +1048,10 @@
 
 .manualControlGroup {
   justify-content: space-between;
+}
+
+.manualUnderlyingSelector .sapMSegBBtn {
+  min-width: 0 !important;
 }
 
 .manualSpotControl {
@@ -997,6 +1153,32 @@
   background: rgba(255, 255, 255, 0.68);
 }
 
+.trailAssumptionLayout {
+  display: grid !important;
+  grid-template-columns: minmax(280px, auto) minmax(260px, 1fr);
+  gap: 16px;
+  align-items: start;
+  width: 100%;
+}
+
+.trailAssumptionLayout > .sapMFlexItem,
+.trailAssumptionInputs,
+.trailPlanSummary {
+  min-width: 0;
+}
+
+.trailAssumptionInputs {
+  gap: 8px;
+}
+
+.trailPlanSummary {
+  gap: 6px;
+  justify-self: end;
+  max-width: 520px;
+  padding-top: 2px;
+  text-align: right;
+}
+
 .trailSettingsTitle {
   color: var(--muted);
   font-size: 0.75rem;
@@ -1015,7 +1197,7 @@
 .trailStepText {
   color: var(--muted);
   font-size: 0.82rem;
-  font-weight: 700;
+  font-weight: 400 !important;
 }
 
 .trailClassicStepRow {
@@ -1157,6 +1339,21 @@
   .riskInputRow,
   .riskControlRow {
     grid-template-columns: 1fr;
+  }
+
+  .planningModeFieldsRow {
+    align-items: stretch;
+    flex-direction: column !important;
+  }
+
+  .trailAssumptionLayout {
+    grid-template-columns: 1fr;
+  }
+
+  .trailPlanSummary {
+    justify-self: stretch;
+    max-width: none;
+    text-align: left;
   }
 
   .readinessActionRow {

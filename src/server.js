@@ -1,6 +1,6 @@
 /*
  * Main algo webhook server.
- * Receives TradingView-style signals, selects the NIFTY option contract,
+ * Receives TradingView-style signals, selects the configured index option contract,
  * places Dhan market orders, tracks local position state, and sends Telegram
  * alerts. Runtime trading toggles are read from .env so the control panel can
  * change permissions without restarting this process.
@@ -35,7 +35,7 @@ const { placeOrder, checkDhanHealth } = require("./services/dhanService");
 
 const {
   loadInstruments,
-  getNiftyOption,
+  getIndexOption,
 } = require("./services/instrumentService");
 const {
   getDailyTradeLimitStatus,
@@ -43,7 +43,7 @@ const {
   recordSuccessfulEntry,
 } = require("./services/tradeLimitService");
 const {
-  getNiftySpotLtp,
+  getUnderlyingSpotLtp,
   getOptionLtp,
   getPreviousCompletedIntradayCandle,
 } = require("./services/dhanMarketDataService");
@@ -61,6 +61,10 @@ const {
   updateLatestOpenTradeMarket,
   updateLatestOpenTradeStopLoss,
 } = require("./services/tradeHistoryService");
+const {
+  getUnderlyingProfile,
+  isAllowedUnderlyingSymbol: isConfiguredUnderlyingSymbol,
+} = require("./services/underlyingService");
 
 const positionData = loadPosition();
 const envPath = path.join(__dirname, "..", ".env");
@@ -156,6 +160,12 @@ app.get("/status", async (req, res) => {
   await syncActiveBrokerPosition("STATUS");
 
   const activeTradeMode = getTradeMode(statusConfig);
+  const underlyingProfile = getActiveUnderlyingProfile(statusConfig);
+  statusConfig.LOT_SIZE = statusConfig.LOT_SIZE || String(underlyingProfile.lotSize);
+  statusConfig.STRIKE_STEP =
+    statusConfig.STRIKE_STEP || String(underlyingProfile.strikeStep);
+  statusConfig.PLANNING_SL_POINTS =
+    statusConfig.PLANNING_SL_POINTS || String(underlyingProfile.planningSlPoints);
   const positionBelongsToActiveMode =
     currentPosition && normalizeTradeMode(currentPositionMode) === activeTradeMode;
   const savedPosition = loadPosition();
@@ -170,6 +180,11 @@ app.get("/status", async (req, res) => {
     dhanEnvironment: normalizeDhanEnvironment(statusConfig.DHAN_ENV),
     tradeMode: activeTradeMode,
     storedPositionMode: currentPosition ? normalizeTradeMode(currentPositionMode) : null,
+    underlyingSymbol: underlyingProfile.symbol,
+    underlyingDisplayName: underlyingProfile.displayName,
+    underlyingSpotSegment: underlyingProfile.spotSegment,
+    underlyingSpotSecurityId: underlyingProfile.spotSecurityId,
+    strikeStep: statusConfig.STRIKE_STEP,
     lotSize: statusConfig.LOT_SIZE,
     optionMode: statusConfig.OPTION_MODE,
     dailyTradeLimit: getDailyTradeLimitStatus(
@@ -449,73 +464,73 @@ ${limitPrice}`,
   };
 }
 
-function buildAutoCostToCostTrailPlan(config, updatedTrade) {
-  const trailMode = String(config.TRAIL_MODE || "CONSERVATIVE").toUpperCase();
-
-  if (!["CONSERVATIVE", "AGGRESSIVE"].includes(trailMode)) {
-    return {
-      eligible: false,
-      logKey: `mode:${trailMode}`,
-      message: `AUTO_TRAIL skipped: mode=${trailMode} is not a cost-to-cost mode`,
-    };
-  }
-
+function getAutoTrailContext(config, updatedTrade) {
   const savedPosition = loadPosition();
-  const entryPremium = Number(
-    savedPosition.entryPremiumReference ||
-      savedPosition.entryPrice ||
-      updatedTrade?.entryPrice,
-  );
-  const currentOptionPremium = Number(
-    updatedTrade?.currentPremium || savedPosition.currentPremium,
-  );
-  const currentStopLoss = Number(premiumStopLoss || savedPosition.premiumStopLoss);
-  const thresholdPercent = Number(config.TRAIL_COST_TO_COST_PERCENT || 7);
-  const limitBand = Number(config.PREMIUM_SL_LIMIT_BAND || 1) || 1;
 
-  if (
-    !currentPosition ||
-    !stopLossOrderId ||
-    !Number.isFinite(entryPremium) ||
-    entryPremium <= 0 ||
-    !Number.isFinite(currentOptionPremium) ||
-    currentOptionPremium <= 0 ||
-    !Number.isFinite(currentStopLoss) ||
-    currentStopLoss <= 0 ||
-    !Number.isFinite(thresholdPercent) ||
-    thresholdPercent < 0
-  ) {
+  return {
+    savedPosition,
+    entryPremium: Number(
+      savedPosition.entryPremiumReference ||
+        savedPosition.entryPrice ||
+        updatedTrade?.entryPrice,
+    ),
+    currentOptionPremium: Number(
+      updatedTrade?.currentPremium || savedPosition.currentPremium,
+    ),
+    currentStopLoss: Number(premiumStopLoss || savedPosition.premiumStopLoss),
+    riskPoints: Number(updatedTrade?.riskPoints || savedPosition.riskPoints),
+    limitBand: Number(config.PREMIUM_SL_LIMIT_BAND || 1) || 1,
+  };
+}
+
+function hasAutoTrailBaseMetrics(context) {
+  return (
+    currentPosition &&
+    stopLossOrderId &&
+    Number.isFinite(context.entryPremium) &&
+    context.entryPremium > 0 &&
+    Number.isFinite(context.currentOptionPremium) &&
+    context.currentOptionPremium > 0 &&
+    Number.isFinite(context.currentStopLoss) &&
+    context.currentStopLoss > 0
+  );
+}
+
+function buildAutoCostToCostTrailPlan(config, context) {
+  const thresholdPercent = Number(config.TRAIL_COST_TO_COST_PERCENT || 7);
+
+  if (!Number.isFinite(thresholdPercent) || thresholdPercent < 0) {
     return {
       eligible: false,
-      logKey: "waiting-metrics",
-      message: "AUTO_TRAIL waiting: active trade premium metrics are incomplete",
+      logKey: `invalid-threshold:${config.TRAIL_COST_TO_COST_PERCENT}`,
+      message: "AUTO_TRAIL skipped: cost-to-cost threshold is invalid",
     };
   }
 
   const targetPremium = roundToTick(
-    entryPremium * (1 + thresholdPercent / 100),
+    context.entryPremium * (1 + thresholdPercent / 100),
     0.05,
   );
-  const triggerPrice = roundToTick(entryPremium, 0.05);
-  const limitPrice = roundToTick(triggerPrice - limitBand, 0.05);
+  const triggerPrice = roundToTick(context.entryPremium, 0.05);
+  const limitPrice = roundToTick(triggerPrice - context.limitBand, 0.05);
 
-  if (currentOptionPremium < targetPremium) {
+  if (context.currentOptionPremium < targetPremium) {
     return {
       eligible: false,
-      logKey: `below:${currentOptionPremium}:${targetPremium}`,
+      logKey: `below:${context.currentOptionPremium}:${targetPremium}`,
       message:
-        `AUTO_TRAIL waiting: premium=${currentOptionPremium} ` +
+        `AUTO_TRAIL waiting: premium=${context.currentOptionPremium} ` +
         `target=${targetPremium} threshold=${thresholdPercent}%`,
     };
   }
 
-  if (triggerPrice <= currentStopLoss) {
+  if (triggerPrice <= context.currentStopLoss) {
     return {
       eligible: false,
-      logKey: `already-protected:${triggerPrice}:${currentStopLoss}`,
+      logKey: `already-protected:${triggerPrice}:${context.currentStopLoss}`,
       message:
         `AUTO_TRAIL skipped: cost SL=${triggerPrice} is not above ` +
-        `current SL=${currentStopLoss}`,
+        `current SL=${context.currentStopLoss}`,
     };
   }
 
@@ -534,12 +549,148 @@ function buildAutoCostToCostTrailPlan(config, updatedTrade) {
     triggerPrice,
     limitPrice,
     targetPremium,
-    currentOptionPremium,
+    currentOptionPremium: context.currentOptionPremium,
     thresholdPercent,
-    logKey: `trail:${triggerPrice}:${limitPrice}:${currentOptionPremium}`,
+    logKey: `trail:${triggerPrice}:${limitPrice}:${context.currentOptionPremium}`,
     message:
-      `AUTO_TRAIL eligible: premium=${currentOptionPremium} ` +
+      `AUTO_TRAIL eligible: premium=${context.currentOptionPremium} ` +
       `target=${targetPremium} trigger=${triggerPrice} limit=${limitPrice}`,
+  };
+}
+
+function getClassicAutoTrailSteps(config) {
+  return [
+    ["TRAIL_CLASSIC_TRIGGER_RR_1", "TRAIL_CLASSIC_LOCK_RR_1", 3, 1],
+    ["TRAIL_CLASSIC_TRIGGER_RR_2", "TRAIL_CLASSIC_LOCK_RR_2", 5, 3],
+    ["TRAIL_CLASSIC_TRIGGER_RR_3", "TRAIL_CLASSIC_LOCK_RR_3", 7, 5],
+  ]
+    .map(([triggerKey, lockKey, defaultTriggerRr, defaultLockRr]) => ({
+      triggerRr: Number(config[triggerKey] || defaultTriggerRr),
+      lockRr: Number(config[lockKey] || defaultLockRr),
+    }))
+    .filter(
+      (step) =>
+        Number.isFinite(step.triggerRr) &&
+        step.triggerRr > 0 &&
+        Number.isFinite(step.lockRr) &&
+        step.lockRr >= 0,
+    )
+    .sort((a, b) => b.triggerRr - a.triggerRr);
+}
+
+function buildAutoClassicTrailPlan(config, context) {
+  if (!Number.isFinite(context.riskPoints) || context.riskPoints <= 0) {
+    return {
+      eligible: false,
+      logKey: "classic-waiting-risk",
+      message: "AUTO_TRAIL waiting: classic risk points are unavailable",
+    };
+  }
+
+  const steps = getClassicAutoTrailSteps(config);
+
+  if (!steps.length) {
+    return {
+      eligible: false,
+      logKey: "classic-missing-steps",
+      message: "AUTO_TRAIL skipped: classic RR steps are unavailable",
+    };
+  }
+
+  const currentRr = Number(
+    (
+      (context.currentOptionPremium - context.entryPremium) /
+      context.riskPoints
+    ).toFixed(2),
+  );
+  const selectedStep = steps.find((step) => currentRr >= step.triggerRr);
+
+  if (!selectedStep) {
+    const nextStep = steps[steps.length - 1];
+
+    return {
+      eligible: false,
+      logKey: `classic-below:${currentRr}:${nextStep.triggerRr}`,
+      message:
+        `AUTO_TRAIL waiting: classic RR=${currentRr} ` +
+        `target=1:${nextStep.triggerRr}`,
+    };
+  }
+
+  const targetPremium = roundToTick(
+    context.entryPremium + context.riskPoints * selectedStep.triggerRr,
+    0.05,
+  );
+  const triggerPrice = roundToTick(
+    context.entryPremium + context.riskPoints * selectedStep.lockRr,
+    0.05,
+  );
+  const limitPrice = roundToTick(triggerPrice - context.limitBand, 0.05);
+
+  if (triggerPrice <= context.currentStopLoss) {
+    return {
+      eligible: false,
+      logKey:
+        `classic-already-protected:${selectedStep.triggerRr}:` +
+        `${triggerPrice}:${context.currentStopLoss}`,
+      message:
+        `AUTO_TRAIL skipped: classic lock 1:${selectedStep.lockRr} ` +
+        `SL=${triggerPrice} is not above current SL=${context.currentStopLoss}`,
+    };
+  }
+
+  if (!limitPrice || limitPrice <= 0 || limitPrice >= triggerPrice) {
+    return {
+      eligible: false,
+      logKey: `classic-invalid-prices:${triggerPrice}:${limitPrice}`,
+      message:
+        `AUTO_TRAIL skipped: invalid classic SL-Limit prices ` +
+        `trigger=${triggerPrice} limit=${limitPrice}`,
+    };
+  }
+
+  return {
+    eligible: true,
+    triggerPrice,
+    limitPrice,
+    targetPremium,
+    currentOptionPremium: context.currentOptionPremium,
+    currentRr,
+    triggerRr: selectedStep.triggerRr,
+    lockRr: selectedStep.lockRr,
+    logKey:
+      `classic-trail:${selectedStep.triggerRr}:${selectedStep.lockRr}:` +
+      `${triggerPrice}:${limitPrice}:${context.currentOptionPremium}`,
+    message:
+      `AUTO_TRAIL eligible: classic RR=${currentRr} reached 1:${selectedStep.triggerRr} ` +
+      `lock=1:${selectedStep.lockRr} trigger=${triggerPrice} limit=${limitPrice}`,
+  };
+}
+
+function buildAutoTrailPlan(config, updatedTrade) {
+  const trailMode = String(config.TRAIL_MODE || "CONSERVATIVE").toUpperCase();
+  const context = getAutoTrailContext(config, updatedTrade);
+
+  if (!hasAutoTrailBaseMetrics(context)) {
+    return {
+      eligible: false,
+      logKey: "waiting-metrics",
+      message: "AUTO_TRAIL waiting: active trade premium metrics are incomplete",
+    };
+  }
+
+  if (["CONSERVATIVE", "AGGRESSIVE"].includes(trailMode)) {
+    return buildAutoCostToCostTrailPlan(config, context);
+  }
+
+  if (trailMode === "CLASSIC") {
+    return buildAutoClassicTrailPlan(config, context);
+  }
+
+  return {
+    eligible: false,
+    logKey: `mode:${trailMode}`,
+    message: `AUTO_TRAIL skipped: unsupported mode=${trailMode}`,
   };
 }
 
@@ -590,7 +741,7 @@ async function runAutoTrailWorker() {
             entryPrice: savedPosition.entryPremiumReference,
           }
         : await updateActiveTradeMarketMetrics("AUTO_TRAIL");
-    const plan = buildAutoCostToCostTrailPlan(config, updatedTrade);
+    const plan = buildAutoTrailPlan(config, updatedTrade);
 
     if (!plan.eligible) {
       logAutoTrailDecision(plan);
@@ -649,12 +800,11 @@ function currentPositionBelongsToMode(mode) {
 }
 
 function isAllowedUnderlyingSymbol(symbol) {
-  const normalized = String(symbol || "")
-    .toUpperCase()
-    .replace(/^.*:/, "")
-    .replace(/[^A-Z0-9]/g, "");
+  return isConfiguredUnderlyingSymbol(symbol, getRuntimeConfig());
+}
 
-  return normalized === "NIFTY" || normalized === "NIFTY50";
+function getActiveUnderlyingProfile(config = getRuntimeConfig()) {
+  return getUnderlyingProfile(config);
 }
 
 function getWebhookDedupeKey({ signal, symbol, time }) {
@@ -1791,6 +1941,11 @@ async function rejectPremiumStopLossFailure(
   result,
   context = {},
 ) {
+  const reasonText =
+    typeof result.error === "string"
+      ? result.error
+      : JSON.stringify(result.error || result);
+
   logger.warn(
     `${signal} ignored because premium stop-loss setup failed: ` +
       getPremiumStopLossFailureDetails(result, context),
@@ -1814,6 +1969,26 @@ ${JSON.stringify(result.error || result, null, 2)}
 
 No entry order placed.`,
   );
+
+  if (context.manualSignal) {
+    return res.status(200).json({
+      success: false,
+      code: "PREMIUM_STOP_LOSS_SETUP_FAILED",
+      message:
+        "Entry premium is already below the planned SL level. Please confirm LONG or SHORT entry.",
+      reason: reasonText,
+      signal,
+      symbol,
+      price,
+      contract: context.contract?.SEM_CUSTOM_SYMBOL || null,
+      securityId: context.contract?.SEM_SMST_SECURITY_ID || null,
+      optionLtp: result.entryPremium ?? null,
+      premiumSl:
+        result.stopLossPremium ?? context.stopLossPlan?.triggerPrice ?? null,
+      previousCandleLow: context.stopLossPlan?.candle?.low ?? null,
+      previousCandleHigh: context.stopLossPlan?.candle?.high ?? null,
+    });
+  }
 
   return res.status(200).send("Premium stop loss setup failed\n");
 }
@@ -2018,6 +2193,40 @@ function getOrderPlacementNote(config) {
   return isEnabled(config.PAPER_TRADE)
     ? "No real order placed."
     : "Real order placed on Dhan.";
+}
+
+function getRiskBudgetLabel(config) {
+  return String(config.RISK_MODE || "").toUpperCase() === "PER_DAY"
+    ? "Risk per day"
+    : "Risk per trade";
+}
+
+function formatEntryTradeTelegram({
+  emoji,
+  config,
+  contract,
+  sizing,
+  quantity,
+  entryPremium,
+  riskPoints,
+  premiumStopLoss,
+  tradeLimitStatus,
+}) {
+  return `${emoji} ${getTradeModeLabel(config, "TRADE")}
+-----------------------------
+Position : ${contract.SEM_CUSTOM_SYMBOL}
+Lots : ${sizing.finalLots} (Qty : ${quantity})
+-----------------------------
+${getRiskBudgetLabel(config)} : ${sizing.riskAmount}
+Loss Per Lot : ${sizing.lossPerLot}
+
+Entry Premium : ${entryPremium || "-"}
+Risk Points : ${riskPoints || "-"}
+Premium SL : ${premiumStopLoss || "-"}
+-----------------------------
+Total Trades Today : ${tradeLimitStatus.entryCount}
+
+${getOrderPlacementNote(config)}`;
 }
 
 function getBrokerErrorText(result) {
@@ -2301,22 +2510,33 @@ No order placed.`,
       return res.status(400).send("Invalid payload");
     }
 
+    const config = getRuntimeConfig();
+    const underlyingProfile = getActiveUnderlyingProfile(config);
+    config.LOT_SIZE = config.LOT_SIZE || String(underlyingProfile.lotSize);
+    config.STRIKE_STEP = config.STRIKE_STEP || String(underlyingProfile.strikeStep);
+    config.PLANNING_SL_POINTS =
+      config.PLANNING_SL_POINTS || String(underlyingProfile.planningSlPoints);
+
     if (!isAllowedUnderlyingSymbol(symbol)) {
-      logger.warn(`Webhook ignored because symbol is not NIFTY: ${symbol}`);
+      logger.warn(
+        `Webhook ignored because symbol is not ${underlyingProfile.displayName}: ${symbol}`,
+      );
 
       await sendTelegram(
-        `⚠️ Non-NIFTY Signal Ignored
+        `⚠️ Non-${underlyingProfile.displayName} Signal Ignored
 
 Signal : ${signal}
 Symbol : ${symbol}
 Price  : ${price}
 
-Only NIFTY alerts are allowed.
+Only ${underlyingProfile.displayName} alerts are allowed.
 
 No order placed.`,
       );
 
-      return res.status(200).send("Non-NIFTY symbol ignored\n");
+      return res
+        .status(200)
+        .send(`Non-${underlyingProfile.displayName} symbol ignored\n`);
     }
 
     if (isDuplicateWebhook({ signal, symbol, time })) {
@@ -2330,7 +2550,6 @@ No order placed.`,
     lastSignalTime = time || new Date().toISOString();
 
     logger.info(`Last Signal Updated: ${signal}`);
-    const config = getRuntimeConfig();
     const activeTradeMode = getTradeMode(config);
     await syncActiveStopLossStatus();
     await syncActiveBrokerPosition("WEBHOOK");
@@ -2438,10 +2657,14 @@ Signal Mode      : ${activeTradeMode}`,
             return res.status(200).send("Position already open");
           }
 
-          const option = getOptionDetails(signal, price);
+          const option = getOptionDetails(signal, price, underlyingProfile);
 
-          // Convert signal direction and spot price into a tradable NIFTY contract.
-          const contract = getNiftyOption(option.strike, option.optionType);
+          // Convert signal direction and spot price into a tradable index option contract.
+          const contract = getIndexOption(
+            option.strike,
+            option.optionType,
+            underlyingProfile,
+          );
 
           if (!contract) {
             logger.error("No matching option contract found");
@@ -2453,7 +2676,7 @@ Signal : ${signal}
 Symbol : ${symbol}
 Price  : ${price}
 
-No matching NIFTY option contract found.
+No matching ${underlyingProfile.displayName} option contract found.
 
 No order placed.`,
             );
@@ -2479,7 +2702,7 @@ No order placed.`,
               symbol,
               price,
               stopLossPlan,
-              { contract, stopLossPlan },
+              { contract, stopLossPlan, manualSignal },
             );
           }
 
@@ -2496,7 +2719,7 @@ No order placed.`,
               symbol,
               price,
               riskPlan,
-              { contract, stopLossPlan },
+              { contract, stopLossPlan, manualSignal },
             );
           }
 
@@ -2519,7 +2742,7 @@ No order placed.`,
                 entryPremium: riskPlan.entryPremium,
                 stopLossPremium: riskPlan.stopLossPremium,
               },
-              { contract, stopLossPlan },
+              { contract, stopLossPlan, manualSignal },
             );
           }
 
@@ -2804,37 +3027,17 @@ Position NOT changed.`,
           const tradeLimitStatus = recordSuccessfulEntry(activeTradeMode);
 
           await sendTelegram(
-            `${emoji} ${getTradeModeLabel(config, "TRADE")}
-
-Signal : LONG_ENTRY
-
-Position : LONG
-
-Underlying : ${symbol}
-
-Spot Price : ${price}
-
-Selected :
-${contract.SEM_CUSTOM_SYMBOL}
-
-Security ID :
-${contract.SEM_SMST_SECURITY_ID}
-
-Lot Size : ${sizing.lotSize}
-Lots : ${sizing.finalLots}
-Quantity : ${quantity}
-Risk Amount : ${sizing.riskAmount}
-Loss Per Lot : ${sizing.lossPerLot}
-Risk Source : ${riskPlan.source}
-Entry Premium Reference : ${riskPlan.entryPremium || "-"}
-Risk Points : ${sizing.riskPoints}
-
-Premium SL : ${premiumStopLoss || "-"}
-SL Order ID : ${stopLossOrderId || "-"}
-
-Trades Today : ${tradeLimitStatus.entryCount}
-
-${getOrderPlacementNote(config)}`,
+            formatEntryTradeTelegram({
+              emoji,
+              config,
+              contract,
+              sizing,
+              quantity,
+              entryPremium: actualEntryFillPrice,
+              riskPoints: stopLossPlan ? actualRiskPoints : sizing.riskPoints,
+              premiumStopLoss,
+              tradeLimitStatus,
+            }),
           );
 
           break;
@@ -2879,10 +3082,14 @@ Signal Mode      : ${activeTradeMode}`,
             return res.status(200).send("Position already open");
           }
 
-          const option = getOptionDetails(signal, price);
+          const option = getOptionDetails(signal, price, underlyingProfile);
 
           // SHORT_ENTRY maps to a PE contract in optionSelector.
-          const contract = getNiftyOption(option.strike, option.optionType);
+          const contract = getIndexOption(
+            option.strike,
+            option.optionType,
+            underlyingProfile,
+          );
 
           if (!contract) {
             logger.error("No matching option contract found");
@@ -2894,7 +3101,7 @@ Signal : ${signal}
 Symbol : ${symbol}
 Price  : ${price}
 
-No matching NIFTY option contract found.
+No matching ${underlyingProfile.displayName} option contract found.
 
 No order placed.`,
             );
@@ -2920,7 +3127,7 @@ No order placed.`,
               symbol,
               price,
               stopLossPlan,
-              { contract, stopLossPlan },
+              { contract, stopLossPlan, manualSignal },
             );
           }
 
@@ -2937,7 +3144,7 @@ No order placed.`,
               symbol,
               price,
               riskPlan,
-              { contract, stopLossPlan },
+              { contract, stopLossPlan, manualSignal },
             );
           }
 
@@ -2960,7 +3167,7 @@ No order placed.`,
                 entryPremium: riskPlan.entryPremium,
                 stopLossPremium: riskPlan.stopLossPremium,
               },
-              { contract, stopLossPlan },
+              { contract, stopLossPlan, manualSignal },
             );
           }
 
@@ -3245,37 +3452,17 @@ Position NOT changed.`,
           const tradeLimitStatus = recordSuccessfulEntry(activeTradeMode);
 
           await sendTelegram(
-            `${emoji} ${getTradeModeLabel(config, "TRADE")}
-
-Signal : SHORT_ENTRY
-
-Position : SHORT
-
-Underlying : ${symbol}
-
-Spot Price : ${price}
-
-Selected :
-${contract.SEM_CUSTOM_SYMBOL}
-
-Security ID :
-${contract.SEM_SMST_SECURITY_ID}
-
-Lot Size : ${sizing.lotSize}
-Lots : ${sizing.finalLots}
-Quantity : ${quantity}
-Risk Amount : ${sizing.riskAmount}
-Loss Per Lot : ${sizing.lossPerLot}
-Risk Source : ${riskPlan.source}
-Entry Premium Reference : ${riskPlan.entryPremium || "-"}
-Risk Points : ${sizing.riskPoints}
-
-Premium SL : ${premiumStopLoss || "-"}
-SL Order ID : ${stopLossOrderId || "-"}
-
-Trades Today : ${tradeLimitStatus.entryCount}
-
-${getOrderPlacementNote(config)}`,
+            formatEntryTradeTelegram({
+              emoji,
+              config,
+              contract,
+              sizing,
+              quantity,
+              entryPremium: actualEntryFillPrice,
+              riskPoints: stopLossPlan ? actualRiskPoints : sizing.riskPoints,
+              premiumStopLoss,
+              tradeLimitStatus,
+            }),
           );
 
           break;
@@ -3584,10 +3771,10 @@ app.get("/dhan-health", async (req, res) => {
   });
 });
 
-// NIFTY spot LTP endpoint used by the manual signal panel.
+// Active underlying spot LTP endpoint used by the manual signal panel.
 app.get("/nifty-spot", async (req, res) => {
   try {
-    const spot = await getNiftySpotLtp();
+    const spot = await getUnderlyingSpotLtp(getActiveUnderlyingProfile());
     res.json({
       success: true,
       ...spot,

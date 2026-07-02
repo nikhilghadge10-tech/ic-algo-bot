@@ -2,7 +2,7 @@
  * Fetches Dhan market data for spot and selected option contracts.
  * The premium stop-loss feature uses this to read the previous completed
  * option-premium candle before placing an entry order.
- * The manual signal panel uses LTP quotes to pre-fill current NIFTY spot.
+ * The manual signal panel uses LTP quotes to pre-fill current underlying spot.
  */
 const axios = require("axios");
 const {
@@ -67,6 +67,19 @@ async function getNiftySpotLtp() {
 
   return {
     symbol: "NIFTY",
+    ...result,
+  };
+}
+
+async function getUnderlyingSpotLtp(profile) {
+  const result = await getInstrumentLtp(
+    profile.spotSegment,
+    profile.spotSecurityId,
+  );
+
+  return {
+    symbol: profile.symbol,
+    displayName: profile.displayName,
     ...result,
   };
 }
@@ -170,5 +183,6 @@ async function getPreviousCompletedIntradayCandle(
 module.exports = {
   getOptionLtp,
   getNiftySpotLtp,
+  getUnderlyingSpotLtp,
   getPreviousCompletedIntradayCandle,
 };

@@ -63,6 +63,21 @@ function getUnderlyingProfile(config = {}) {
   };
 }
 
+function getUnderlyingProfileForSymbol(symbol, config = {}) {
+  const normalized = normalizeSymbol(symbol);
+
+  for (const profile of Object.values(UNDERLYING_PROFILES)) {
+    if (profile.aliases.map(normalizeSymbol).includes(normalized)) {
+      return getUnderlyingProfile({
+        ...config,
+        UNDERLYING_SYMBOL: profile.symbol,
+      });
+    }
+  }
+
+  return null;
+}
+
 function isAllowedUnderlyingSymbol(symbol, config = {}) {
   const profile = getUnderlyingProfile(config);
   const normalized = normalizeSymbol(symbol);
@@ -73,6 +88,7 @@ function isAllowedUnderlyingSymbol(symbol, config = {}) {
 module.exports = {
   UNDERLYING_PROFILES,
   getUnderlyingProfile,
+  getUnderlyingProfileForSymbol,
   isAllowedUnderlyingSymbol,
   normalizeSymbol,
 };

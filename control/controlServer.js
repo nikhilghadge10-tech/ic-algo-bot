@@ -81,6 +81,91 @@ function writeEnv(updates) {
   fs.writeFileSync(envPath, updatedLines.join("\n"));
 }
 
+const PREMIUM_HUGE_CANDLE_FIELDS = [
+  { activeKey: "PREMIUM_HUGE_CANDLE_1M", suffix: "1M", nifty: "6", banknifty: "10" },
+  { activeKey: "PREMIUM_HUGE_CANDLE_3M", suffix: "3M", nifty: "12", banknifty: "15" },
+  { activeKey: "PREMIUM_HUGE_CANDLE_5M", suffix: "5M", nifty: "15", banknifty: "20" },
+  { activeKey: "PREMIUM_HUGE_CANDLE_15M", suffix: "15M", nifty: "25", banknifty: "40" },
+  { activeKey: "PREMIUM_HUGE_CANDLE_30M", suffix: "30M", nifty: "40", banknifty: "70" },
+];
+
+function normalizeUnderlyingSymbol(symbol) {
+  return String(symbol || "").toUpperCase() === "BANKNIFTY"
+    ? "BANKNIFTY"
+    : "NIFTY";
+}
+
+function premiumHugeCandleSymbolKey(symbol, suffix) {
+  return normalizeUnderlyingSymbol(symbol) + "_PREMIUM_HUGE_CANDLE_" + suffix;
+}
+
+function getPremiumHugeCandleValue(env, symbol, field) {
+  const normalized = normalizeUnderlyingSymbol(symbol);
+  const symbolKey = premiumHugeCandleSymbolKey(normalized, field.suffix);
+  const symbolValue = env[symbolKey];
+
+  if (symbolValue !== undefined && symbolValue !== null && symbolValue !== "") {
+    return String(symbolValue);
+  }
+
+  if (normalized === "NIFTY") {
+    const activeValue = env[field.activeKey];
+
+    if (activeValue !== undefined && activeValue !== null && activeValue !== "") {
+      return String(activeValue);
+    }
+  }
+
+  return normalized === "BANKNIFTY" ? field.banknifty : field.nifty;
+}
+
+function getPremiumHugeCandleResponseFields(env, symbol) {
+  const normalized = normalizeUnderlyingSymbol(symbol);
+  const response = {};
+
+  PREMIUM_HUGE_CANDLE_FIELDS.forEach((field) => {
+    const niftyKey = premiumHugeCandleSymbolKey("NIFTY", field.suffix);
+    const bankniftyKey = premiumHugeCandleSymbolKey("BANKNIFTY", field.suffix);
+    const niftyValue = getPremiumHugeCandleValue(env, "NIFTY", field);
+    const bankniftyValue = getPremiumHugeCandleValue(env, "BANKNIFTY", field);
+
+    response[niftyKey] = niftyValue;
+    response[bankniftyKey] = bankniftyValue;
+    response[field.activeKey] = normalized === "BANKNIFTY" ? bankniftyValue : niftyValue;
+  });
+
+  return response;
+}
+
+function syncPremiumHugeCandleUpdates(updates, previousEnv) {
+  const normalized = normalizeUnderlyingSymbol(
+    updates.UNDERLYING_SYMBOL || previousEnv.UNDERLYING_SYMBOL,
+  );
+
+  PREMIUM_HUGE_CANDLE_FIELDS.forEach((field) => {
+    const activeProvided = Object.prototype.hasOwnProperty.call(
+      updates,
+      field.activeKey,
+    );
+    const selectedSymbolKey = premiumHugeCandleSymbolKey(
+      normalized,
+      field.suffix,
+    );
+    const selectedSymbolProvided = Object.prototype.hasOwnProperty.call(
+      updates,
+      selectedSymbolKey,
+    );
+
+    if (activeProvided && !selectedSymbolProvided) {
+      updates[selectedSymbolKey] = updates[field.activeKey];
+    }
+
+    if (selectedSymbolProvided) {
+      updates[field.activeKey] = updates[selectedSymbolKey];
+    }
+  });
+}
+
 // Store token update time as readable IST while keeping it Date-parseable.
 function getIstIsoString(date = new Date()) {
   const istOffsetMs = 5.5 * 60 * 60 * 1000;
@@ -1009,6 +1094,8 @@ app.get("/api/config", async (req, res) => {
   res.json({
     ALLOW_BUY: env.ALLOW_BUY,
     ALLOW_SELL: env.ALLOW_SELL,
+    ALLOW_NIFTY_TV_SIGNALS: env.ALLOW_NIFTY_TV_SIGNALS || "true",
+    ALLOW_BANKNIFTY_TV_SIGNALS: env.ALLOW_BANKNIFTY_TV_SIGNALS || "true",
     PAPER_TRADE: env.PAPER_TRADE,
     TELEGRAM_ENABLED:
       String(env.TELEGRAM_ENABLED).toLowerCase() === "true" ? "true" : "false",
@@ -1019,10 +1106,7 @@ app.get("/api/config", async (req, res) => {
     AUTO_PREMIUM_SL: env.AUTO_PREMIUM_SL,
     PREMIUM_SL_INTERVAL: env.PREMIUM_SL_INTERVAL,
     PREMIUM_SL_LIMIT_BAND: env.PREMIUM_SL_LIMIT_BAND,
-    PREMIUM_HUGE_CANDLE_1M: env.PREMIUM_HUGE_CANDLE_1M || "6",
-    PREMIUM_HUGE_CANDLE_3M: env.PREMIUM_HUGE_CANDLE_3M || "12",
-    PREMIUM_HUGE_CANDLE_5M: env.PREMIUM_HUGE_CANDLE_5M || "15",
-    PREMIUM_HUGE_CANDLE_15M: env.PREMIUM_HUGE_CANDLE_15M || "25",
+    ...getPremiumHugeCandleResponseFields(env, underlyingProfile.symbol),
     AUTO_TRAIL_SL: env.AUTO_TRAIL_SL || "false",
     AUTO_TRAIL_INTERVAL_MS: env.AUTO_TRAIL_INTERVAL_MS || "15000",
     TRAIL_MODE: env.TRAIL_MODE || "CONSERVATIVE",
@@ -1097,6 +1181,7 @@ async function getNgrokHealth() {
 // Save dashboard-edited settings back to .env.
 app.post("/api/config", (req, res) => {
   const updates = { ...req.body };
+  const previousEnv = readEnv();
 
   if (updates.DHAN_ENV) {
     updates.DHAN_ENV =
@@ -1106,11 +1191,10 @@ app.post("/api/config", (req, res) => {
   }
 
   if (updates.UNDERLYING_SYMBOL) {
-    updates.UNDERLYING_SYMBOL =
-      String(updates.UNDERLYING_SYMBOL).toUpperCase() === "BANKNIFTY"
-        ? "BANKNIFTY"
-        : "NIFTY";
+    updates.UNDERLYING_SYMBOL = normalizeUnderlyingSymbol(updates.UNDERLYING_SYMBOL);
   }
+
+  syncPremiumHugeCandleUpdates(updates, previousEnv);
 
   if (Object.prototype.hasOwnProperty.call(updates, "PAPER_TRADE")) {
     const paperTradeEnabled = String(updates.PAPER_TRADE).toLowerCase() === "true";

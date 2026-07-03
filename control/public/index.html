@@ -25,6 +25,8 @@
       sap.ui.getCore().attachInit(async function () {
         const LOG_FILTER_STORAGE_KEY = "icAlgoBot.activityLogFilters";
         const ACTIVE_TAB_STORAGE_KEY = "icAlgoBot.activeTab";
+        const TOKEN_EXPIRY_WARNING_STORAGE_KEY = "icAlgoBot.dhanTokenExpiryWarning";
+        const DHAN_PROFILE_URL = "https://web.dhan.co/index/profile";
         const DEFAULT_ACTIVE_TAB = "tradingDesk";
         const DASHBOARD_TAB_KEYS = [
           "tradingDesk",
@@ -312,6 +314,9 @@
         let lastSavedDhanEnvironment = config.DHAN_ENV || "LIVE";
         let dhanHealthRequestSequence = 0;
         let pendingConfigSaveTimer = null;
+        let activePremiumHugeCandleUnderlying = normalizeUnderlyingSymbol(
+          config.UNDERLYING_SYMBOL,
+        );
 
         // Refresh .env-backed config while preserving transient UI-only values.
         async function refreshConfig() {
@@ -375,6 +380,10 @@
           fresh.tradeAnalytics = currentData.tradeAnalytics || null;
 
           model.setData(fresh);
+          maybeShowDhanTokenExpiryWarning();
+          activePremiumHugeCandleUnderlying = normalizeUnderlyingSymbol(
+            fresh.UNDERLYING_SYMBOL,
+          );
           calculateRisk();
         }
 
@@ -394,10 +403,15 @@
               status.underlyingSymbol &&
               status.underlyingSymbol !== model.getProperty("/UNDERLYING_SYMBOL")
             ) {
-              model.setProperty("/UNDERLYING_SYMBOL", status.underlyingSymbol);
+              const syncedUnderlying = normalizeUnderlyingSymbol(status.underlyingSymbol);
+
+              applyUnderlyingDefaults(
+                syncedUnderlying,
+                activePremiumHugeCandleUnderlying,
+              );
               model.setProperty(
                 "/UNDERLYING_DISPLAY_NAME",
-                status.underlyingDisplayName || status.underlyingSymbol,
+                status.underlyingDisplayName || syncedUnderlying,
               );
             }
           } catch (error) {
@@ -695,6 +709,81 @@
           return remaining !== null && remaining <= 0 ? "true" : "false";
         }
 
+        function getTokenExpiryWarningKey(updatedAt) {
+          return updatedAt ? String(updatedAt) : "missing";
+        }
+
+        function navigateToTradingDesk() {
+          if (cockpitTabs) {
+            cockpitTabs.setSelectedKey("tradingDesk");
+            saveActiveTab("tradingDesk");
+          }
+        }
+
+        function openDhanProfile() {
+          const opened = window.open(DHAN_PROFILE_URL, "_blank");
+
+          if (opened) {
+            opened.opener = null;
+            return;
+          }
+
+          if (sap?.m?.URLHelper?.redirect) {
+            sap.m.URLHelper.redirect(DHAN_PROFILE_URL, true);
+          }
+        }
+
+        function maybeShowDhanTokenExpiryWarning() {
+          const environment = model.getProperty("/DHAN_ENV") || "LIVE";
+
+          if (environment !== "LIVE") return;
+
+          const updatedAt = model.getProperty("/DHAN_TOKEN_UPDATED_AT");
+          const remaining = getDhanTokenRemaining(updatedAt);
+
+          if (remaining === null || remaining <= 0 || remaining > 60 * 60 * 1000) {
+            return;
+          }
+
+          const warningKey = getTokenExpiryWarningKey(updatedAt);
+          let previousWarningKey = "";
+
+          try {
+            previousWarningKey =
+              localStorage.getItem(TOKEN_EXPIRY_WARNING_STORAGE_KEY) || "";
+          } catch (error) {
+            previousWarningKey = "";
+          }
+
+          if (previousWarningKey === warningKey) return;
+
+          try {
+            localStorage.setItem(TOKEN_EXPIRY_WARNING_STORAGE_KEY, warningKey);
+          } catch (error) {
+            // Storage is only used to avoid repeating the same warning.
+          }
+
+          const countdown = getDhanTokenCountdown(updatedAt).replace("Expires in ", "");
+
+          sap.ui.require(["sap/m/MessageBox"], function (MessageBox) {
+            MessageBox.warning(
+              "LIVE Dhan token expires in " +
+                countdown +
+                ". Update it before the next TradingView signal so live orders do not fail.",
+              {
+                title: "Dhan Token Expiring Soon",
+                actions: ["Take action", MessageBox.Action.CLOSE],
+                emphasizedAction: "Take action",
+                onClose: function (action) {
+                  if (action === "Take action") {
+                    navigateToTradingDesk();
+                  }
+                },
+              },
+            );
+          });
+        }
+
         function isDhanHealthExpiredMessage(message) {
           const normalized = String(message || "").toLowerCase();
 
@@ -797,6 +886,8 @@
 
         // Open a proper SAP UI5 dialog for updating the Dhan token.
         async function updateDhanToken() {
+          openDhanProfile();
+
           const environment = model.getProperty("/DHAN_ENV") || "LIVE";
           const sandbox = environment === "SANDBOX";
           const tokenInput = new sap.m.Input({
@@ -850,6 +941,12 @@
                 await refreshDhanHealth();
 
                 if (result.success) {
+                  try {
+                    localStorage.removeItem(TOKEN_EXPIRY_WARNING_STORAGE_KEY);
+                  } catch (error) {
+                    // The next token timestamp can show its own future warning.
+                  }
+
                   dialog.close();
                 }
               } catch (error) {
@@ -884,6 +981,12 @@
                     text: "Access Token",
                     labelFor: tokenInput,
                   }).addStyleClass("tokenDialogLabel"),
+
+                  new sap.m.Link({
+                    text: "Open Dhan profile",
+                    href: DHAN_PROFILE_URL,
+                    target: "_blank",
+                  }),
 
                   tokenInput,
 
@@ -1368,7 +1471,10 @@
           }
 
           if (/Duplicate webhook ignored/i.test(line)) {
-            return "Duplicate signal ignored";
+            const duplicateSymbolMatch = line.match(/symbol=([A-Z0-9]+)/i);
+            return duplicateSymbolMatch
+              ? `Duplicate ${duplicateSymbolMatch[1].toUpperCase()} signal ignored`
+              : "Duplicate signal ignored";
           }
 
           const noPositionMatch = line.match(
@@ -1530,6 +1636,9 @@
                 `${signalInterval} Minute`,
                 entryItem.line,
               );
+            }
+            if (entry.symbol) {
+              pushSummaryLine("Symbol", entry.symbol, entryItem.line);
             }
             if (executionContext) {
               pushSummaryLine(
@@ -2062,10 +2171,43 @@
           }
         }
 
+        function getPremiumHugeCandlePayload(data) {
+          const normalized = normalizeUnderlyingSymbol(data.UNDERLYING_SYMBOL);
+          const payload = {};
+
+          PREMIUM_HUGE_CANDLE_FIELDS.forEach((field) => {
+            const activeSymbolKey = premiumHugeCandleSymbolKey(
+              normalized,
+              field.suffix,
+            );
+            const activeValue =
+              data[activeSymbolKey] ||
+              data[field.activeKey] ||
+              PREMIUM_HUGE_CANDLE_DEFAULTS[normalized][field.activeKey];
+
+            payload[field.activeKey] = activeValue;
+
+            ["NIFTY", "BANKNIFTY"].forEach((symbol) => {
+              const key = premiumHugeCandleSymbolKey(symbol, field.suffix);
+              payload[key] =
+                symbol === normalized
+                  ? activeValue
+                  : data[key] || PREMIUM_HUGE_CANDLE_DEFAULTS[symbol][field.activeKey];
+            });
+          });
+
+          return payload;
+        }
+
         function getConfigPayload(data) {
+          stashPremiumHugeCandleValues(activePremiumHugeCandleUnderlying);
+          data = model.getData();
+
           return {
             ALLOW_BUY: data.ALLOW_BUY,
             ALLOW_SELL: data.ALLOW_SELL,
+            ALLOW_NIFTY_TV_SIGNALS: data.ALLOW_NIFTY_TV_SIGNALS,
+            ALLOW_BANKNIFTY_TV_SIGNALS: data.ALLOW_BANKNIFTY_TV_SIGNALS,
             PAPER_TRADE: data.PAPER_TRADE,
             TELEGRAM_ENABLED: data.TELEGRAM_ENABLED,
             DHAN_ENV: data.DHAN_ENV,
@@ -2084,10 +2226,7 @@
             RISK_MODE: data.RISK_MODE,
             RISK_PERCENT: data.RISK_PERCENT,
             PLANNING_SL_POINTS: data.PLANNING_SL_POINTS,
-            PREMIUM_HUGE_CANDLE_1M: data.PREMIUM_HUGE_CANDLE_1M,
-            PREMIUM_HUGE_CANDLE_3M: data.PREMIUM_HUGE_CANDLE_3M,
-            PREMIUM_HUGE_CANDLE_5M: data.PREMIUM_HUGE_CANDLE_5M,
-            PREMIUM_HUGE_CANDLE_15M: data.PREMIUM_HUGE_CANDLE_15M,
+            ...getPremiumHugeCandlePayload(data),
             TRAIL_MODE: data.TRAIL_MODE,
             TRAIL_COST_TO_COST_PERCENT: data.TRAIL_COST_TO_COST_PERCENT,
             TRAIL_CLASSIC_TRIGGER_RR_1: data.TRAIL_CLASSIC_TRIGGER_RR_1,
@@ -2135,7 +2274,9 @@
         }
 
         window.addEventListener("pagehide", () => {
-          flushPendingConfigSave({ beacon: true });
+          if (pendingConfigSaveTimer) {
+            flushPendingConfigSave({ beacon: true });
+          }
         });
 
         // Save dashboard settings to .env.
@@ -2922,6 +3063,46 @@
           }).addStyleClass("permissionTile");
         }
 
+        function createInversePermissionTile(
+          label,
+          onText,
+          offText,
+          path,
+          infoText,
+        ) {
+          return new sap.m.VBox({
+            items: [
+              new sap.m.HBox({
+                alignItems: "Center",
+                justifyContent: "Center",
+                items: [
+                  new sap.m.Label({ text: label }).addStyleClass(
+                    "permissionLabel",
+                  ),
+                  createInfoIcon(infoText, "permissionInfoIcon"),
+                ],
+              }),
+              new sap.m.Switch({
+                customTextOn: onText,
+                customTextOff: offText,
+                state: {
+                  path: "/" + path,
+                  formatter: function (value) {
+                    return value !== "true";
+                  },
+                },
+                change: async function (e) {
+                  model.setProperty(
+                    "/" + path,
+                    e.getParameter("state") ? "false" : "true",
+                  );
+                  await saveConfig({ silent: true });
+                },
+              }).addStyleClass("permissionSwitch"),
+            ],
+          }).addStyleClass("permissionTile");
+        }
+
         // Standard numeric input row for larger risk forms.
         function createNumberField(label, path) {
           return new sap.m.VBox({
@@ -2976,10 +3157,10 @@
             editable,
             width: "145px",
             liveChange: function (e) {
-              model.setProperty(
-                "/" + path,
-                String(e.getParameter("value")).replace(/,/g, ""),
-              );
+              const value = String(e.getParameter("value")).replace(/,/g, "");
+
+              model.setProperty("/" + path, value);
+              syncActivePremiumHugeCandleField(path, value);
               calculateRisk();
               scheduleConfigSave();
             },
@@ -2987,6 +3168,7 @@
               const value = String(e.getParameter("value")).replace(/,/g, "");
 
               model.setProperty("/" + path, value);
+              syncActivePremiumHugeCandleField(path, value);
 
               if (options.formatIndian) {
                 input.setValue(formatIndianNumber(value));
@@ -3030,6 +3212,97 @@
             .addStyleClass("trailInlineNumberInput");
         }
 
+        const PREMIUM_HUGE_CANDLE_FIELDS = [
+          { label: "1 Minute", activeKey: "PREMIUM_HUGE_CANDLE_1M", suffix: "1M" },
+          { label: "3 Minutes", activeKey: "PREMIUM_HUGE_CANDLE_3M", suffix: "3M" },
+          { label: "5 Minutes", activeKey: "PREMIUM_HUGE_CANDLE_5M", suffix: "5M" },
+          { label: "15 Minutes", activeKey: "PREMIUM_HUGE_CANDLE_15M", suffix: "15M" },
+          { label: "30 Minutes", activeKey: "PREMIUM_HUGE_CANDLE_30M", suffix: "30M" },
+        ];
+
+        const PREMIUM_HUGE_CANDLE_DEFAULTS = {
+          NIFTY: {
+            PREMIUM_HUGE_CANDLE_1M: "6",
+            PREMIUM_HUGE_CANDLE_3M: "12",
+            PREMIUM_HUGE_CANDLE_5M: "15",
+            PREMIUM_HUGE_CANDLE_15M: "25",
+            PREMIUM_HUGE_CANDLE_30M: "40",
+          },
+          BANKNIFTY: {
+            PREMIUM_HUGE_CANDLE_1M: "10",
+            PREMIUM_HUGE_CANDLE_3M: "15",
+            PREMIUM_HUGE_CANDLE_5M: "20",
+            PREMIUM_HUGE_CANDLE_15M: "40",
+            PREMIUM_HUGE_CANDLE_30M: "70",
+          },
+        };
+
+        function normalizeUnderlyingSymbol(symbol) {
+          return String(symbol || "").toUpperCase() === "BANKNIFTY"
+            ? "BANKNIFTY"
+            : "NIFTY";
+        }
+
+        function premiumHugeCandleSymbolKey(symbol, suffix) {
+          return normalizeUnderlyingSymbol(symbol) + "_PREMIUM_HUGE_CANDLE_" + suffix;
+        }
+
+        function syncActivePremiumHugeCandleField(activeKey, value) {
+          const field = PREMIUM_HUGE_CANDLE_FIELDS.find(
+            (candidate) => candidate.activeKey === activeKey,
+          );
+
+          if (!field) return;
+
+          model.setProperty(
+            "/" +
+              premiumHugeCandleSymbolKey(
+                activePremiumHugeCandleUnderlying,
+                field.suffix,
+              ),
+            value,
+          );
+        }
+
+        function getPremiumHugeCandleModelValue(symbol, field) {
+          const normalized = normalizeUnderlyingSymbol(symbol);
+          const symbolValue = model.getProperty(
+            "/" + premiumHugeCandleSymbolKey(normalized, field.suffix),
+          );
+
+          if (symbolValue !== undefined && symbolValue !== null && symbolValue !== "") {
+            return symbolValue;
+          }
+
+          return PREMIUM_HUGE_CANDLE_DEFAULTS[normalized][field.activeKey];
+        }
+
+        function stashPremiumHugeCandleValues(symbol) {
+          const normalized = normalizeUnderlyingSymbol(symbol);
+
+          PREMIUM_HUGE_CANDLE_FIELDS.forEach((field) => {
+            const activeValue = model.getProperty("/" + field.activeKey);
+
+            if (activeValue !== undefined && activeValue !== null && activeValue !== "") {
+              model.setProperty(
+                "/" + premiumHugeCandleSymbolKey(normalized, field.suffix),
+                activeValue,
+              );
+            }
+          });
+        }
+
+        function applyPremiumHugeCandleValues(symbol) {
+          const normalized = normalizeUnderlyingSymbol(symbol);
+
+          PREMIUM_HUGE_CANDLE_FIELDS.forEach((field) => {
+            model.setProperty(
+              "/" + field.activeKey,
+              getPremiumHugeCandleModelValue(normalized, field),
+            );
+          });
+        }
+
         const UNDERLYING_DEFAULTS = {
           NIFTY: {
             displayName: "NIFTY",
@@ -3049,13 +3322,15 @@
           },
         };
 
-        function applyUnderlyingDefaults(symbol) {
-          const normalized =
-            String(symbol || "").toUpperCase() === "BANKNIFTY"
-              ? "BANKNIFTY"
-              : "NIFTY";
+        function applyUnderlyingDefaults(
+          symbol,
+          previousSymbol = activePremiumHugeCandleUnderlying,
+        ) {
+          const normalized = normalizeUnderlyingSymbol(symbol);
+          const previous = normalizeUnderlyingSymbol(previousSymbol || normalized);
           const defaults = UNDERLYING_DEFAULTS[normalized];
 
+          stashPremiumHugeCandleValues(previous);
           model.setProperty("/UNDERLYING_SYMBOL", normalized);
           model.setProperty("/UNDERLYING_DISPLAY_NAME", defaults.displayName);
           model.setProperty("/LOT_SIZE", defaults.lotSize);
@@ -3066,6 +3341,8 @@
             "/UNDERLYING_SPOT_SECURITY_ID",
             defaults.spotSecurityId,
           );
+          applyPremiumHugeCandleValues(normalized);
+          activePremiumHugeCandleUnderlying = normalized;
         }
 
         function createPlanningMetricTile(label, path, className) {
@@ -3645,43 +3922,6 @@
                       }),
                     ],
                   }).addStyleClass("statusTile"),
-
-                  new sap.m.VBox({
-                    items: [
-                      new sap.m.HBox({
-                        alignItems: "Center",
-                        items: [
-                          new sap.m.Text({
-                            text: "Trade Today",
-                          }).addStyleClass("statusTitle"),
-                          createInfoIcon(
-                            "OFF sets NO_TRADE_TODAY=true and blocks all webhook/manual trading signals. ON allows signals to be processed if other limits allow them.",
-                            "permissionInfoIcon",
-                          ),
-                        ],
-                      }),
-
-                      new sap.m.Switch({
-                        customTextOn: "YES",
-                        customTextOff: "NO",
-
-                        state: {
-                          path: "/NO_TRADE_TODAY",
-                          formatter: function (value) {
-                            return value !== "true";
-                          },
-                        },
-
-                        change: async function (e) {
-                          model.setProperty(
-                            "/NO_TRADE_TODAY",
-                            e.getParameter("state") ? "false" : "true",
-                          );
-                          await saveConfig({ silent: true });
-                        },
-                      }),
-                    ],
-                  }).addStyleClass("statusTile"),
                 ],
               }).addStyleClass("statusGrid"),
             ],
@@ -4106,57 +4346,89 @@
                 level: "H3",
               }).addStyleClass("sectionTitle"),
 
-              new sap.m.HBox({
+              new sap.m.VBox({
                 items: [
-                  createPermissionTile(
-                    "Allow Buy",
-                    "ON",
-                    "OFF",
-                    "ALLOW_BUY",
-                    "Allows bot to take BUY trades",
-                  ),
+                  new sap.m.HBox({
+                    items: [
+                      createInversePermissionTile(
+                        "Trade Today",
+                        "YES",
+                        "NO",
+                        "NO_TRADE_TODAY",
+                        "NO blocks all webhook/manual trading signals. YES allows signals if other limits allow them.",
+                      ).addStyleClass("tradeTodayPermissionTile"),
 
-                  createPermissionTile(
-                    "Allow Sell",
-                    "ON",
-                    "OFF",
-                    "ALLOW_SELL",
-                    "Allows bot to take SELL trades",
-                  ),
+                      createPermissionTile(
+                        "Paper Trade",
+                        "ON",
+                        "LIVE",
+                        "PAPER_TRADE",
+                        "Paper mode does not send real orders",
+                      ),
 
-                  createPermissionTile(
-                    "Paper Trade",
-                    "ON",
-                    "LIVE",
-                    "PAPER_TRADE",
-                    "Paper mode does not send real orders",
-                  ),
+                      createPermissionTile(
+                        "Nifty TV",
+                        "ON",
+                        "OFF",
+                        "ALLOW_NIFTY_TV_SIGNALS",
+                        "Allows TradingView NIFTY alerts to place bot orders. Turn OFF to ignore only NIFTY webhook signals.",
+                      ).addStyleClass("symbolPermissionTile"),
 
-                  createPermissionTile(
-                    "Auto Premium SL",
-                    "ON",
-                    "OFF",
-                    "AUTO_PREMIUM_SL",
-                    "Places a protective option SL-Limit order from the previous premium candle",
-                    {
-                      path: "/PAPER_TRADE",
-                      formatter: (paperTrade) => paperTrade !== "true",
-                    },
-                  ),
+                      createPermissionTile(
+                        "BankNifty TV",
+                        "ON",
+                        "OFF",
+                        "ALLOW_BANKNIFTY_TV_SIGNALS",
+                        "Allows TradingView BANKNIFTY alerts to place bot orders. Turn OFF to ignore only BANKNIFTY webhook signals.",
+                      ).addStyleClass("symbolPermissionTile"),
+                    ],
+                  }).addStyleClass("permissionRow permissionPrimaryRow"),
 
-                  createPermissionTile(
-                    "Auto Trail SL",
-                    "ON",
-                    "OFF",
-                    "AUTO_TRAIL_SL",
-                    "Moves the protective SL automatically when the selected trail strategy is eligible",
-                    {
-                      path: "/PAPER_TRADE",
-                      formatter: (paperTrade) => paperTrade !== "true",
-                    },
-                  ),
+                  new sap.m.HBox({
+                    items: [
+                      createPermissionTile(
+                        "Allow Buy",
+                        "ON",
+                        "OFF",
+                        "ALLOW_BUY",
+                        "Allows bot to take BUY trades",
+                      ),
+
+                      createPermissionTile(
+                        "Allow Sell",
+                        "ON",
+                        "OFF",
+                        "ALLOW_SELL",
+                        "Allows bot to take SELL trades",
+                      ),
+
+                      createPermissionTile(
+                        "Auto Premium SL",
+                        "ON",
+                        "OFF",
+                        "AUTO_PREMIUM_SL",
+                        "Places a protective option SL-Limit order from the previous premium candle",
+                        {
+                          path: "/PAPER_TRADE",
+                          formatter: (paperTrade) => paperTrade !== "true",
+                        },
+                      ),
+
+                      createPermissionTile(
+                        "Auto Trail SL",
+                        "ON",
+                        "OFF",
+                        "AUTO_TRAIL_SL",
+                        "Moves the protective SL automatically when the selected trail strategy is eligible",
+                        {
+                          path: "/PAPER_TRADE",
+                          formatter: (paperTrade) => paperTrade !== "true",
+                        },
+                      ),
+                    ],
+                  }).addStyleClass("permissionRow permissionExecutionRow"),
                 ],
-              }).addStyleClass("permissionRow"),
+              }).addStyleClass("permissionRows"),
             ],
           }).addStyleClass("card");
         }
@@ -4228,216 +4500,93 @@
                 items: [
                   new sap.m.VBox({
                     items: [
-                      new sap.m.VBox({
+                      new sap.m.HBox({
                         items: [
-                          new sap.m.HBox({
+                          new sap.m.VBox({
                             items: [
-                              createCompactNumberField(
-                                "Capital",
-                                "TRADING_CAPITAL",
-                                true,
-                                { formatIndian: true },
-                              ),
-                              createCompactNumberField(
-                                "Risk %",
-                                "RISK_PERCENT",
-                              ),
-                            ],
-                          }).addStyleClass("planningFieldsRow"),
-                        ],
-                      }).addStyleClass("planningCalcGroup"),
+                              new sap.m.VBox({
+                                items: [
+                                  new sap.m.HBox({
+                                    items: [
+                                      createCompactNumberField(
+                                        "Capital",
+                                        "TRADING_CAPITAL",
+                                        true,
+                                        { formatIndian: true },
+                                      ),
+                                      createCompactNumberField(
+                                        "Risk %",
+                                        "RISK_PERCENT",
+                                      ),
+                                      createCompactNumberField(
+                                        "Max Trades",
+                                        "MAX_DAILY_TRADES",
+                                      ),
+                                    ],
+                                  }).addStyleClass(
+                                    "planningFieldsRow planningCapitalFieldsRow",
+                                  ),
+                                ],
+                              }).addStyleClass("planningCalcGroup"),
 
-                      new sap.m.VBox({
-                        items: [
-                          new sap.m.HBox({
+                              new sap.m.VBox({
+                                items: [
+                                  new sap.m.HBox({
+                                    items: [
+                                      createCompactNumberField(
+                                        "Tentative SL",
+                                        "PLANNING_SL_POINTS",
+                                      ),
+                                      createCompactNumberField(
+                                        "Lot Size",
+                                        "LOT_SIZE",
+                                        false,
+                                      ),
+                                      createPlanningMetricTile(
+                                        "Loss/Lot",
+                                        "CALC_LOSS_PER_LOT",
+                                        "planningEmbeddedMetricTile",
+                                      ),
+                                    ],
+                                  }).addStyleClass(
+                                    "planningFieldsRow planningSlFieldsRow",
+                                  ),
+                                ],
+                              }).addStyleClass("planningCalcGroup"),
+                            ],
+                          }).addStyleClass("planningInputStack"),
+
+                          new sap.m.VBox({
                             items: [
-                              createCompactNumberField(
-                                "Tentative SL",
-                                "PLANNING_SL_POINTS",
-                              ),
-                              createCompactNumberField(
-                                "Lot Size",
-                                "LOT_SIZE",
-                                false,
+                              createPlanningMetricTile(
+                                "Planned Risk",
+                                "CALC_RISK_AMOUNT",
+                                "planningInlineMetricTile",
                               ),
                               createPlanningMetricTile(
-                                "Loss Per Lot",
-                                "CALC_LOSS_PER_LOT",
-                                "planningEmbeddedMetricTile",
-                              ),
-                              createCompactNumberField(
-                                "Max Trades",
-                                "MAX_DAILY_TRADES",
+                                "Actual Risk",
+                                "CALC_ACTUAL_RISK",
+                                "planningInlineMetricTile",
                               ),
                             ],
-                          }).addStyleClass(
-                            "planningFieldsRow planningSlFieldsRow",
-                          ),
+                          }).addStyleClass("planningMetricStack"),
                         ],
-                      }).addStyleClass("planningCalcGroup"),
-                    ],
-                  }).addStyleClass("planningInputStack"),
+                      }).addStyleClass("planningRiskLayout"),
 
-                  new sap.m.VBox({
-                    items: [
-                      createPlanningMetricTile(
-                        "Planned Risk",
-                        "CALC_RISK_AMOUNT",
-                        "planningInlineMetricTile",
-                      ),
-                      createPlanningMetricTile(
-                        "Actual Risk",
-                        "CALC_ACTUAL_RISK",
-                        "planningInlineMetricTile",
-                      ),
-                    ],
-                  }).addStyleClass("planningMetricStack"),
-                ],
-              }).addStyleClass("planningRiskLayout"),
-
-              new sap.m.VBox({
-                items: [
-                  new sap.m.HBox({
-                    alignItems: "End",
-                    items: [
-                      new sap.m.VBox({
+                      new sap.m.HBox({
                         items: [
-                          createLabelWithInfo(
-                            "Underlying",
-                            "Selects which index symbol the webhook accepts and which option chain, spot token, strike step, and lot size the bot uses.",
+                          createPlanningMetricTile(
+                            "LONG Lots",
+                            "CALC_LONG_LOTS",
+                            "planningKeyMetricTile",
                           ),
-
-                          new sap.m.SegmentedButton({
-                            selectedKey: "{/UNDERLYING_SYMBOL}",
-                            width: "240px",
-                            selectionChange: async function (e) {
-                              const item = e.getParameter("item");
-                              const selected = item
-                                ? item.getKey()
-                                : e.getSource().getSelectedKey();
-
-                              applyUnderlyingDefaults(selected);
-                              calculateRisk();
-                              await saveConfig({ silent: true });
-                              await refreshMarketCalendar();
-                            },
-                            items: [
-                              new sap.m.SegmentedButtonItem({
-                                text: "NIFTY",
-                                key: "NIFTY",
-                                width: "120px",
-                              }),
-                              new sap.m.SegmentedButtonItem({
-                                text: "BANKNIFTY",
-                                key: "BANKNIFTY",
-                                width: "120px",
-                              }),
-                            ],
-                          }),
-                        ],
-                      }).addStyleClass("planningModeControl"),
-
-                      new sap.m.VBox({
-                        items: [
-                          createLabelWithInfo(
-                            "Risk Mode",
-                            "Per Trade applies risk to each planned trade. Per Day divides the risk budget across max daily trades.",
+                          createPlanningMetricTile(
+                            "SHORT Lots",
+                            "CALC_SHORT_LOTS",
+                            "planningKeyMetricTile",
                           ),
-
-                          new sap.m.SegmentedButton({
-                            selectedKey: "{/RISK_MODE}",
-                            width: "240px",
-                            selectionChange: async function (e) {
-                              const item = e.getParameter("item");
-
-                              model.setProperty(
-                                "/RISK_MODE",
-                                item
-                                  ? item.getKey()
-                                  : e.getSource().getSelectedKey(),
-                              );
-                              calculateRisk();
-                              await saveConfig({ silent: true });
-                            },
-                            items: [
-                              new sap.m.SegmentedButtonItem({
-                                text: "Per Trade",
-                                key: "PER_TRADE",
-                                width: "120px",
-                              }),
-                              new sap.m.SegmentedButtonItem({
-                                text: "Per Day",
-                                key: "PER_DAY",
-                                width: "120px",
-                              }),
-                            ],
-                          }),
                         ],
-                      }).addStyleClass("planningModeControl"),
-
-                      new sap.m.VBox({
-                        items: [
-                          createLabelWithInfo(
-                            "Market Bias",
-                            "Bias reduces suggested lots for counter-bias trades. Bullish reduces SHORT lots; Bearish reduces LONG lots.",
-                          ),
-
-                          new sap.m.SegmentedButton({
-                            selectedKey: "{/MARKET_BIAS}",
-                            width: "300px",
-                            selectionChange: async function (e) {
-                              const item = e.getParameter("item");
-
-                              model.setProperty(
-                                "/MARKET_BIAS",
-                                item
-                                  ? item.getKey()
-                                  : e.getSource().getSelectedKey(),
-                              );
-                              calculateRisk();
-                              await saveConfig({ silent: true });
-                            },
-                            items: [
-                              new sap.m.SegmentedButtonItem({
-                                text: "Bullish",
-                                icon: "sap-icon://trend-up",
-                                key: "BULLISH",
-                                width: "100px",
-                              }),
-                              new sap.m.SegmentedButtonItem({
-                                text: "Neutral",
-                                key: "NEUTRAL",
-                                width: "100px",
-                              }),
-                              new sap.m.SegmentedButtonItem({
-                                text: "Bearish",
-                                icon: "sap-icon://trend-down",
-                                key: "BEARISH",
-                                width: "100px",
-                              }),
-                            ],
-                          }).addStyleClass("marketBiasSegmentedButton"),
-                        ],
-                      }).addStyleClass("planningModeControl"),
-                    ],
-                  }).addStyleClass("planningModeFieldsRow"),
-                ],
-              }).addStyleClass("planningCalcGroup planningModeBox"),
-
-              new sap.m.HBox({
-                items: [
-                  createPlanningMetricTile(
-                    "LONG Lots",
-                    "CALC_LONG_LOTS",
-                    "planningKeyMetricTile",
-                  ),
-                  createPlanningMetricTile(
-                    "SHORT Lots",
-                    "CALC_SHORT_LOTS",
-                    "planningKeyMetricTile",
-                  ),
-                ],
-              }).addStyleClass("planningKeyMetricsRow"),
+                      }).addStyleClass("planningKeyMetricsRow"),
 
               new sap.m.VBox({
                 items: [
@@ -4628,43 +4777,173 @@
                   }).addStyleClass("trailSlControls trailStrategyControls"),
                 ],
               }).addStyleClass("planningCalcGroup trailStrategyPlanningGroup"),
-
-              new sap.m.VBox({
-                items: [
-                  new sap.m.Text({
-                    text: "Auto Premium SL — Huge Candle Thresholds",
-                  }).addStyleClass("planningGroupTitle"),
-
-                  new sap.m.HBox({
-                    items: [
-                      createCompactNumberField(
-                        "1 Minute",
-                        "PREMIUM_HUGE_CANDLE_1M",
-                      ),
-                      createCompactNumberField(
-                        "3 Minutes",
-                        "PREMIUM_HUGE_CANDLE_3M",
-                      ),
-                      createCompactNumberField(
-                        "5 Minutes",
-                        "PREMIUM_HUGE_CANDLE_5M",
-                      ),
-                      createCompactNumberField(
-                        "15 Minutes",
-                        "PREMIUM_HUGE_CANDLE_15M",
-                      ),
                     ],
-                  }).addStyleClass(
-                    "planningFieldsRow premiumThresholdFieldsRow",
-                  ),
+                  }).addStyleClass("planningMainColumn"),
 
-                  new sap.m.Text({
-                    text: "When a completed premium candle exceeds its interval threshold, the SL trigger moves to the candle midpoint.",
-                  }).addStyleClass("planningHelperText"),
+                  new sap.m.VBox({
+                    items: [
+                      new sap.m.VBox({
+                        items: [
+                          new sap.m.HBox({
+                            alignItems: "End",
+                            items: [
+                              new sap.m.VBox({
+                                items: [
+                                  createLabelWithInfo(
+                                    "Underlying",
+                                    "Selects which index symbol the webhook accepts and which option chain, spot token, strike step, and lot size the bot uses.",
+                                  ),
+
+                                  new sap.m.SegmentedButton({
+                                    selectedKey: "{/UNDERLYING_SYMBOL}",
+                                    width: "240px",
+                                    selectionChange: async function (e) {
+                                      const item = e.getParameter("item");
+                                      const selected = item
+                                        ? item.getKey()
+                                        : e.getSource().getSelectedKey();
+
+                                      applyUnderlyingDefaults(selected);
+                                      calculateRisk();
+                                      await saveConfig({ silent: true });
+                                      await refreshMarketCalendar();
+                                    },
+                                    items: [
+                                      new sap.m.SegmentedButtonItem({
+                                        text: "NIFTY",
+                                        key: "NIFTY",
+                                        width: "120px",
+                                      }),
+                                      new sap.m.SegmentedButtonItem({
+                                        text: "BANKNIFTY",
+                                        key: "BANKNIFTY",
+                                        width: "120px",
+                                      }),
+                                    ],
+                                  }).addStyleClass("underlyingSegmentedButton"),
+                                ],
+                              }).addStyleClass("planningModeControl"),
+
+                              new sap.m.VBox({
+                                items: [
+                                  createLabelWithInfo(
+                                    "Risk Mode",
+                                    "Per Trade applies risk to each planned trade. Per Day divides the risk budget across max daily trades.",
+                                  ),
+
+                                  new sap.m.SegmentedButton({
+                                    selectedKey: "{/RISK_MODE}",
+                                    width: "240px",
+                                    selectionChange: async function (e) {
+                                      const item = e.getParameter("item");
+
+                                      model.setProperty(
+                                        "/RISK_MODE",
+                                        item
+                                          ? item.getKey()
+                                          : e.getSource().getSelectedKey(),
+                                      );
+                                      calculateRisk();
+                                      await saveConfig({ silent: true });
+                                    },
+                                    items: [
+                                      new sap.m.SegmentedButtonItem({
+                                        text: "Per Trade",
+                                        key: "PER_TRADE",
+                                        width: "120px",
+                                      }),
+                                      new sap.m.SegmentedButtonItem({
+                                        text: "Per Day",
+                                        key: "PER_DAY",
+                                        width: "120px",
+                                      }),
+                                    ],
+                                  }),
+                                ],
+                              }).addStyleClass("planningModeControl"),
+
+                              new sap.m.VBox({
+                                items: [
+                                  createLabelWithInfo(
+                                    "Market Bias",
+                                    "Bias reduces suggested lots for counter-bias trades. Bullish reduces SHORT lots; Bearish reduces LONG lots.",
+                                  ),
+
+                                  new sap.m.SegmentedButton({
+                                    selectedKey: "{/MARKET_BIAS}",
+                                    width: "300px",
+                                    selectionChange: async function (e) {
+                                      const item = e.getParameter("item");
+
+                                      model.setProperty(
+                                        "/MARKET_BIAS",
+                                        item
+                                          ? item.getKey()
+                                          : e.getSource().getSelectedKey(),
+                                      );
+                                      calculateRisk();
+                                      await saveConfig({ silent: true });
+                                    },
+                                    items: [
+                                      new sap.m.SegmentedButtonItem({
+                                        text: "Bullish",
+                                        icon: "sap-icon://trend-up",
+                                        key: "BULLISH",
+                                        width: "100px",
+                                      }),
+                                      new sap.m.SegmentedButtonItem({
+                                        text: "Neutral",
+                                        key: "NEUTRAL",
+                                        width: "100px",
+                                      }),
+                                      new sap.m.SegmentedButtonItem({
+                                        text: "Bearish",
+                                        icon: "sap-icon://trend-down",
+                                        key: "BEARISH",
+                                        width: "100px",
+                                      }),
+                                    ],
+                                  }).addStyleClass("marketBiasSegmentedButton"),
+                                ],
+                              }).addStyleClass("planningModeControl"),
+                            ],
+                          }).addStyleClass("planningModeFieldsRow"),
+                        ],
+                      }).addStyleClass("planningCalcGroup planningModeBox"),
+
+                      new sap.m.VBox({
+                        items: [
+                          new sap.m.Text({
+                            text: "Auto Premium SL — Huge Candle Thresholds",
+                          }).addStyleClass("planningGroupTitle"),
+
+                          new sap.m.HBox({
+                            items: PREMIUM_HUGE_CANDLE_FIELDS.map((field) =>
+                              createCompactNumberField(field.label, field.activeKey),
+                            ),
+                          }).addStyleClass(
+                            "planningFieldsRow premiumThresholdFieldsRow",
+                          ),
+
+                          new sap.m.Text({
+                            text: "When a completed premium candle exceeds its interval threshold, the SL trigger moves to the candle midpoint.",
+                          }).addStyleClass("planningHelperText"),
+                        ],
+                      })
+                        .addCustomData(
+                          new sap.ui.core.CustomData({
+                            key: "underlying",
+                            value: "{/UNDERLYING_SYMBOL}",
+                            writeToDom: true,
+                          }),
+                        )
+                        .addStyleClass("planningCalcGroup premiumThresholdGroup"),
+                    ],
+                  }).addStyleClass("planningSideColumn"),
                 ],
-              }).addStyleClass("planningCalcGroup premiumThresholdGroup"),
+              }).addStyleClass("planningDashboardLayout"),
             ],
-          }).addStyleClass("card");
+          }).addStyleClass("card planningCard");
         }
 
         // Log viewer card. The API returns recent entries first.
@@ -4765,23 +5044,32 @@
 
           const intervalSelector = new sap.m.SegmentedButton({
             selectedKey: "{/TEST_INTERVAL}",
-            width: "100%",
+            width: "240px",
             items: [
               new sap.m.SegmentedButtonItem({
                 key: "1",
                 text: "1m",
+                width: "48px",
               }),
               new sap.m.SegmentedButtonItem({
                 key: "3",
                 text: "3m",
+                width: "48px",
               }),
               new sap.m.SegmentedButtonItem({
                 key: "5",
                 text: "5m",
+                width: "48px",
               }),
               new sap.m.SegmentedButtonItem({
                 key: "15",
                 text: "15m",
+                width: "48px",
+              }),
+              new sap.m.SegmentedButtonItem({
+                key: "30",
+                text: "30m",
+                width: "48px",
               }),
             ],
           }).addStyleClass("manualIntervalSelector");
@@ -4801,11 +5089,6 @@
                 level: "H3",
               }).addStyleClass("sectionTitle"),
 
-              new sap.m.MessageStrip({
-                text: "These buttons send webhook signals into the bot. Paper Trade ON simulates orders; Paper Trade OFF sends orders to the selected Dhan environment.",
-                type: "Warning",
-                showIcon: true,
-              }).addStyleClass("manualSignalWarning"),
 
               new sap.m.VBox({
                 items: [
@@ -4889,9 +5172,7 @@
                                     )
                                   : "-";
 
-                                return `Dhan LTP ${formatIndianWholeNumber(
-                                  ltp,
-                                )} at ${checkedText}`;
+                                return `LTP at ${checkedText}`;
                               },
                             },
                           }).addStyleClass("manualSpotStatus"),
@@ -4901,7 +5182,7 @@
                       new sap.m.VBox({
                         items: [
                           createLabelWithInfo(
-                            "Signal Timeframe",
+                            "Timeframe",
                             "Used to select the previous completed option-premium candle for stop-loss planning.",
                           ),
                           intervalSelector,
@@ -4913,6 +5194,7 @@
                   }).addStyleClass("manualConfigGrid"),
 
                   new sap.m.HBox({
+                    alignItems: "Stretch",
                     items: [
                       new sap.m.VBox({
                         items: [
@@ -4965,91 +5247,104 @@
                           }).addStyleClass("manualActionButtons"),
                         ],
                       }).addStyleClass("manualActionGroup manualShortGroup"),
+
+                      new sap.m.VBox({
+                        items: [
+                          new sap.m.HBox({
+                            alignItems: "Center",
+                            justifyContent: "SpaceBetween",
+                            items: [
+                              new sap.m.Text({
+                                text: "TRAIL STOP LOSS",
+                              }).addStyleClass("manualActionTitle"),
+                              new sap.m.ObjectStatus({
+                                text: {
+                                  path: "/algoLiveStatus/activePosition",
+                                  formatter: function (position) {
+                                    if (!position?.stopLossOrderId) {
+                                      return "No active SL";
+                                    }
+
+                                    return `${position.optionSymbol || "-"} • SL ${position.premiumStopLoss || "-"}`;
+                                  },
+                                },
+                                state: {
+                                  path: "/algoLiveStatus/activePosition/stopLossOrderId",
+                                  formatter: (orderId) =>
+                                    orderId ? "Warning" : "None",
+                                },
+                              }),
+                            ],
+                          }).addStyleClass("trailSlHeader"),
+
+                          new sap.m.Text({
+                            text: "Trail SL Manually",
+                          }).addStyleClass("trailModeDescription"),
+
+                          new sap.m.HBox({
+                            items: [
+                              new sap.m.Input({
+                                value: "{/TRAIL_TRIGGER_PRICE}",
+                                type: "Number",
+                                placeholder: "Trigger price",
+                                liveChange: function (event) {
+                                  const value = event.getParameter("value");
+
+                                  model.setProperty(
+                                    "/TRAIL_TRIGGER_PRICE",
+                                    value,
+                                  );
+                                  updateManualTrailLimitFromTrigger(value);
+                                },
+                                change: function (event) {
+                                  updateManualTrailLimitFromTrigger(
+                                    event.getParameter("value"),
+                                  );
+                                },
+                              }).addStyleClass(
+                                "trailSlInput trailTriggerInput",
+                              ),
+
+                              new sap.m.HBox({
+                                alignItems: "Center",
+                                justifyContent: "Center",
+                                items: [
+                                  new sap.m.Text({
+                                    text: ">",
+                                  }).addStyleClass("trailPriceOperatorText"),
+                                ],
+                              }).addStyleClass("trailPriceOperator"),
+
+                              new sap.m.Input({
+                                value: "{/TRAIL_LIMIT_PRICE}",
+                                type: "Number",
+                                placeholder: "Limit price",
+                              }).addStyleClass("trailSlInput trailLimitInput"),
+
+                              new sap.m.Button({
+                                text: "Trail",
+                                icon: "sap-icon://trend-up",
+                                type: "Emphasized",
+                                press: () => trailStopLoss("MANUAL"),
+                                enabled: {
+                                  path: "/algoLiveStatus/activePosition/stopLossOrderId",
+                                  formatter: (orderId) => Boolean(orderId),
+                                },
+                              }).addStyleClass(
+                                "trailSlButton trailManualButton",
+                              ),
+                            ],
+                          }).addStyleClass("trailSlControls"),
+                        ],
+                      }).addStyleClass("manualActionGroup trailSlGroup"),
                     ],
                   }).addStyleClass("manualActionGrid"),
 
-                  new sap.m.VBox({
-                    items: [
-                      new sap.m.HBox({
-                        alignItems: "Center",
-                        justifyContent: "SpaceBetween",
-                        items: [
-                          new sap.m.Text({
-                            text: "TRAIL STOP LOSS",
-                          }).addStyleClass("manualActionTitle"),
-                          new sap.m.ObjectStatus({
-                            text: {
-                              path: "/algoLiveStatus/activePosition",
-                              formatter: function (position) {
-                                if (!position?.stopLossOrderId) {
-                                  return "No active SL";
-                                }
-
-                                return `${position.optionSymbol || "-"} • SL ${position.premiumStopLoss || "-"}`;
-                              },
-                            },
-                            state: {
-                              path: "/algoLiveStatus/activePosition/stopLossOrderId",
-                              formatter: (orderId) =>
-                                orderId ? "Warning" : "None",
-                            },
-                          }),
-                        ],
-                      }).addStyleClass("trailSlHeader"),
-
-                      new sap.m.Text({
-                        text: "Enter Dhan SL trigger and limit prices manually.",
-                      }).addStyleClass("trailModeDescription"),
-
-                      new sap.m.HBox({
-                        items: [
-                          new sap.m.Input({
-                            value: "{/TRAIL_TRIGGER_PRICE}",
-                            type: "Number",
-                            placeholder: "Trigger price",
-                            liveChange: function (event) {
-                              const value = event.getParameter("value");
-
-                              model.setProperty("/TRAIL_TRIGGER_PRICE", value);
-                              updateManualTrailLimitFromTrigger(value);
-                            },
-                            change: function (event) {
-                              updateManualTrailLimitFromTrigger(
-                                event.getParameter("value"),
-                              );
-                            },
-                          }).addStyleClass("trailSlInput trailTriggerInput"),
-
-                          new sap.m.HBox({
-                            alignItems: "Center",
-                            justifyContent: "Center",
-                            items: [
-                              new sap.m.Text({
-                                text: ">",
-                              }).addStyleClass("trailPriceOperatorText"),
-                            ],
-                          }).addStyleClass("trailPriceOperator"),
-
-                          new sap.m.Input({
-                            value: "{/TRAIL_LIMIT_PRICE}",
-                            type: "Number",
-                            placeholder: "Limit price",
-                          }).addStyleClass("trailSlInput trailLimitInput"),
-
-                          new sap.m.Button({
-                            text: "Trail SL",
-                            icon: "sap-icon://trend-up",
-                            type: "Emphasized",
-                            press: () => trailStopLoss("MANUAL"),
-                            enabled: {
-                              path: "/algoLiveStatus/activePosition/stopLossOrderId",
-                              formatter: (orderId) => Boolean(orderId),
-                            },
-                          }).addStyleClass("trailSlButton trailManualButton"),
-                        ],
-                      }).addStyleClass("trailSlControls"),
-                    ],
-                  }).addStyleClass("manualActionGroup trailSlGroup"),
+                  new sap.m.MessageStrip({
+                    text: "These buttons send webhook signals into the bot. Paper Trade ON simulates orders; Paper Trade OFF sends orders to the selected Dhan environment.",
+                    type: "Warning",
+                    showIcon: true,
+                  }).addStyleClass("manualSignalWarning"),
                 ],
               }).addStyleClass("manualSignalComposer"),
             ],
@@ -5076,6 +5371,14 @@
 
             if (selectedKey === "manualSignals") {
               refreshNiftySpotPrice();
+              setTimeout(() => {
+                const tile = document.querySelector(".manualIntervalGroup");
+                if (!tile) return;
+
+                tile.classList.remove("manualIntervalPulse");
+                void tile.offsetWidth;
+                tile.classList.add("manualIntervalPulse");
+              }, 0);
             }
           },
           items: [
@@ -5249,6 +5552,7 @@
         await refreshMarketCalendar();
         await refreshLogs();
         await refreshDhanHealth();
+        maybeShowDhanTokenExpiryWarning();
         await refreshTradeAnalytics();
 
         // Keep operational status fresh while the dashboard stays open.
@@ -5261,6 +5565,7 @@
         setInterval(refreshTradeAnalytics, 30000);
         setInterval(() => {
           model.setProperty("/TOKEN_COUNTDOWN_TICK", Date.now());
+          maybeShowDhanTokenExpiryWarning();
         }, 60000);
 
         // Render the OpenUI5 app into the body placeholder.

@@ -63,6 +63,7 @@ const {
 } = require("./services/tradeHistoryService");
 const {
   getUnderlyingProfile,
+  getUnderlyingProfileForSymbol,
   isAllowedUnderlyingSymbol: isConfiguredUnderlyingSymbol,
 } = require("./services/underlyingService");
 
@@ -807,6 +808,81 @@ function getActiveUnderlyingProfile(config = getRuntimeConfig()) {
   return getUnderlyingProfile(config);
 }
 
+function isTradingViewSymbolAllowed(symbolKey, config) {
+  if (symbolKey === "BANKNIFTY") {
+    return config.ALLOW_BANKNIFTY_TV_SIGNALS === undefined
+      ? true
+      : isEnabled(config.ALLOW_BANKNIFTY_TV_SIGNALS);
+  }
+
+  if (symbolKey === "NIFTY") {
+    return config.ALLOW_NIFTY_TV_SIGNALS === undefined
+      ? true
+      : isEnabled(config.ALLOW_NIFTY_TV_SIGNALS);
+  }
+
+  return false;
+}
+
+function getWebhookUnderlyingContext(symbol, config, manualSignal) {
+  if (manualSignal) {
+    const profile = getActiveUnderlyingProfile(config);
+
+    return {
+      allowed: isConfiguredUnderlyingSymbol(symbol, config),
+      profile,
+      config,
+      reason: `Only ${profile.displayName} manual signals are allowed.`,
+      response: `Non-${profile.displayName} symbol ignored\n`,
+    };
+  }
+
+  const baseProfile = getUnderlyingProfileForSymbol(symbol);
+
+  if (!baseProfile) {
+    return {
+      allowed: false,
+      profile: getActiveUnderlyingProfile(config),
+      config,
+      reason: "Only NIFTY and BANKNIFTY TradingView alerts are recognized.",
+      response: "Unsupported TradingView symbol ignored\n",
+    };
+  }
+
+  const activeProfile = getActiveUnderlyingProfile(config);
+  const symbolConfig = {
+    ...config,
+    UNDERLYING_SYMBOL: baseProfile.symbol,
+  };
+
+  if (baseProfile.symbol !== activeProfile.symbol) {
+    delete symbolConfig.LOT_SIZE;
+    delete symbolConfig.STRIKE_STEP;
+    delete symbolConfig.PLANNING_SL_POINTS;
+  }
+
+  const profile = getUnderlyingProfile(symbolConfig);
+  symbolConfig.LOT_SIZE = String(profile.lotSize);
+  symbolConfig.STRIKE_STEP = String(profile.strikeStep);
+  symbolConfig.PLANNING_SL_POINTS = String(profile.planningSlPoints);
+
+  if (!isTradingViewSymbolAllowed(profile.symbol, config)) {
+    return {
+      allowed: false,
+      profile,
+      config: symbolConfig,
+      reason: `${profile.displayName} TradingView signals are disabled from Trading Desk.`,
+      response: `${profile.displayName} TradingView signals disabled\n`,
+    };
+  }
+
+  return {
+    allowed: true,
+    profile,
+    config: symbolConfig,
+  };
+}
+
 function getWebhookDedupeKey({ signal, symbol, time }) {
   if (!signal || !symbol || !time) {
     return "";
@@ -844,6 +920,14 @@ function isDuplicateWebhook(payload, now = Date.now()) {
 
   recentWebhookSignals.set(key, now);
   return false;
+}
+
+function clearWebhookDedupe(payload) {
+  const key = getWebhookDedupeKey(payload);
+
+  if (key) {
+    recentWebhookSignals.delete(key);
+  }
 }
 
 function normalizeAlertIntervalMinutes(value, fallback = 15) {
@@ -1767,26 +1851,56 @@ function roundToTick(price, tickSize) {
 
 function getHugePremiumCandleThreshold(interval, config) {
   const defaults = {
-    1: 6,
-    3: 12,
-    5: 15,
-    15: 25,
+    NIFTY: {
+      1: 6,
+      3: 12,
+      5: 15,
+      15: 25,
+      30: 40,
+    },
+    BANKNIFTY: {
+      1: 10,
+      3: 15,
+      5: 20,
+      15: 40,
+      30: 70,
+    },
   };
-  const configKey = {
-    1: "PREMIUM_HUGE_CANDLE_1M",
-    3: "PREMIUM_HUGE_CANDLE_3M",
-    5: "PREMIUM_HUGE_CANDLE_5M",
-    15: "PREMIUM_HUGE_CANDLE_15M",
-  }[Number(interval)];
+  const intervalNumber = Number(interval);
+  const field = {
+    1: { activeKey: "PREMIUM_HUGE_CANDLE_1M", suffix: "1M" },
+    3: { activeKey: "PREMIUM_HUGE_CANDLE_3M", suffix: "3M" },
+    5: { activeKey: "PREMIUM_HUGE_CANDLE_5M", suffix: "5M" },
+    15: { activeKey: "PREMIUM_HUGE_CANDLE_15M", suffix: "15M" },
+    30: { activeKey: "PREMIUM_HUGE_CANDLE_30M", suffix: "30M" },
+  }[intervalNumber];
 
-  if (!configKey) {
+  if (!field) {
     return null;
   }
 
-  const configured = Number(config[configKey]);
-  return Number.isFinite(configured) && configured > 0
-    ? configured
-    : defaults[Number(interval)];
+  const underlyingSymbol =
+    String(config.UNDERLYING_SYMBOL || "").toUpperCase() === "BANKNIFTY"
+      ? "BANKNIFTY"
+      : "NIFTY";
+  const symbolKey = underlyingSymbol + "_PREMIUM_HUGE_CANDLE_" + field.suffix;
+  const symbolConfigured = Number(config[symbolKey]);
+
+  if (Number.isFinite(symbolConfigured) && symbolConfigured > 0) {
+    return symbolConfigured;
+  }
+
+  const genericConfigured = Number(config[field.activeKey]);
+
+  if (
+    underlyingSymbol === "NIFTY" &&
+    Number.isFinite(genericConfigured) &&
+    genericConfigured > 0
+  ) {
+    return genericConfigured;
+  }
+
+  return defaults[underlyingSymbol][intervalNumber];
 }
 
 async function getPremiumStopLossPlan(
@@ -2510,33 +2624,33 @@ No order placed.`,
       return res.status(400).send("Invalid payload");
     }
 
-    const config = getRuntimeConfig();
-    const underlyingProfile = getActiveUnderlyingProfile(config);
-    config.LOT_SIZE = config.LOT_SIZE || String(underlyingProfile.lotSize);
-    config.STRIKE_STEP = config.STRIKE_STEP || String(underlyingProfile.strikeStep);
-    config.PLANNING_SL_POINTS =
-      config.PLANNING_SL_POINTS || String(underlyingProfile.planningSlPoints);
+    let config = getRuntimeConfig();
+    const underlyingContext = getWebhookUnderlyingContext(
+      symbol,
+      config,
+      manualSignal,
+    );
+    const underlyingProfile = underlyingContext.profile;
+    config = underlyingContext.config;
 
-    if (!isAllowedUnderlyingSymbol(symbol)) {
+    if (!underlyingContext.allowed) {
       logger.warn(
-        `Webhook ignored because symbol is not ${underlyingProfile.displayName}: ${symbol}`,
+        `Webhook ignored for ${symbol}: ${underlyingContext.reason}`,
       );
 
       await sendTelegram(
-        `⚠️ Non-${underlyingProfile.displayName} Signal Ignored
+        `⚠️ Signal Ignored
 
 Signal : ${signal}
 Symbol : ${symbol}
 Price  : ${price}
 
-Only ${underlyingProfile.displayName} alerts are allowed.
+${underlyingContext.reason}
 
 No order placed.`,
       );
 
-      return res
-        .status(200)
-        .send(`Non-${underlyingProfile.displayName} symbol ignored\n`);
+      return res.status(200).send(underlyingContext.response);
     }
 
     if (isDuplicateWebhook({ signal, symbol, time })) {
@@ -2779,6 +2893,7 @@ No order placed.`,
 
           // Only mark position open after Dhan/paper order reports success.
           if (!orderResult.success) {
+            clearWebhookDedupe({ signal, symbol, time });
             await sendTelegram(
               `❌ LONG_ENTRY failed
 
@@ -2798,6 +2913,7 @@ Position NOT changed.`,
             await confirmEntryOrderExecution(orderResult);
 
           if (!entryConfirmation.success) {
+            clearWebhookDedupe({ signal, symbol, time });
             logger.error(
               `LONG_ENTRY broker order not filled: ${entryConfirmation.error}`,
             );
@@ -3042,7 +3158,8 @@ Position NOT changed.`,
 
           break;
         } catch (err) {
-          logger.error("LONG_ENTRY FAILED", err);
+          clearWebhookDedupe({ signal, symbol, time });
+          logger.error(`LONG_ENTRY FAILED symbol=${symbol}`, err);
           return res.status(500).send("LONG_ENTRY failed");
         }
       }
@@ -3204,6 +3321,7 @@ No order placed.`,
 
           // Only mark position open after Dhan/paper order reports success.
           if (!orderResult.success) {
+            clearWebhookDedupe({ signal, symbol, time });
             await sendTelegram(
               `❌ SHORT_ENTRY failed
 
@@ -3223,6 +3341,7 @@ Position NOT changed.`,
             await confirmEntryOrderExecution(orderResult);
 
           if (!entryConfirmation.success) {
+            clearWebhookDedupe({ signal, symbol, time });
             logger.error(
               `SHORT_ENTRY broker order not filled: ${entryConfirmation.error}`,
             );
@@ -3467,7 +3586,8 @@ Position NOT changed.`,
 
           break;
         } catch (err) {
-          logger.error("SHORT_ENTRY FAILED", err);
+          clearWebhookDedupe({ signal, symbol, time });
+          logger.error(`SHORT_ENTRY FAILED symbol=${symbol}`, err);
           return res.status(500).send("SHORT_ENTRY failed");
         }
       }

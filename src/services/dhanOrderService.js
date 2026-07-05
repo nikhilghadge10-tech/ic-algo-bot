@@ -80,6 +80,10 @@ async function placeMarketBuyOrder(contract, quantity) {
     return {
       success: true,
       paperTrade: true,
+      data: {
+        orderId: `PAPER-BUY-${Date.now()}`,
+        orderStatus: "TRADED",
+      },
       payload,
     };
   }
@@ -145,6 +149,10 @@ async function placeMarketSellOrder(securityId, quantity) {
     return {
       success: true,
       paperTrade: true,
+      data: {
+        orderId: `PAPER-SELL-${Date.now()}`,
+        orderStatus: "TRADED",
+      },
       payload,
     };
   }

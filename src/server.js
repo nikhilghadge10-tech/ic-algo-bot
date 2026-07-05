@@ -796,8 +796,20 @@ function getTradeMode(config) {
   return normalizeDhanEnvironment(config.DHAN_ENV);
 }
 
+function isPaperTradeMode(mode) {
+  return normalizeTradeMode(mode) === "PAPER";
+}
+
 function currentPositionBelongsToMode(mode) {
   return currentPosition && normalizeTradeMode(currentPositionMode) === mode;
+}
+
+function getMatchingExitSignal(position = currentPosition) {
+  return position === "LONG"
+    ? "LONG_EXIT"
+    : position === "SHORT"
+      ? "SHORT_EXIT"
+      : null;
 }
 
 function isAllowedUnderlyingSymbol(symbol) {
@@ -962,6 +974,55 @@ function normalizeAlertIntervalMinutes(value, fallback = 15) {
   return amount;
 }
 
+function getTradingViewTimeframeKey(intervalMinutes) {
+  return {
+    1: "ALLOW_TV_TIMEFRAME_1M",
+    3: "ALLOW_TV_TIMEFRAME_3M",
+    5: "ALLOW_TV_TIMEFRAME_5M",
+    15: "ALLOW_TV_TIMEFRAME_15M",
+    30: "ALLOW_TV_TIMEFRAME_30M",
+  }[Number(intervalMinutes)];
+}
+
+function isTradingViewTimeframeAllowed(intervalMinutes, config) {
+  if (Number(intervalMinutes) === 15) {
+    return true;
+  }
+
+  const key = getTradingViewTimeframeKey(intervalMinutes);
+
+  if (!key) {
+    return false;
+  }
+
+  return isEnabled(config[key]);
+}
+
+async function rejectDisabledTradingViewTimeframe(
+  res,
+  signal,
+  symbol,
+  price,
+  intervalMinutes,
+) {
+  logger.warn(
+    `${signal} ignored because TradingView timeframe ${intervalMinutes}m is disabled`,
+  );
+
+  await sendTelegram(
+    `⚠️ TradingView Timeframe Disabled
+
+Signal : ${signal}
+Symbol : ${symbol}
+Price  : ${price}
+Timeframe : ${intervalMinutes}m
+
+No order placed.`,
+  );
+
+  return res.status(200).send("TradingView timeframe disabled\n");
+}
+
 // Shared response for disabled BUY/SELL permission gates.
 async function rejectDisabledEntry(res, signal, symbol, price, permissionName) {
   logger.warn(`${signal} ignored because ${permissionName} is disabled`);
@@ -1061,6 +1122,7 @@ async function confirmEntryOrderExecution(orderResult) {
     return {
       success: true,
       paperTrade: true,
+      orderId: getOrderId(orderResult),
       status: "PAPER_FILLED",
     };
   }
@@ -2158,6 +2220,73 @@ async function getEntryRiskPlan(contract, config, stopLossPlan) {
   }
 }
 
+function getPaperSizingRiskPoints(config, result) {
+  const plannedRiskPoints = Number(config.PLANNING_SL_POINTS || 0);
+
+  if (Number.isFinite(plannedRiskPoints) && plannedRiskPoints > 0) {
+    return plannedRiskPoints;
+  }
+
+  const entryPremium = Number(result.entryPremium);
+  const stopLossPremium = Number(result.stopLossPremium);
+  const premiumDistance = Math.abs(entryPremium - stopLossPremium);
+
+  return Number.isFinite(premiumDistance) && premiumDistance > 0
+    ? Number(premiumDistance.toFixed(2))
+    : getMinimumPremiumSlPoints(config);
+}
+
+function canSimulatePaperPremiumSlFailure(activeTradeMode, result) {
+  return (
+    isPaperTradeMode(activeTradeMode) &&
+    Number.isFinite(Number(result.entryPremium)) &&
+    Number.isFinite(Number(result.stopLossPremium))
+  );
+}
+
+function createPaperPremiumSlWarning({
+  config,
+  result,
+  reason,
+  source = "PAPER_PREMIUM_SL_WARNING",
+}) {
+  const entryPremium = Number(result.entryPremium);
+  const stopLossPremium = Number(result.stopLossPremium);
+  const actualRiskPoints = Number((entryPremium - stopLossPremium).toFixed(2));
+  const sizingRiskPoints = getPaperSizingRiskPoints(config, result);
+
+  return {
+    code: "PAPER_PREMIUM_SL_INVALID_AT_ENTRY",
+    source,
+    message: reason,
+    entryPremium,
+    stopLossPremium,
+    actualRiskPoints,
+    sizingRiskPoints,
+  };
+}
+
+function getPaperRiskPlanFromWarning(warning, result) {
+  return {
+    success: true,
+    source: warning.source,
+    riskPoints: warning.sizingRiskPoints,
+    entryPremium: warning.entryPremium,
+    stopLossPremium: warning.stopLossPremium,
+    paperWarning: warning,
+    checkedAt: result.checkedAt,
+  };
+}
+
+function logPaperPremiumSlWarning(signal, warning) {
+  logger.warn(
+    `${signal} PAPER entry continuing despite premium SL warning: ` +
+      `reason=${warning.message} entryPremium=${warning.entryPremium} ` +
+      `premiumSL=${warning.stopLossPremium} actualRiskPoints=${warning.actualRiskPoints} ` +
+      `sizingRiskPoints=${warning.sizingRiskPoints}`,
+  );
+}
+
 async function rejectInvalidEntrySize(res, signal, symbol, price, sizing) {
   logger.warn(`${signal} ignored because calculated quantity is invalid`);
 
@@ -2309,6 +2438,42 @@ function getOrderPlacementNote(config) {
     : "Real order placed on Dhan.";
 }
 
+async function rejectContractNotFound({
+  res,
+  signal,
+  symbol,
+  price,
+  option,
+  underlyingProfile,
+  activeTradeMode,
+}) {
+  logger.warn(
+    `${signal} ignored because contract not found: ` +
+      `symbol=${symbol} price=${price} strike=${option.strike} ` +
+      `optionType=${option.optionType} underlying=${underlyingProfile.displayName} ` +
+      `tradeMode=${activeTradeMode}`,
+  );
+
+  const paperMode = isPaperTradeMode(activeTradeMode);
+
+  await sendTelegram(
+    `${paperMode ? "❌ Paper Simulation Failed - Contract Not Found" : "❌ Contract Not Found"}
+
+Signal : ${signal}
+Mode   : ${activeTradeMode}
+Symbol : ${symbol}
+Spot   : ${price}
+Strike : ${option.strike}
+Type   : ${option.optionType}
+
+No matching ${underlyingProfile.displayName} option contract found for this spot/strike.
+
+${paperMode ? "No paper trade created." : "No order placed."}`,
+  );
+
+  return res.status(200).send("Contract not found\n");
+}
+
 function getRiskBudgetLabel(config) {
   return String(config.RISK_MODE || "").toUpperCase() === "PER_DAY"
     ? "Risk per day"
@@ -2325,7 +2490,16 @@ function formatEntryTradeTelegram({
   riskPoints,
   premiumStopLoss,
   tradeLimitStatus,
+  paperEntryWarning,
 }) {
+  const paperWarningText = paperEntryWarning
+    ? `
+-----------------------------
+Paper Warning : ${paperEntryWarning.message}
+Actual SL Distance : ${paperEntryWarning.actualRiskPoints ?? "-"}
+Sizing Risk Points : ${paperEntryWarning.sizingRiskPoints ?? "-"}`
+    : "";
+
   return `${emoji} ${getTradeModeLabel(config, "TRADE")}
 -----------------------------
 Position : ${contract.SEM_CUSTOM_SYMBOL}
@@ -2339,6 +2513,7 @@ Risk Points : ${riskPoints || "-"}
 Premium SL : ${premiumStopLoss || "-"}
 -----------------------------
 Total Trades Today : ${tradeLimitStatus.entryCount}
+${paperWarningText}
 
 ${getOrderPlacementNote(config)}`;
 }
@@ -2625,6 +2800,10 @@ No order placed.`,
     }
 
     let config = getRuntimeConfig();
+    const effectiveInterval = normalizeAlertIntervalMinutes(
+      alertInterval,
+      config.PREMIUM_SL_INTERVAL || 15,
+    );
     const underlyingContext = getWebhookUnderlyingContext(
       symbol,
       config,
@@ -2653,6 +2832,19 @@ No order placed.`,
       return res.status(200).send(underlyingContext.response);
     }
 
+    if (
+      !manualSignal &&
+      !isTradingViewTimeframeAllowed(effectiveInterval, underlyingContext.config)
+    ) {
+      return rejectDisabledTradingViewTimeframe(
+        res,
+        signal,
+        symbol,
+        price,
+        effectiveInterval,
+      );
+    }
+
     if (isDuplicateWebhook({ signal, symbol, time })) {
       logger.warn(
         `Duplicate webhook ignored: signal=${signal} symbol=${symbol} time=${time}`,
@@ -2668,10 +2860,6 @@ No order placed.`,
     await syncActiveStopLossStatus();
     await syncActiveBrokerPosition("WEBHOOK");
 
-    const effectiveInterval = normalizeAlertIntervalMinutes(
-      alertInterval,
-      config.PREMIUM_SL_INTERVAL || 15,
-    );
     const dhanEnvironment = normalizeDhanEnvironment(config.DHAN_ENV);
     const orderRoute =
       activeTradeMode === "PAPER" ? "SIMULATION" : `${dhanEnvironment}_DHAN`;
@@ -2781,21 +2969,15 @@ Signal Mode      : ${activeTradeMode}`,
           );
 
           if (!contract) {
-            logger.error("No matching option contract found");
-
-            await sendTelegram(
-              `❌ Contract Not Found
-
-Signal : ${signal}
-Symbol : ${symbol}
-Price  : ${price}
-
-No matching ${underlyingProfile.displayName} option contract found.
-
-No order placed.`,
-            );
-
-            return res.status(200).send("Contract not found");
+            return rejectContractNotFound({
+              res,
+              signal,
+              symbol,
+              price,
+              option,
+              underlyingProfile,
+              activeTradeMode,
+            });
           }
 
           logger.info(
@@ -2820,13 +3002,29 @@ No order placed.`,
             );
           }
 
-          const riskPlan = await getEntryRiskPlan(
+          let paperEntryWarning = null;
+          let riskPlan = await getEntryRiskPlan(
             contract,
             config,
             stopLossPlan,
           );
 
           if (!riskPlan.success) {
+            if (
+              canSimulatePaperPremiumSlFailure(activeTradeMode, riskPlan)
+            ) {
+              paperEntryWarning = createPaperPremiumSlWarning({
+                config,
+                result: riskPlan,
+                reason: riskPlan.error,
+                source: "PAPER_PREMIUM_SL_BELOW_ENTRY",
+              });
+              logPaperPremiumSlWarning(signal, paperEntryWarning);
+              riskPlan = getPaperRiskPlanFromWarning(
+                paperEntryWarning,
+                riskPlan,
+              );
+            } else {
             return rejectPremiumStopLossFailure(
               res,
               signal,
@@ -2835,6 +3033,7 @@ No order placed.`,
               riskPlan,
               { contract, stopLossPlan, manualSignal },
             );
+            }
           }
 
           const minimumPremiumSlPoints =
@@ -2844,20 +3043,42 @@ No order placed.`,
             stopLossPlan &&
             riskPlan.riskPoints < minimumPremiumSlPoints
           ) {
+            const minimumDistanceFailure = {
+              error:
+                `Premium SL distance ${riskPlan.riskPoints} is below minimum ` +
+                `${minimumPremiumSlPoints}`,
+              entryPremium: riskPlan.entryPremium,
+              stopLossPremium: riskPlan.stopLossPremium,
+              checkedAt: riskPlan.checkedAt,
+            };
+
+            if (
+              canSimulatePaperPremiumSlFailure(
+                activeTradeMode,
+                minimumDistanceFailure,
+              )
+            ) {
+              paperEntryWarning = createPaperPremiumSlWarning({
+                config,
+                result: minimumDistanceFailure,
+                reason: minimumDistanceFailure.error,
+                source: "PAPER_PREMIUM_SL_MIN_DISTANCE",
+              });
+              logPaperPremiumSlWarning(signal, paperEntryWarning);
+              riskPlan = getPaperRiskPlanFromWarning(
+                paperEntryWarning,
+                minimumDistanceFailure,
+              );
+            } else {
             return rejectPremiumStopLossFailure(
               res,
               signal,
               symbol,
               price,
-              {
-                error:
-                  `Premium SL distance ${riskPlan.riskPoints} is below minimum ` +
-                  `${minimumPremiumSlPoints}`,
-                entryPremium: riskPlan.entryPremium,
-                stopLossPremium: riskPlan.stopLossPremium,
-              },
+              minimumDistanceFailure,
               { contract, stopLossPlan, manualSignal },
             );
+            }
           }
 
           const sizing = getEntrySizing(
@@ -2953,6 +3174,20 @@ Position NOT changed.`,
             stopLossPlan &&
             actualRiskPoints < minimumPremiumSlPoints
           ) {
+            if (isPaperTradeMode(activeTradeMode)) {
+              paperEntryWarning = createPaperPremiumSlWarning({
+                config,
+                result: {
+                  entryPremium: actualEntryFillPrice,
+                  stopLossPremium: stopLossPlan.triggerPrice,
+                },
+                reason:
+                  `Actual fill-to-SL distance ${actualRiskPoints} is below minimum ` +
+                  `${minimumPremiumSlPoints}`,
+                source: "PAPER_ACTUAL_FILL_SL_MIN_DISTANCE",
+              });
+              logPaperPremiumSlWarning(signal, paperEntryWarning);
+            } else {
             const safetyResult = await handleUnsafeFilledEntry({
               signal,
               activeTradeMode,
@@ -2980,6 +3215,7 @@ Position NOT changed.`,
                   ? "LONG_ENTRY safety exited\n"
                   : "LONG_ENTRY safety exit failed\n",
               );
+            }
           }
 
           currentPosition = "LONG";
@@ -3123,6 +3359,9 @@ Position NOT changed.`,
             entryPremiumReference: actualEntryFillPrice,
             riskPoints: stopLossPlan ? actualRiskPoints : sizing.riskPoints,
             riskSource: stopLossPlan ? "ACTUAL_FILL" : riskPlan.source,
+            entryWarningCode: paperEntryWarning?.code,
+            entryWarning: paperEntryWarning?.message,
+            entryWarningDetails: paperEntryWarning,
           });
 
           // Persist the position so a restarted server can still exit it.
@@ -3138,6 +3377,9 @@ Position NOT changed.`,
             entryPremiumReference: actualEntryFillPrice,
             riskPoints: stopLossPlan ? actualRiskPoints : sizing.riskPoints,
             riskSource: stopLossPlan ? "ACTUAL_FILL" : riskPlan.source,
+            entryWarningCode: paperEntryWarning?.code,
+            entryWarning: paperEntryWarning?.message,
+            entryWarningDetails: paperEntryWarning,
           });
 
           const tradeLimitStatus = recordSuccessfulEntry(activeTradeMode);
@@ -3153,6 +3395,7 @@ Position NOT changed.`,
               riskPoints: stopLossPlan ? actualRiskPoints : sizing.riskPoints,
               premiumStopLoss,
               tradeLimitStatus,
+              paperEntryWarning,
             }),
           );
 
@@ -3209,21 +3452,15 @@ Signal Mode      : ${activeTradeMode}`,
           );
 
           if (!contract) {
-            logger.error("No matching option contract found");
-
-            await sendTelegram(
-              `❌ Contract Not Found
-
-Signal : ${signal}
-Symbol : ${symbol}
-Price  : ${price}
-
-No matching ${underlyingProfile.displayName} option contract found.
-
-No order placed.`,
-            );
-
-            return res.status(200).send("Contract not found");
+            return rejectContractNotFound({
+              res,
+              signal,
+              symbol,
+              price,
+              option,
+              underlyingProfile,
+              activeTradeMode,
+            });
           }
 
           logger.info(
@@ -3248,13 +3485,29 @@ No order placed.`,
             );
           }
 
-          const riskPlan = await getEntryRiskPlan(
+          let paperEntryWarning = null;
+          let riskPlan = await getEntryRiskPlan(
             contract,
             config,
             stopLossPlan,
           );
 
           if (!riskPlan.success) {
+            if (
+              canSimulatePaperPremiumSlFailure(activeTradeMode, riskPlan)
+            ) {
+              paperEntryWarning = createPaperPremiumSlWarning({
+                config,
+                result: riskPlan,
+                reason: riskPlan.error,
+                source: "PAPER_PREMIUM_SL_BELOW_ENTRY",
+              });
+              logPaperPremiumSlWarning(signal, paperEntryWarning);
+              riskPlan = getPaperRiskPlanFromWarning(
+                paperEntryWarning,
+                riskPlan,
+              );
+            } else {
             return rejectPremiumStopLossFailure(
               res,
               signal,
@@ -3263,6 +3516,7 @@ No order placed.`,
               riskPlan,
               { contract, stopLossPlan, manualSignal },
             );
+            }
           }
 
           const minimumPremiumSlPoints =
@@ -3272,20 +3526,42 @@ No order placed.`,
             stopLossPlan &&
             riskPlan.riskPoints < minimumPremiumSlPoints
           ) {
+            const minimumDistanceFailure = {
+              error:
+                `Premium SL distance ${riskPlan.riskPoints} is below minimum ` +
+                `${minimumPremiumSlPoints}`,
+              entryPremium: riskPlan.entryPremium,
+              stopLossPremium: riskPlan.stopLossPremium,
+              checkedAt: riskPlan.checkedAt,
+            };
+
+            if (
+              canSimulatePaperPremiumSlFailure(
+                activeTradeMode,
+                minimumDistanceFailure,
+              )
+            ) {
+              paperEntryWarning = createPaperPremiumSlWarning({
+                config,
+                result: minimumDistanceFailure,
+                reason: minimumDistanceFailure.error,
+                source: "PAPER_PREMIUM_SL_MIN_DISTANCE",
+              });
+              logPaperPremiumSlWarning(signal, paperEntryWarning);
+              riskPlan = getPaperRiskPlanFromWarning(
+                paperEntryWarning,
+                minimumDistanceFailure,
+              );
+            } else {
             return rejectPremiumStopLossFailure(
               res,
               signal,
               symbol,
               price,
-              {
-                error:
-                  `Premium SL distance ${riskPlan.riskPoints} is below minimum ` +
-                  `${minimumPremiumSlPoints}`,
-                entryPremium: riskPlan.entryPremium,
-                stopLossPremium: riskPlan.stopLossPremium,
-              },
+              minimumDistanceFailure,
               { contract, stopLossPlan, manualSignal },
             );
+            }
           }
 
           const sizing = getEntrySizing(
@@ -3381,6 +3657,20 @@ Position NOT changed.`,
             stopLossPlan &&
             actualRiskPoints < minimumPremiumSlPoints
           ) {
+            if (isPaperTradeMode(activeTradeMode)) {
+              paperEntryWarning = createPaperPremiumSlWarning({
+                config,
+                result: {
+                  entryPremium: actualEntryFillPrice,
+                  stopLossPremium: stopLossPlan.triggerPrice,
+                },
+                reason:
+                  `Actual fill-to-SL distance ${actualRiskPoints} is below minimum ` +
+                  `${minimumPremiumSlPoints}`,
+                source: "PAPER_ACTUAL_FILL_SL_MIN_DISTANCE",
+              });
+              logPaperPremiumSlWarning(signal, paperEntryWarning);
+            } else {
             const safetyResult = await handleUnsafeFilledEntry({
               signal,
               activeTradeMode,
@@ -3408,6 +3698,7 @@ Position NOT changed.`,
                   ? "SHORT_ENTRY safety exited\n"
                   : "SHORT_ENTRY safety exit failed\n",
               );
+            }
           }
 
           currentPosition = "SHORT";
@@ -3551,6 +3842,9 @@ Position NOT changed.`,
             entryPremiumReference: actualEntryFillPrice,
             riskPoints: stopLossPlan ? actualRiskPoints : sizing.riskPoints,
             riskSource: stopLossPlan ? "ACTUAL_FILL" : riskPlan.source,
+            entryWarningCode: paperEntryWarning?.code,
+            entryWarning: paperEntryWarning?.message,
+            entryWarningDetails: paperEntryWarning,
           });
 
           // Persist the position so a restarted server can still exit it.
@@ -3566,6 +3860,9 @@ Position NOT changed.`,
             entryPremiumReference: actualEntryFillPrice,
             riskPoints: stopLossPlan ? actualRiskPoints : sizing.riskPoints,
             riskSource: stopLossPlan ? "ACTUAL_FILL" : riskPlan.source,
+            entryWarningCode: paperEntryWarning?.code,
+            entryWarning: paperEntryWarning?.message,
+            entryWarningDetails: paperEntryWarning,
           });
 
           const tradeLimitStatus = recordSuccessfulEntry(activeTradeMode);
@@ -3581,6 +3878,7 @@ Position NOT changed.`,
               riskPoints: stopLossPlan ? actualRiskPoints : sizing.riskPoints,
               premiumStopLoss,
               tradeLimitStatus,
+              paperEntryWarning,
             }),
           );
 
@@ -3598,7 +3896,13 @@ Position NOT changed.`,
           currentPosition !== "LONG" ||
           !currentPositionBelongsToMode(activeTradeMode)
         ) {
-          logger.warn("LONG_EXIT ignored because no LONG position is open");
+          logger.warn(
+            `LONG_EXIT ignored because no LONG position is open: ` +
+              `currentPosition=${currentPosition || "NONE"} ` +
+              `currentMode=${normalizeTradeMode(currentPositionMode) || "NONE"} ` +
+              `signalMode=${activeTradeMode} ` +
+              `matchingExit=${getMatchingExitSignal() || "NONE"}`,
+          );
           return res.status(200).send("No LONG position");
         }
 
@@ -3729,7 +4033,13 @@ Position Closed`,
           currentPosition !== "SHORT" ||
           !currentPositionBelongsToMode(activeTradeMode)
         ) {
-          logger.warn("SHORT_EXIT ignored because no SHORT position is open");
+          logger.warn(
+            `SHORT_EXIT ignored because no SHORT position is open: ` +
+              `currentPosition=${currentPosition || "NONE"} ` +
+              `currentMode=${normalizeTradeMode(currentPositionMode) || "NONE"} ` +
+              `signalMode=${activeTradeMode} ` +
+              `matchingExit=${getMatchingExitSignal() || "NONE"}`,
+          );
           return res.status(200).send("No SHORT position");
         }
 

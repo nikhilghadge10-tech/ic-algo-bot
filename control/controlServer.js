@@ -31,7 +31,10 @@ const tradeHistoryPath = path.join(
   "data",
   "tradeHistory.json",
 );
-const { getUnderlyingProfile } = require("../src/services/underlyingService");
+const {
+  UNDERLYING_PROFILES,
+  getUnderlyingProfile,
+} = require("../src/services/underlyingService");
 
 // Accept JSON API requests and serve the dashboard assets from control/public.
 app.use(express.json());
@@ -87,6 +90,13 @@ const PREMIUM_HUGE_CANDLE_FIELDS = [
   { activeKey: "PREMIUM_HUGE_CANDLE_5M", suffix: "5M", nifty: "15", banknifty: "20" },
   { activeKey: "PREMIUM_HUGE_CANDLE_15M", suffix: "15M", nifty: "25", banknifty: "40" },
   { activeKey: "PREMIUM_HUGE_CANDLE_30M", suffix: "30M", nifty: "40", banknifty: "70" },
+];
+const TRADINGVIEW_TIMEFRAME_FIELDS = [
+  "ALLOW_TV_TIMEFRAME_1M",
+  "ALLOW_TV_TIMEFRAME_3M",
+  "ALLOW_TV_TIMEFRAME_5M",
+  "ALLOW_TV_TIMEFRAME_15M",
+  "ALLOW_TV_TIMEFRAME_30M",
 ];
 
 function normalizeUnderlyingSymbol(symbol) {
@@ -164,6 +174,53 @@ function syncPremiumHugeCandleUpdates(updates, previousEnv) {
       updates[field.activeKey] = updates[selectedSymbolKey];
     }
   });
+}
+
+function normalizePermissionPairUpdates(updates, previousEnv, first, second) {
+  const hasFirstUpdate = Object.prototype.hasOwnProperty.call(updates, first);
+  const hasSecondUpdate = Object.prototype.hasOwnProperty.call(updates, second);
+
+  const firstEnabled = String(
+    hasFirstUpdate ? updates[first] : previousEnv[first] || "true",
+  ).toLowerCase() === "true";
+  const secondEnabled = String(
+    hasSecondUpdate ? updates[second] : previousEnv[second] || "true",
+  ).toLowerCase() === "true";
+
+  if (firstEnabled || secondEnabled) {
+    return;
+  }
+
+  if (hasFirstUpdate && !hasSecondUpdate) {
+    updates[second] = "true";
+    return;
+  }
+
+  if (hasSecondUpdate && !hasFirstUpdate) {
+    updates[first] = "true";
+    return;
+  }
+
+  updates[second] = "true";
+}
+
+function normalizePairedPermissionUpdates(updates, previousEnv) {
+  normalizePermissionPairUpdates(
+    updates,
+    previousEnv,
+    "ALLOW_NIFTY_TV_SIGNALS",
+    "ALLOW_BANKNIFTY_TV_SIGNALS",
+  );
+  normalizePermissionPairUpdates(updates, previousEnv, "ALLOW_BUY", "ALLOW_SELL");
+}
+
+function getTradingViewTimeframeResponseFields(env) {
+  return Object.fromEntries(
+    TRADINGVIEW_TIMEFRAME_FIELDS.map((key) => [
+      key,
+      key === "ALLOW_TV_TIMEFRAME_15M" ? "true" : env[key] || "false",
+    ]),
+  );
 }
 
 // Store token update time as readable IST while keeping it Date-parseable.
@@ -365,6 +422,16 @@ function getNextNiftyExpiry(profile = getUnderlyingProfile(readEnv()), now = new
     day: expiryDate.toLocaleDateString("en-IN", { weekday: "long" }),
     isToday: dateKey === getLocalDateKey(now),
   };
+}
+
+function getNearestIndexExpiry(now = new Date()) {
+  return Object.values(UNDERLYING_PROFILES)
+    .map((profile) => ({
+      profile,
+      expiry: getNextNiftyExpiry(profile, now),
+    }))
+    .filter((item) => item.expiry?.date)
+    .sort((a, b) => a.expiry.date.localeCompare(b.expiry.date))[0] || null;
 }
 
 async function getNextNseHoliday(now = new Date()) {
@@ -573,6 +640,12 @@ function getTradeDirection(trade) {
   return String(trade.entrySignal || "").startsWith("SHORT") ? "SHORT" : "LONG";
 }
 
+function getTradeUnderlying(trade) {
+  const optionSymbol = String(trade.optionSymbol || "").toUpperCase();
+
+  return optionSymbol.startsWith("BANKNIFTY") ? "BANKNIFTY" : "NIFTY";
+}
+
 function getTradeOutcome(trade) {
   const profit = Number(trade.realizedProfit);
 
@@ -647,8 +720,13 @@ function parseAnalyticsLogStats(startDateKey) {
   return stats;
 }
 
-function buildTradeAnalytics(period = "week") {
+function buildTradeAnalytics(period = "week", underlying = "ALL") {
   const normalizedPeriod = period === "month" ? "month" : "week";
+  const normalizedUnderlying = ["NIFTY", "BANKNIFTY"].includes(
+    String(underlying || "").toUpperCase(),
+  )
+    ? String(underlying).toUpperCase()
+    : "ALL";
   const startDateKey = getPeriodStartDateKey(normalizedPeriod);
   const history = readJsonFile(tradeHistoryPath);
   const trades = Array.isArray(history?.trades)
@@ -657,12 +735,18 @@ function buildTradeAnalytics(period = "week") {
         .map((trade) => ({
           ...trade,
           dateKey: getTradeDateKey(trade),
+          underlying: getTradeUnderlying(trade),
           direction: getTradeDirection(trade),
           outcome: getTradeOutcome(trade),
           profit: Number.isFinite(Number(trade.realizedProfit))
             ? roundMoney(trade.realizedProfit)
             : null,
         }))
+        .filter(
+          (trade) =>
+            normalizedUnderlying === "ALL" ||
+            trade.underlying === normalizedUnderlying,
+        )
     : [];
   const logStats = parseAnalyticsLogStats(startDateKey);
   const realizedTrades = trades.filter((trade) => trade.profit !== null);
@@ -676,14 +760,25 @@ function buildTradeAnalytics(period = "week") {
     losers.reduce((sum, trade) => sum + Math.abs(Number(trade.profit || 0)), 0),
   );
   const netPnl = roundMoney(grossProfit - grossLoss);
-  const totalTrades = Math.max(trades.length, logStats.successfulEntries);
+  const averageProfit = winners.length
+    ? roundMoney(grossProfit / winners.length)
+    : 0;
+  const averageLoss = losers.length ? roundMoney(grossLoss / losers.length) : 0;
+  const totalTrades =
+    normalizedUnderlying === "ALL"
+      ? Math.max(trades.length, logStats.successfulEntries)
+      : trades.length;
   const winRate = realizedTrades.length
     ? roundMoney((winners.length / realizedTrades.length) * 100)
     : 0;
   const longTrades = trades.filter((trade) => trade.direction === "LONG").length;
   const shortTrades = trades.filter((trade) => trade.direction === "SHORT").length;
-  const displayedLongTrades = longTrades || logStats.longSignals;
-  const displayedShortTrades = shortTrades || logStats.shortSignals;
+  const displayedLongTrades =
+    normalizedUnderlying === "ALL" ? longTrades || logStats.longSignals : longTrades;
+  const displayedShortTrades =
+    normalizedUnderlying === "ALL"
+      ? shortTrades || logStats.shortSignals
+      : shortTrades;
   const displayedPositionTotal = displayedLongTrades + displayedShortTrades;
   const maxAbsPnl = Math.max(
     1,
@@ -692,13 +787,16 @@ function buildTradeAnalytics(period = "week") {
 
   return {
     period: normalizedPeriod,
+    underlying: normalizedUnderlying,
     label: normalizedPeriod === "month" ? "Last 30 days" : "Last 7 days",
     startDate: startDateKey,
     endDate: getIstIsoDateKey(new Date()),
     totals: {
       tradesTaken: totalTrades,
       successfulTrades: winners.length,
-      failedSignals: logStats.failedSignals,
+      failedSignals:
+        normalizedUnderlying === "ALL" ? logStats.failedSignals : null,
+      realizedTrades: realizedTrades.length,
       openTrades: trades.filter((trade) =>
         ["RUNNING", "RUNNING_UNPROTECTED"].includes(trade.status),
       ).length,
@@ -709,12 +807,14 @@ function buildTradeAnalytics(period = "week") {
       netPnl,
       grossProfit,
       grossLoss,
+      averageProfit,
+      averageLoss,
       profitFactor: grossLoss > 0 ? roundMoney(grossProfit / grossLoss) : null,
       longTrades: displayedLongTrades,
       shortTrades: displayedShortTrades,
     },
     charts: {
-      pnlByTrade: trades.slice(-10).map((trade, index) => ({
+      pnlByTrade: realizedTrades.slice(-10).map((trade, index) => ({
         label: getDashboardTradeLabel(trade.sequence || index + 1),
         value: trade.profit || 0,
         widthPercent: Math.max(
@@ -740,11 +840,12 @@ function buildTradeAnalytics(period = "week") {
         },
       ],
     },
-    recentTrades: trades.slice(-6).reverse().map((trade) => ({
+    recentTrades: realizedTrades.slice(-6).reverse().map((trade) => ({
       label: `${getDashboardTradeLabel(trade.sequence)} Trade`,
       direction: trade.direction,
       status: trade.status,
       optionSymbol: trade.optionSymbol,
+      underlying: trade.underlying,
       profit: trade.profit,
       outcome: trade.outcome,
       dateKey: trade.dateKey,
@@ -1096,6 +1197,7 @@ app.get("/api/config", async (req, res) => {
     ALLOW_SELL: env.ALLOW_SELL,
     ALLOW_NIFTY_TV_SIGNALS: env.ALLOW_NIFTY_TV_SIGNALS || "true",
     ALLOW_BANKNIFTY_TV_SIGNALS: env.ALLOW_BANKNIFTY_TV_SIGNALS || "true",
+    ...getTradingViewTimeframeResponseFields(env),
     PAPER_TRADE: env.PAPER_TRADE,
     TELEGRAM_ENABLED:
       String(env.TELEGRAM_ENABLED).toLowerCase() === "true" ? "true" : "false",
@@ -1195,12 +1297,13 @@ app.post("/api/config", (req, res) => {
   }
 
   syncPremiumHugeCandleUpdates(updates, previousEnv);
+  normalizePairedPermissionUpdates(updates, previousEnv);
 
   if (Object.prototype.hasOwnProperty.call(updates, "PAPER_TRADE")) {
     const paperTradeEnabled = String(updates.PAPER_TRADE).toLowerCase() === "true";
 
     updates.AUTO_PREMIUM_SL = paperTradeEnabled ? "false" : "true";
-    updates.AUTO_TRAIL_SL = paperTradeEnabled ? "false" : updates.AUTO_TRAIL_SL;
+    updates.AUTO_TRAIL_SL = paperTradeEnabled ? "false" : "true";
   }
 
   writeEnv(updates);
@@ -1514,7 +1617,7 @@ app.get("/api/trade-analytics", (req, res) => {
   try {
     res.json({
       success: true,
-      analytics: buildTradeAnalytics(req.query.period),
+      analytics: buildTradeAnalytics(req.query.period, req.query.underlying),
     });
   } catch (error) {
     res.status(500).json({
@@ -1557,11 +1660,12 @@ app.get("/api/nifty-spot", async (req, res) => {
   }
 });
 
-// Return the nearest tradable option expiry for the active underlying.
+// Return the nearest tradable option expiry across supported index underlyings.
 app.get("/api/nifty-expiry", (req, res) => {
   try {
-    const profile = getUnderlyingProfile(readEnv());
-    const expiry = getNextNiftyExpiry(profile);
+    const nearest = getNearestIndexExpiry();
+    const profile = nearest?.profile || getUnderlyingProfile(readEnv());
+    const expiry = nearest?.expiry || null;
 
     res.json({
       success: !!expiry,
@@ -1570,7 +1674,7 @@ app.get("/api/nifty-expiry", (req, res) => {
       underlyingDisplayName: profile.displayName,
       message: expiry
         ? `Next ${profile.displayName} expiry found`
-        : `No ${profile.displayName} expiry found`,
+        : "No index expiry found",
     });
   } catch (error) {
     const profile = getUnderlyingProfile(readEnv());

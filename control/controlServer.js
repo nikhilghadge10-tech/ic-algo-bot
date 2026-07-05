@@ -646,6 +646,28 @@ function getTradeUnderlying(trade) {
   return optionSymbol.startsWith("BANKNIFTY") ? "BANKNIFTY" : "NIFTY";
 }
 
+function getTradeOptionType(trade) {
+  const optionSymbol = String(trade.optionSymbol || "").toUpperCase();
+
+  if (/\bPUT\b/.test(optionSymbol)) return "PUT";
+  if (/\bCALL\b/.test(optionSymbol)) return "CALL";
+  return "UNKNOWN";
+}
+
+function getTradeExpiryLabel(trade) {
+  const optionSymbol = String(trade.optionSymbol || "").trim();
+  const match = optionSymbol.match(/\b(\d{1,2}\s+[A-Z]{3})\b/i);
+
+  return match ? match[1].toUpperCase() : "-";
+}
+
+function getTradeStrikePrice(trade) {
+  const optionSymbol = String(trade.optionSymbol || "").trim();
+  const match = optionSymbol.match(/\b(\d{4,6})\s+(CALL|PUT)\b/i);
+
+  return match ? match[1] : "-";
+}
+
 function getTradeOutcome(trade) {
   const profit = Number(trade.realizedProfit);
 
@@ -661,6 +683,19 @@ function getTradeOutcome(trade) {
   return "UNKNOWN";
 }
 
+function isTestTradeRecord(trade) {
+  const dataSource = String(trade.dataSource || "").toUpperCase();
+  const riskSource = String(trade.riskSource || "").toUpperCase();
+
+  return Boolean(
+    trade.analyticsSeed ||
+      trade.isTestData ||
+      trade.testData ||
+      dataSource === "TEST_DUMMY" ||
+      riskSource.includes("ANALYTICS_SEED"),
+  );
+}
+
 function getDashboardTradeLabel(sequence) {
   const n = Number(sequence || 0);
   const suffix =
@@ -669,6 +704,105 @@ function getDashboardTradeLabel(sequence) {
       : { 1: "st", 2: "nd", 3: "rd" }[n % 10] || "th";
 
   return `${n}${suffix}`;
+}
+
+function getTradeDateTime(trade) {
+  const timestamp =
+    trade.exitTime || trade.entryTime || trade.updatedAt || trade.createdAt || "";
+  const date = timestamp ? new Date(timestamp) : null;
+
+  return date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+function compareTradesByDate(a, b) {
+  const aTime = getTradeDateTime(a)?.getTime() || 0;
+  const bTime = getTradeDateTime(b)?.getTime() || 0;
+
+  if (aTime !== bTime) {
+    return aTime - bTime;
+  }
+
+  return Number(a.sequence || 0) - Number(b.sequence || 0);
+}
+
+function buildOutcomeStreaks(realizedTrades) {
+  const orderedTrades = [...realizedTrades].sort(compareTradesByDate);
+  const streaks = {
+    currentType: "NONE",
+    currentCount: 0,
+    bestWinning: 0,
+    bestLosing: 0,
+  };
+
+  orderedTrades.forEach((trade) => {
+    const type =
+      Number(trade.profit || 0) > 0
+        ? "WIN"
+        : Number(trade.profit || 0) < 0
+          ? "LOSS"
+          : "BREAKEVEN";
+
+    if (type === "BREAKEVEN") {
+      streaks.currentType = "NONE";
+      streaks.currentCount = 0;
+      return;
+    }
+
+    if (streaks.currentType === type) {
+      streaks.currentCount += 1;
+    } else {
+      streaks.currentType = type;
+      streaks.currentCount = 1;
+    }
+
+    if (type === "WIN") {
+      streaks.bestWinning = Math.max(streaks.bestWinning, streaks.currentCount);
+    }
+
+    if (type === "LOSS") {
+      streaks.bestLosing = Math.max(streaks.bestLosing, streaks.currentCount);
+    }
+  });
+
+  return {
+    currentType: streaks.currentType,
+    currentCount: streaks.currentCount,
+    bestWinning: streaks.bestWinning,
+    bestLosing: streaks.bestLosing,
+  };
+}
+
+function getTradePlannedLossAmount(trade) {
+  const stopLossMoney = Math.abs(Number(trade.stopLossMoney || 0));
+
+  if (Number.isFinite(stopLossMoney) && stopLossMoney > 0) {
+    return roundMoney(stopLossMoney);
+  }
+
+  const riskPoints = Math.abs(Number(trade.riskPoints || 0));
+  const quantity = Math.abs(Number(trade.quantity || 0));
+
+  if (
+    Number.isFinite(riskPoints) &&
+    riskPoints > 0 &&
+    Number.isFinite(quantity) &&
+    quantity > 0
+  ) {
+    return roundMoney(riskPoints * quantity);
+  }
+
+  return null;
+}
+
+function getTradeRrr(trade) {
+  const profit = Number(trade.profit);
+  const plannedLoss = getTradePlannedLossAmount(trade);
+
+  if (!Number.isFinite(profit) || !plannedLoss) {
+    return null;
+  }
+
+  return roundMoney(profit / plannedLoss);
 }
 
 function parseAnalyticsLogStats(startDateKey) {
@@ -720,23 +854,41 @@ function parseAnalyticsLogStats(startDateKey) {
   return stats;
 }
 
-function buildTradeAnalytics(period = "week", underlying = "ALL") {
+function buildTradeAnalytics(
+  period = "week",
+  underlying = "ALL",
+  optionType = "ALL",
+  includeTestData = true,
+) {
   const normalizedPeriod = period === "month" ? "month" : "week";
+  const shouldIncludeTestData =
+    includeTestData === true ||
+    String(includeTestData ?? "true").toLowerCase() !== "false";
   const normalizedUnderlying = ["NIFTY", "BANKNIFTY"].includes(
     String(underlying || "").toUpperCase(),
   )
     ? String(underlying).toUpperCase()
+    : "ALL";
+  const normalizedOptionType = ["CALL", "PUT"].includes(
+    String(optionType || "").toUpperCase(),
+  )
+    ? String(optionType).toUpperCase()
     : "ALL";
   const startDateKey = getPeriodStartDateKey(normalizedPeriod);
   const history = readJsonFile(tradeHistoryPath);
   const trades = Array.isArray(history?.trades)
     ? history.trades
         .filter((trade) => isDateKeyInPeriod(getTradeDateKey(trade), startDateKey))
+        .filter((trade) => shouldIncludeTestData || !isTestTradeRecord(trade))
         .map((trade) => ({
           ...trade,
           dateKey: getTradeDateKey(trade),
           underlying: getTradeUnderlying(trade),
           direction: getTradeDirection(trade),
+          optionType: getTradeOptionType(trade),
+          expiry: getTradeExpiryLabel(trade),
+          strikePrice: getTradeStrikePrice(trade),
+          isTestData: isTestTradeRecord(trade),
           outcome: getTradeOutcome(trade),
           profit: Number.isFinite(Number(trade.realizedProfit))
             ? roundMoney(trade.realizedProfit)
@@ -744,8 +896,10 @@ function buildTradeAnalytics(period = "week", underlying = "ALL") {
         }))
         .filter(
           (trade) =>
-            normalizedUnderlying === "ALL" ||
-            trade.underlying === normalizedUnderlying,
+            (normalizedUnderlying === "ALL" ||
+              trade.underlying === normalizedUnderlying) &&
+            (normalizedOptionType === "ALL" ||
+              trade.optionType === normalizedOptionType),
         )
     : [];
   const logStats = parseAnalyticsLogStats(startDateKey);
@@ -764,8 +918,12 @@ function buildTradeAnalytics(period = "week", underlying = "ALL") {
     ? roundMoney(grossProfit / winners.length)
     : 0;
   const averageLoss = losers.length ? roundMoney(grossLoss / losers.length) : 0;
+  const canUseLogStats =
+    shouldIncludeTestData &&
+    normalizedUnderlying === "ALL" &&
+    normalizedOptionType === "ALL";
   const totalTrades =
-    normalizedUnderlying === "ALL"
+    canUseLogStats
       ? Math.max(trades.length, logStats.successfulEntries)
       : trades.length;
   const winRate = realizedTrades.length
@@ -774,28 +932,29 @@ function buildTradeAnalytics(period = "week", underlying = "ALL") {
   const longTrades = trades.filter((trade) => trade.direction === "LONG").length;
   const shortTrades = trades.filter((trade) => trade.direction === "SHORT").length;
   const displayedLongTrades =
-    normalizedUnderlying === "ALL" ? longTrades || logStats.longSignals : longTrades;
+    canUseLogStats ? longTrades || logStats.longSignals : longTrades;
   const displayedShortTrades =
-    normalizedUnderlying === "ALL"
-      ? shortTrades || logStats.shortSignals
-      : shortTrades;
+    canUseLogStats ? shortTrades || logStats.shortSignals : shortTrades;
   const displayedPositionTotal = displayedLongTrades + displayedShortTrades;
   const maxAbsPnl = Math.max(
     1,
     ...realizedTrades.map((trade) => Math.abs(Number(trade.profit || 0))),
   );
+  const sortedRealizedTrades = [...realizedTrades].sort(compareTradesByDate);
+  const outcomeStreaks = buildOutcomeStreaks(sortedRealizedTrades);
 
   return {
     period: normalizedPeriod,
     underlying: normalizedUnderlying,
+    optionType: normalizedOptionType,
+    includeTestData: shouldIncludeTestData,
     label: normalizedPeriod === "month" ? "Last 30 days" : "Last 7 days",
     startDate: startDateKey,
     endDate: getIstIsoDateKey(new Date()),
     totals: {
       tradesTaken: totalTrades,
       successfulTrades: winners.length,
-      failedSignals:
-        normalizedUnderlying === "ALL" ? logStats.failedSignals : null,
+      failedSignals: canUseLogStats ? logStats.failedSignals : null,
       realizedTrades: realizedTrades.length,
       openTrades: trades.filter((trade) =>
         ["RUNNING", "RUNNING_UNPROTECTED"].includes(trade.status),
@@ -812,16 +971,34 @@ function buildTradeAnalytics(period = "week", underlying = "ALL") {
       profitFactor: grossLoss > 0 ? roundMoney(grossProfit / grossLoss) : null,
       longTrades: displayedLongTrades,
       shortTrades: displayedShortTrades,
+      currentStreakType: outcomeStreaks.currentType,
+      currentStreakCount: outcomeStreaks.currentCount,
+      bestWinningStreak: outcomeStreaks.bestWinning,
+      bestLosingStreak: outcomeStreaks.bestLosing,
     },
     charts: {
-      pnlByTrade: realizedTrades.slice(-10).map((trade, index) => ({
+      pnlByTrade: sortedRealizedTrades.map((trade, index) => ({
         label: getDashboardTradeLabel(trade.sequence || index + 1),
+        date: trade.dateKey,
+        symbol: trade.underlying || "-",
+        strikePrice: trade.strikePrice,
+        expiry: trade.expiry,
+        optionType: trade.optionType,
+        riskReward: trade.riskReward || "-",
+        rrr: getTradeRrr(trade),
+        isTestData: trade.isTestData,
         value: trade.profit || 0,
         widthPercent: Math.max(
           4,
           Math.round((Math.abs(Number(trade.profit || 0)) / maxAbsPnl) * 100),
         ),
         outcome: trade.outcome,
+        outcomeLabel:
+          Number(trade.profit || 0) > 0
+            ? "Profit"
+            : Number(trade.profit || 0) < 0
+              ? "Loss"
+              : "Breakeven",
       })),
       positionMix: [
         {
@@ -1617,7 +1794,12 @@ app.get("/api/trade-analytics", (req, res) => {
   try {
     res.json({
       success: true,
-      analytics: buildTradeAnalytics(req.query.period, req.query.underlying),
+      analytics: buildTradeAnalytics(
+        req.query.period,
+        req.query.underlying,
+        req.query.optionType,
+        req.query.includeTestData,
+      ),
     });
   } catch (error) {
     res.status(500).json({

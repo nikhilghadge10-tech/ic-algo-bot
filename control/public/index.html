@@ -339,6 +339,17 @@
         config.NETWORK_IP_ERROR = "";
         config.ANALYTICS_PERIOD = "week";
         config.ANALYTICS_UNDERLYING = "ALL";
+        config.ANALYTICS_OPTION_TYPE = "ALL";
+        config.ANALYTICS_INCLUDE_TEST_DATA = true;
+        config.ANALYTICS_TRADE_OUTCOME_FILTER = "ALL";
+        config.ANALYTICS_TRADE_PAGE = 1;
+        config.ANALYTICS_TRADE_PAGE_SIZE = 15;
+        config.ANALYTICS_TRADE_PAGE_COUNT = 1;
+        config.ANALYTICS_TRADE_TOTAL_ROWS = 0;
+        config.ANALYTICS_TRADE_PAGE_LABEL = "Page 1 of 1";
+        config.ANALYTICS_TRADE_CAN_PREV = false;
+        config.ANALYTICS_TRADE_CAN_NEXT = false;
+        config.analyticsTradeTableRows = [];
         config.tradeAnalytics = null;
 
         const model = new sap.ui.model.json.JSONModel(config);
@@ -415,6 +426,27 @@
           fresh.ANALYTICS_PERIOD = currentData.ANALYTICS_PERIOD || "week";
           fresh.ANALYTICS_UNDERLYING =
             currentData.ANALYTICS_UNDERLYING || "ALL";
+          fresh.ANALYTICS_OPTION_TYPE =
+            currentData.ANALYTICS_OPTION_TYPE || "ALL";
+          fresh.ANALYTICS_INCLUDE_TEST_DATA =
+            currentData.ANALYTICS_INCLUDE_TEST_DATA !== false;
+          fresh.ANALYTICS_TRADE_OUTCOME_FILTER =
+            currentData.ANALYTICS_TRADE_OUTCOME_FILTER || "ALL";
+          fresh.ANALYTICS_TRADE_PAGE = currentData.ANALYTICS_TRADE_PAGE || 1;
+          fresh.ANALYTICS_TRADE_PAGE_SIZE =
+            currentData.ANALYTICS_TRADE_PAGE_SIZE || 15;
+          fresh.ANALYTICS_TRADE_PAGE_COUNT =
+            currentData.ANALYTICS_TRADE_PAGE_COUNT || 1;
+          fresh.ANALYTICS_TRADE_TOTAL_ROWS =
+            currentData.ANALYTICS_TRADE_TOTAL_ROWS || 0;
+          fresh.ANALYTICS_TRADE_PAGE_LABEL =
+            currentData.ANALYTICS_TRADE_PAGE_LABEL || "Page 1 of 1";
+          fresh.ANALYTICS_TRADE_CAN_PREV =
+            currentData.ANALYTICS_TRADE_CAN_PREV || false;
+          fresh.ANALYTICS_TRADE_CAN_NEXT =
+            currentData.ANALYTICS_TRADE_CAN_NEXT || false;
+          fresh.analyticsTradeTableRows =
+            currentData.analyticsTradeTableRows || [];
           fresh.tradeAnalytics = currentData.tradeAnalytics || null;
 
           model.setData(fresh);
@@ -512,14 +544,86 @@
             const period = model.getProperty("/ANALYTICS_PERIOD") || "week";
             const underlying =
               model.getProperty("/ANALYTICS_UNDERLYING") || "ALL";
+            const optionType =
+              model.getProperty("/ANALYTICS_OPTION_TYPE") || "ALL";
+            const includeTestData =
+              model.getProperty("/ANALYTICS_INCLUDE_TEST_DATA") !== false;
             const result = await fetch(
-              `/api/trade-analytics?period=${encodeURIComponent(period)}&underlying=${encodeURIComponent(underlying)}`,
+              `/api/trade-analytics?period=${encodeURIComponent(period)}&underlying=${encodeURIComponent(underlying)}&optionType=${encodeURIComponent(optionType)}&includeTestData=${encodeURIComponent(includeTestData)}`,
             ).then((r) => r.json());
 
             model.setProperty("/tradeAnalytics", result.analytics || null);
+            model.setProperty("/ANALYTICS_TRADE_PAGE", 1);
+            updateAnalyticsTradeTableState();
           } catch (error) {
             model.setProperty("/tradeAnalytics", null);
+            updateAnalyticsTradeTableState();
           }
+        }
+
+        function getAnalyticsTradeOutcome(row) {
+          const value = Number(row?.value);
+
+          if (row?.outcome === "WIN" || value > 0) return "PROFIT";
+          if (row?.outcome === "LOSS" || value < 0) return "LOSS";
+          return "BREAKEVEN";
+        }
+
+        function updateAnalyticsTradeTableState() {
+          const pageSize = 15;
+          const rows = Array.isArray(
+            model.getProperty("/tradeAnalytics/charts/pnlByTrade"),
+          )
+            ? model.getProperty("/tradeAnalytics/charts/pnlByTrade")
+            : [];
+          const filter =
+            model.getProperty("/ANALYTICS_TRADE_OUTCOME_FILTER") || "ALL";
+          const filteredRows =
+            filter === "ALL"
+              ? rows
+              : rows.filter((row) => getAnalyticsTradeOutcome(row) === filter);
+          const pageCount = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+          const requestedPage = Number(model.getProperty("/ANALYTICS_TRADE_PAGE") || 1);
+          const page = Math.min(Math.max(requestedPage, 1), pageCount);
+          const startIndex = (page - 1) * pageSize;
+          const pageRows = filteredRows
+            .slice(startIndex, startIndex + pageSize)
+            .map((row) => ({
+              ...row,
+              outcomeLabel:
+                row.outcomeLabel ||
+                (getAnalyticsTradeOutcome(row) === "PROFIT"
+                  ? "Profit"
+                  : getAnalyticsTradeOutcome(row) === "LOSS"
+                    ? "Loss"
+                    : "Breakeven"),
+            }));
+
+          while (pageRows.length < pageSize) {
+            pageRows.push({
+              date: "",
+              symbol: "",
+              strikePrice: "",
+              expiry: "",
+              optionType: "",
+              outcomeLabel: "",
+              rrr: null,
+              value: null,
+              isPlaceholder: true,
+            });
+          }
+
+          model.setProperty("/ANALYTICS_TRADE_PAGE", page);
+          model.setProperty("/ANALYTICS_TRADE_PAGE_SIZE", pageSize);
+          model.setProperty("/ANALYTICS_TRADE_PAGE_COUNT", pageCount);
+          model.setProperty("/ANALYTICS_TRADE_TOTAL_ROWS", filteredRows.length);
+          model.setProperty(
+            "/ANALYTICS_TRADE_PAGE_LABEL",
+            `Page ${page} of ${pageCount}`,
+          );
+          model.setProperty("/ANALYTICS_TRADE_CAN_PREV", page > 1);
+          model.setProperty("/ANALYTICS_TRADE_CAN_NEXT", page < pageCount);
+          model.setProperty("/analyticsTradeTableRows", pageRows);
         }
 
         async function refreshMarketCalendar() {
@@ -3064,38 +3168,107 @@
                     level: "H3",
                   }).addStyleClass("sectionTitle"),
                   new sap.m.HBox({
+                    alignItems: "Center",
                     items: [
-                      new sap.m.SegmentedButton({
-                        selectedKey: "{/ANALYTICS_UNDERLYING}",
-                        selectionChange: async function (e) {
-                          const selected =
-                            e.getParameter("item")?.getKey() || "ALL";
-                          model.setProperty("/ANALYTICS_UNDERLYING", selected);
+                      new sap.m.CheckBox({
+                        text: "Test data",
+                        selected: "{/ANALYTICS_INCLUDE_TEST_DATA}",
+                        tooltip:
+                          "Include dummy analytics records generated for testing.",
+                        select: async function (e) {
+                          model.setProperty(
+                            "/ANALYTICS_INCLUDE_TEST_DATA",
+                            e.getParameter("selected"),
+                          );
                           await refreshTradeAnalytics();
                         },
-                        items: [
-                          new sap.m.SegmentedButtonItem({
-                            key: "ALL",
-                            text: "All",
-                          }),
-                          new sap.m.SegmentedButtonItem({
-                            key: "NIFTY",
-                            text: "Nifty",
-                          }),
-                          new sap.m.SegmentedButtonItem({
-                            key: "BANKNIFTY",
-                            text: "BankNifty",
-                          }),
-                        ],
-                      }).addStyleClass("analyticsUnderlyingSwitch"),
-                      new sap.m.SegmentedButton({
-                        selectedKey: "{/ANALYTICS_PERIOD}",
-                        selectionChange: async function (e) {
-                          const selected =
-                            e.getParameter("item")?.getKey() || "week";
-                          model.setProperty("/ANALYTICS_PERIOD", selected);
-                          await refreshTradeAnalytics();
+                      }).addStyleClass("analyticsTestDataCheckbox"),
+                      new sap.m.Text({
+                        text: {
+                          path: "/tradeAnalytics/label",
+                          formatter: (label) => label || "Analytics loading",
                         },
+                      }).addStyleClass("analyticsRangePeriodText"),
+                      new sap.m.Text({
+                        text: {
+                          parts: [
+                            { path: "/tradeAnalytics/startDate" },
+                            { path: "/tradeAnalytics/endDate" },
+                            { path: "/tradeAnalytics/underlying" },
+                          ],
+                          formatter: function (startDate, endDate, underlying) {
+                            const underlyingLabel =
+                              underlying && underlying !== "ALL"
+                                ? ` • ${underlying}`
+                                : "";
+
+                            if (!startDate || !endDate) return "";
+
+                            return ` • ${formatAnalyticsDateSpan(startDate, endDate)}${underlyingLabel}`;
+                          },
+                        },
+                      }).addStyleClass("analyticsRangeDateText"),
+                    ],
+                  }).addStyleClass("analyticsHeaderRangeText"),
+                ],
+              }).addStyleClass("analyticsHeader"),
+
+              new sap.m.HBox({
+                items: [
+                  new sap.m.SegmentedButton({
+                    selectedKey: "{/ANALYTICS_UNDERLYING}",
+                    selectionChange: async function (e) {
+                      const selected =
+                        e.getParameter("item")?.getKey() || "ALL";
+                      model.setProperty("/ANALYTICS_UNDERLYING", selected);
+                      await refreshTradeAnalytics();
+                    },
+                    items: [
+                      new sap.m.SegmentedButtonItem({
+                        key: "ALL",
+                        text: "Both",
+                      }),
+                      new sap.m.SegmentedButtonItem({
+                        key: "NIFTY",
+                        text: "Nifty",
+                      }),
+                      new sap.m.SegmentedButtonItem({
+                        key: "BANKNIFTY",
+                        text: "BankNifty",
+                      }),
+                    ],
+                  }).addStyleClass("analyticsUnderlyingSwitch"),
+                  new sap.m.SegmentedButton({
+                    selectedKey: "{/ANALYTICS_OPTION_TYPE}",
+                    selectionChange: async function (e) {
+                      const selected =
+                        e.getParameter("item")?.getKey() || "ALL";
+                      model.setProperty("/ANALYTICS_OPTION_TYPE", selected);
+                      await refreshTradeAnalytics();
+                    },
+                    items: [
+                      new sap.m.SegmentedButtonItem({
+                        key: "ALL",
+                        text: "Both",
+                      }),
+                      new sap.m.SegmentedButtonItem({
+                        key: "CALL",
+                        text: "CALL",
+                      }),
+                      new sap.m.SegmentedButtonItem({
+                        key: "PUT",
+                        text: "PUT",
+                      }),
+                    ],
+                  }).addStyleClass("analyticsOptionTypeSwitch"),
+                  new sap.m.SegmentedButton({
+                    selectedKey: "{/ANALYTICS_PERIOD}",
+                    selectionChange: async function (e) {
+                      const selected =
+                        e.getParameter("item")?.getKey() || "week";
+                      model.setProperty("/ANALYTICS_PERIOD", selected);
+                      await refreshTradeAnalytics();
+                    },
                     items: [
                       new sap.m.SegmentedButtonItem({
                         key: "week",
@@ -3106,30 +3279,9 @@
                         text: "Monthly",
                       }),
                     ],
-                      }).addStyleClass("analyticsPeriodSwitch"),
-                    ],
-                  }).addStyleClass("analyticsSwitchRow"),
+                  }).addStyleClass("analyticsPeriodSwitch"),
                 ],
-              }).addStyleClass("analyticsHeader"),
-
-              new sap.m.Text({
-                text: {
-                  parts: [
-                    { path: "/tradeAnalytics/label" },
-                    { path: "/tradeAnalytics/startDate" },
-                    { path: "/tradeAnalytics/endDate" },
-                    { path: "/tradeAnalytics/underlying" },
-                  ],
-                  formatter: function (label, startDate, endDate, underlying) {
-                    const underlyingLabel =
-                      underlying && underlying !== "ALL" ? ` • ${underlying}` : "";
-
-                    return label
-                      ? `${label}${underlyingLabel} • ${startDate || "-"} to ${endDate || "-"}`
-                      : "Analytics loading";
-                  },
-                },
-              }).addStyleClass("analyticsRangeText"),
+              }).addStyleClass("analyticsSwitchRow analyticsFilterRow"),
 
               new sap.m.MessageStrip({
                 text: "Analytics will appear after at least one trade is completed with realized P&L. Open trades and signal counts stay in Cockpit and Event Log until then.",
@@ -3152,11 +3304,7 @@
                     `${Number(value || 0).toFixed(2)}%`,
                     "analyticsMetricTile analyticsWinRateTile",
                   ),
-                  createAnalyticsMoneyMetricTile(
-                    "Net P&L",
-                    "totals/netPnl",
-                    "analyticsMetricTile analyticsPnlTile",
-                  ),
+                  createAnalyticsNetPnlMetricTile(),
                   createAnalyticsMoneyMetricTile(
                     "Avg Profit",
                     "totals/averageProfit",
@@ -3165,6 +3313,9 @@
                     "Avg Loss",
                     "totals/averageLoss",
                   ),
+                  createAnalyticsStreakMetricTile(),
+                  createAnalyticsEmptyMetricTile(),
+                  createAnalyticsNetGainDrawdownTile(),
                 ],
               }).addStyleClass("analyticsMetricGrid"),
 
@@ -3179,25 +3330,88 @@
                       new sap.m.Text({
                         text: "P&L by Trade",
                       }).addStyleClass("planningGroupTitle"),
-                      createAnalyticsBarList(
-                        "/tradeAnalytics/charts/pnlByTrade",
-                        formatAnalyticsMoney,
-                        true,
-                      ),
+                      new sap.m.HBox({
+                        justifyContent: "SpaceBetween",
+                        alignItems: "Center",
+                        items: [
+                          new sap.m.SegmentedButton({
+                            selectedKey: "{/ANALYTICS_TRADE_OUTCOME_FILTER}",
+                            selectionChange: function (e) {
+                              const selected =
+                                e.getParameter("item")?.getKey() || "ALL";
+                              model.setProperty(
+                                "/ANALYTICS_TRADE_OUTCOME_FILTER",
+                                selected,
+                              );
+                              model.setProperty("/ANALYTICS_TRADE_PAGE", 1);
+                              updateAnalyticsTradeTableState();
+                            },
+                            items: [
+                              new sap.m.SegmentedButtonItem({
+                                key: "ALL",
+                                text: "Both",
+                              }),
+                              new sap.m.SegmentedButtonItem({
+                                key: "PROFIT",
+                                text: "Profit",
+                              }),
+                              new sap.m.SegmentedButtonItem({
+                                key: "LOSS",
+                                text: "Loss",
+                              }),
+                            ],
+                          }).addStyleClass("analyticsTradeFilterSwitch"),
+                          new sap.m.Text({
+                            text: {
+                              path: "/ANALYTICS_TRADE_TOTAL_ROWS",
+                              formatter: (value) =>
+                                `${Number(value || 0)} trades`,
+                            },
+                          }).addStyleClass("analyticsTradeCount"),
+                        ],
+                      }).addStyleClass("analyticsTradeToolbar"),
+                      createAnalyticsTradeTable(),
+                      new sap.m.HBox({
+                        justifyContent: "End",
+                        alignItems: "Center",
+                        items: [
+                          new sap.m.Button({
+                            icon: "sap-icon://navigation-left-arrow",
+                            type: "Transparent",
+                            tooltip: "Previous page",
+                            enabled: "{/ANALYTICS_TRADE_CAN_PREV}",
+                            press: function () {
+                              model.setProperty(
+                                "/ANALYTICS_TRADE_PAGE",
+                                Number(
+                                  model.getProperty("/ANALYTICS_TRADE_PAGE") || 1,
+                                ) - 1,
+                              );
+                              updateAnalyticsTradeTableState();
+                            },
+                          }).addStyleClass("analyticsPagerButton"),
+                          new sap.m.Text({
+                            text: "{/ANALYTICS_TRADE_PAGE_LABEL}",
+                          }).addStyleClass("analyticsPagerLabel"),
+                          new sap.m.Button({
+                            icon: "sap-icon://navigation-right-arrow",
+                            type: "Transparent",
+                            tooltip: "Next page",
+                            enabled: "{/ANALYTICS_TRADE_CAN_NEXT}",
+                            press: function () {
+                              model.setProperty(
+                                "/ANALYTICS_TRADE_PAGE",
+                                Number(
+                                  model.getProperty("/ANALYTICS_TRADE_PAGE") || 1,
+                                ) + 1,
+                              );
+                              updateAnalyticsTradeTableState();
+                            },
+                          }).addStyleClass("analyticsPagerButton"),
+                        ],
+                      }).addStyleClass("analyticsPager"),
                     ],
-                  }).addStyleClass("analyticsPanel"),
-
-                  new sap.m.VBox({
-                    items: [
-                      new sap.m.Text({
-                        text: "Position Mix",
-                      }).addStyleClass("planningGroupTitle"),
-                      createAnalyticsBarList(
-                        "/tradeAnalytics/charts/positionMix",
-                        (value) => `${value || 0}`,
-                      ),
-                    ],
-                  }).addStyleClass("analyticsPanel analyticsPositionPanel"),
+                  }).addStyleClass("analyticsPanel analyticsPnlTablePanel"),
                 ],
               }).addStyleClass("analyticsChartGrid"),
             ],
@@ -3830,6 +4044,34 @@
           return `-${formatRupeeValue(Math.abs(number))}`;
         }
 
+        function formatAnalyticsDateLabel(dateKey) {
+          const [year, month, day] = String(dateKey || "")
+            .split("-")
+            .map((part) => Number(part));
+          const date = new Date(year, month - 1, day);
+
+          if (
+            !Number.isFinite(year) ||
+            !Number.isFinite(month) ||
+            !Number.isFinite(day) ||
+            Number.isNaN(date.getTime())
+          ) {
+            return dateKey || "-";
+          }
+
+          const suffix =
+            day % 100 >= 11 && day % 100 <= 13
+              ? "th"
+              : { 1: "st", 2: "nd", 3: "rd" }[day % 10] || "th";
+          const monthLabel = date.toLocaleString("en-IN", { month: "long" });
+
+          return `${day}${suffix} ${monthLabel}`;
+        }
+
+        function formatAnalyticsDateSpan(startDate, endDate) {
+          return `${formatAnalyticsDateLabel(startDate)} - ${formatAnalyticsDateLabel(endDate)}`;
+        }
+
         function getAnalyticsMoneyClass(value, baseClass) {
           const number = Number(value);
           const classes = [baseClass].filter(Boolean);
@@ -3854,16 +4096,22 @@
           }).addStyleClass(className || "analyticsMetricTile");
         }
 
+        function createAnalyticsEmptyMetricTile() {
+          return new sap.m.VBox({
+            items: [],
+          }).addStyleClass("analyticsMetricTile analyticsEmptyMetricTile");
+        }
+
         function createAnalyticsOutcomeMetricTile() {
           const rows = [
             ["Total Trades", "totals/realizedTrades", "analyticsOutcomeTotal"],
-            ["Profitable", "totals/winners", "analyticsMoneyPositive"],
-            ["Losing", "totals/losers", "analyticsMoneyNegative"],
+            ["Winners", "totals/winners", "analyticsMoneyPositive"],
+            ["Losers", "totals/losers", "analyticsMoneyNegative"],
           ];
 
           return new sap.m.VBox({
             items: [
-              new sap.m.Text({ text: "Trade Outcomes" }).addStyleClass(
+              new sap.m.Text({ text: "Trades" }).addStyleClass(
                 "statusTitle",
               ),
               ...rows.map(([label, path, valueClass]) =>
@@ -3885,6 +4133,84 @@
                   ],
                 }).addStyleClass("analyticsOutcomeMetricRow"),
               ),
+            ],
+          }).addStyleClass("analyticsMetricTile analyticsOutcomeMetricTile");
+        }
+
+        function createAnalyticsStreakMetricTile() {
+          return new sap.m.VBox({
+            items: [
+              new sap.m.Text({ text: "Streaks" }).addStyleClass("statusTitle"),
+              new sap.m.HBox({
+                justifyContent: "SpaceBetween",
+                alignItems: "Center",
+                items: [
+                  new sap.m.Text({ text: "Current" }).addStyleClass(
+                    "analyticsOutcomeMetricLabel",
+                  ),
+                  new sap.m.Text({
+                    text: {
+                      parts: [
+                        { path: "/tradeAnalytics/totals/currentStreakType" },
+                        { path: "/tradeAnalytics/totals/currentStreakCount" },
+                      ],
+                      formatter: function (type, count) {
+                        const total = Number(count || 0);
+                        if (!total || type === "NONE") return "-";
+                        return `${type === "WIN" ? "Winning" : "Losing"} ${total}`;
+                      },
+                    },
+                    customData: [
+                      new sap.ui.core.CustomData({
+                        key: "streak-state",
+                        value: {
+                          path: "/tradeAnalytics/totals/currentStreakType",
+                          formatter: function (type) {
+                            if (type === "WIN") return "win";
+                            if (type === "LOSS") return "loss";
+                            return "neutral";
+                          },
+                        },
+                        writeToDom: true,
+                      }),
+                    ],
+                  }).addStyleClass("analyticsOutcomeMetricValue analyticsStreakValue"),
+                ],
+              }).addStyleClass("analyticsOutcomeMetricRow"),
+              new sap.m.HBox({
+                justifyContent: "SpaceBetween",
+                alignItems: "Center",
+                items: [
+                  new sap.m.Text({ text: "Best winning" }).addStyleClass(
+                    "analyticsOutcomeMetricLabel",
+                  ),
+                  new sap.m.Text({
+                    text: {
+                      path: "/tradeAnalytics/totals/bestWinningStreak",
+                      formatter: (value) => Number(value || 0),
+                    },
+                  }).addStyleClass(
+                    "analyticsOutcomeMetricValue analyticsMoneyPositive",
+                  ),
+                ],
+              }).addStyleClass("analyticsOutcomeMetricRow"),
+              new sap.m.HBox({
+                justifyContent: "SpaceBetween",
+                alignItems: "Center",
+                items: [
+                  new sap.m.Text({ text: "Best losing" }).addStyleClass(
+                    "analyticsOutcomeMetricLabel",
+                  ),
+                  new sap.m.Text({
+                    text: {
+                      path: "/tradeAnalytics/totals/bestLosingStreak",
+                      formatter: (value) => Number(value || 0),
+                    },
+                  }).addStyleClass(
+                    "analyticsOutcomeMetricValue analyticsMoneyNegative",
+                  ),
+                ],
+              }).addStyleClass("analyticsOutcomeMetricRow"),
             ],
           }).addStyleClass("analyticsMetricTile analyticsOutcomeMetricTile");
         }
@@ -3917,6 +4243,111 @@
               }).addStyleClass("analyticsMetricValue analyticsMoneyValue"),
             ],
           }).addStyleClass(className || "analyticsMetricTile");
+        }
+
+        function createAnalyticsNetPnlMetricTile() {
+          return new sap.m.VBox({
+            items: [
+              new sap.m.Text({ text: "Net P&L" }).addStyleClass("statusTitle"),
+              new sap.m.Text({
+                text: {
+                  path: "/tradeAnalytics/totals/netPnl",
+                  formatter: formatAnalyticsMoney,
+                },
+                customData: [
+                  new sap.ui.core.CustomData({
+                    key: "money-state",
+                    value: {
+                      path: "/tradeAnalytics/totals/netPnl",
+                      formatter: function (value) {
+                        const number = Number(value);
+
+                        if (number > 0) return "profit";
+                        if (number < 0) return "loss";
+                        return "neutral";
+                      },
+                    },
+                    writeToDom: true,
+                  }),
+                ],
+              }).addStyleClass("analyticsMetricValue analyticsMoneyValue"),
+              new sap.m.VBox({
+                items: [
+                  new sap.m.Text({
+                    text: {
+                      path: "/tradeAnalytics/totals/grossProfit",
+                      formatter: formatAnalyticsMoney,
+                    },
+                  }).addStyleClass("analyticsPnlBreakdownValue analyticsMoneyPositive"),
+                  new sap.m.Text({
+                    text: {
+                      path: "/tradeAnalytics/totals/grossLoss",
+                      formatter: formatAnalyticsLossMoney,
+                    },
+                  }).addStyleClass("analyticsPnlBreakdownValue analyticsMoneyNegative"),
+                ],
+              }).addStyleClass("analyticsPnlBreakdown"),
+            ],
+          }).addStyleClass("analyticsMetricTile analyticsPnlTile");
+        }
+
+        function createAnalyticsNetGainDrawdownTile() {
+          return new sap.m.VBox({
+            items: [
+              new sap.m.HBox({
+                alignItems: "Center",
+                items: [
+                  new sap.m.Text({ text: "Net Gain" }).addStyleClass("statusTitle"),
+                  new sap.ui.core.Icon({
+                    src: "sap-icon://hint",
+                    tooltip:
+                      "Net P&L as a percentage of Risk Plan capital.",
+                    decorative: false,
+                  }).addStyleClass("analyticsInfoIcon"),
+                ],
+              }).addStyleClass("analyticsMetricTitleRow"),
+              new sap.m.Text({
+                text: {
+                  parts: [
+                    { path: "/tradeAnalytics/totals/netPnl" },
+                    { path: "/TRADING_CAPITAL" },
+                  ],
+                  formatter: function (netPnl, capital) {
+                    const parsedNetPnl = Number(netPnl);
+                    const parsedCapital = Number(capital);
+
+                    if (
+                      !Number.isFinite(parsedNetPnl) ||
+                      !Number.isFinite(parsedCapital) ||
+                      parsedCapital <= 0
+                    ) {
+                      return "0.00%";
+                    }
+
+                    const percent = (parsedNetPnl / parsedCapital) * 100;
+
+                    return `${percent > 0 ? "+" : ""}${percent.toFixed(2)}%`;
+                  },
+                },
+                customData: [
+                  new sap.ui.core.CustomData({
+                    key: "gain-state",
+                    value: {
+                      path: "/tradeAnalytics/totals/netPnl",
+                      formatter: function (value) {
+                        const number = Number(value);
+
+                        if (number > 0) return "profit";
+                        if (number < 0) return "loss";
+                        return "neutral";
+                      },
+                    },
+                    writeToDom: true,
+                  }),
+                ],
+              }).addStyleClass("analyticsMetricValue analyticsGainDrawdownValue"),
+            ],
+          }).addStyleClass("analyticsMetricTile analyticsGainDrawdownTile");
         }
 
         function createAnalyticsLossMoneyMetricTile(title, path, className) {
@@ -4046,6 +4477,137 @@
               },
             },
           }).addStyleClass("analyticsBarList");
+        }
+
+        function createAnalyticsTradeTable() {
+          return new sap.m.Table({
+            fixedLayout: false,
+            columns: [
+              new sap.m.Column({
+                header: new sap.m.Text({ text: "Date" }),
+              }),
+              new sap.m.Column({
+                header: new sap.m.Text({ text: "Symbol" }),
+              }),
+              new sap.m.Column({
+                header: new sap.m.Text({ text: "Strike Price" }),
+              }),
+              new sap.m.Column({
+                header: new sap.m.Text({ text: "Expiry" }),
+              }),
+              new sap.m.Column({
+                header: new sap.m.Text({ text: "CALL/PUT" }),
+              }),
+              new sap.m.Column({
+                header: new sap.m.Text({ text: "Profit/Loss" }),
+              }),
+              new sap.m.Column({
+                hAlign: "End",
+                header: new sap.m.Text({ text: "RRR" }),
+              }),
+              new sap.m.Column({
+                hAlign: "End",
+                header: new sap.m.Text({ text: "Amount" }),
+              }),
+            ],
+            items: {
+              path: "/analyticsTradeTableRows",
+              factory: function (id, context) {
+                return new sap.m.ColumnListItem(id, {
+                  cells: [
+                    new sap.m.Text({ text: "{date}" }),
+                    new sap.m.Text({ text: "{symbol}" }).addStyleClass(
+                      "analyticsTradeSymbol",
+                    ),
+                    new sap.m.Text({ text: "{strikePrice}" }).addStyleClass(
+                      "analyticsTradeMeta",
+                    ),
+                    new sap.m.Text({ text: "{expiry}" }).addStyleClass(
+                      "analyticsTradeMeta",
+                    ),
+                    new sap.m.Text({ text: "{optionType}" }).addStyleClass(
+                      "analyticsTradeMeta",
+                    ),
+                    new sap.m.Text({
+                      text: "{outcomeLabel}",
+                      customData: [
+                        new sap.ui.core.CustomData({
+                          key: "pnl-state",
+                          value: {
+                            path: "outcomeLabel",
+                            formatter: function (value) {
+                              const normalized = String(value || "").toLowerCase();
+                              if (normalized === "profit") return "profit";
+                              if (normalized === "loss") return "loss";
+                              return "neutral";
+                            },
+                          },
+                          writeToDom: true,
+                        }),
+                      ],
+                    }).addStyleClass("analyticsTradeOutcome"),
+                    new sap.m.Text({
+                      text: {
+                        path: "rrr",
+                        formatter: function (value) {
+                          const number = Number(value);
+
+                          if (!Number.isFinite(number)) return "";
+
+                          return String(Number(number.toFixed(2)));
+                        },
+                      },
+                      customData: [
+                        new sap.ui.core.CustomData({
+                          key: "rrr-state",
+                          value: {
+                            path: "rrr",
+                            formatter: function (value) {
+                              const number = Number(value);
+                              if (number > 0) return "profit";
+                              if (number < 0) return "loss";
+                              return "neutral";
+                            },
+                          },
+                          writeToDom: true,
+                        }),
+                      ],
+                    }).addStyleClass("analyticsTradeRrr"),
+                    new sap.m.Text({
+                      text: {
+                        path: "value",
+                        formatter: function (value) {
+                          return value === null || value === undefined
+                            ? ""
+                            : formatAnalyticsMoney(value);
+                        },
+                      },
+                      customData: [
+                        new sap.ui.core.CustomData({
+                          key: "pnl-state",
+                          value: {
+                            path: "value",
+                            formatter: function (value) {
+                              const number = Number(value);
+                              if (number > 0) return "profit";
+                              if (number < 0) return "loss";
+                              return "neutral";
+                            },
+                          },
+                          writeToDom: true,
+                        }),
+                      ],
+                    }).addStyleClass(
+                      getAnalyticsMoneyClass(
+                        context.getObject()?.value,
+                        "analyticsTradePnl",
+                      ),
+                    ),
+                  ],
+                });
+              },
+            },
+          }).addStyleClass("analyticsTradeTable");
         }
 
         function liveTradingStatusCard() {

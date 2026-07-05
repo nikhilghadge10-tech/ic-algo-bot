@@ -539,6 +539,19 @@
   flex: 0 1 auto;
 }
 
+.tradingViewReferenceRow {
+  gap: 10px;
+}
+
+.tradingViewReferenceRow .labelInfoRow {
+  flex: 0 0 auto;
+  margin-bottom: 0;
+}
+
+.tradingViewReferenceRow .labelInfoRow .webhookLabel {
+  width: auto;
+}
+
 .webhookLabel {
   width: 118px;
   color: #344054;
@@ -1015,24 +1028,35 @@
 
 .analyticsSwitchRow {
   flex-wrap: wrap;
-  gap: 24px;
+  gap: 30px;
   justify-content: flex-end;
 }
 
+.analyticsFilterRow {
+  justify-content: flex-start;
+  width: 100%;
+  margin-top: 10px;
+  margin-bottom: 14px;
+}
+
 .analyticsUnderlyingSwitch,
+.analyticsOptionTypeSwitch,
 .analyticsPeriodSwitch {
   max-width: 100%;
 }
 
 .analyticsUnderlyingSwitch .sapMSegB,
+.analyticsOptionTypeSwitch .sapMSegB,
 .analyticsPeriodSwitch .sapMSegB,
 .analyticsUnderlyingSwitch .sapMSegBScrollContainer,
+.analyticsOptionTypeSwitch .sapMSegBScrollContainer,
 .analyticsPeriodSwitch .sapMSegBScrollContainer {
   width: auto !important;
   max-width: 100%;
 }
 
 .analyticsUnderlyingSwitch .sapMSegBBtn,
+.analyticsOptionTypeSwitch .sapMSegBBtn,
 .analyticsPeriodSwitch .sapMSegBBtn {
   min-width: 90px;
   height: 36px;
@@ -1047,17 +1071,48 @@
 }
 
 .analyticsUnderlyingSwitch .sapMSegBBtnInner,
+.analyticsOptionTypeSwitch .sapMSegBBtnInner,
 .analyticsPeriodSwitch .sapMSegBBtnInner {
-  padding-inline: 18px !important;
+  padding-inline: 24px !important;
   line-height: 34px;
   white-space: nowrap !important;
 }
 
 .analyticsRangeText {
   display: block;
-  margin-bottom: 14px;
   color: #667085;
   font-size: 0.86rem;
+}
+
+.analyticsHeaderRangeText {
+  gap: 10px;
+  margin-left: auto;
+  text-align: right;
+  white-space: nowrap !important;
+}
+
+.analyticsTestDataCheckbox {
+  margin-right: 2px;
+}
+
+.analyticsTestDataCheckbox .sapMCbLabel {
+  color: #4d5b6d !important;
+  font-size: 0.82rem !important;
+  padding-left: 2px !important;
+}
+
+.analyticsRangePeriodText {
+  color: var(--amber) !important;
+  font-size: 0.86rem;
+  font-weight: 800 !important;
+  white-space: nowrap !important;
+}
+
+.analyticsRangeDateText {
+  color: #667085 !important;
+  font-size: 0.86rem;
+  font-weight: 400 !important;
+  white-space: nowrap !important;
 }
 
 .analyticsEmptyState {
@@ -1073,11 +1128,11 @@
 }
 
 .analyticsMetricGrid {
-  grid-template-columns: repeat(auto-fit, minmax(156px, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .analyticsChartGrid {
-  grid-template-columns: minmax(0, 1.4fr) minmax(220px, 0.7fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .analyticsMetricGrid > .sapMFlexItem,
@@ -1094,11 +1149,33 @@
   background: linear-gradient(180deg, #ffffff, var(--panel-soft));
 }
 
+.analyticsEmptyMetricTile {
+  visibility: hidden;
+}
+
 .analyticsMetricValue {
   color: var(--ink);
   font-size: 1.45rem;
   font-weight: 850;
   line-height: 1.2;
+}
+
+.analyticsMetricTitleRow {
+  gap: 6px;
+  align-items: center;
+}
+
+.analyticsMetricTitleRow .statusTitle {
+  margin-bottom: 0;
+  line-height: 1;
+}
+
+.analyticsInfoIcon {
+  color: #667085;
+  font-size: 0.82rem;
+  line-height: 1;
+  position: relative;
+  top: -1px;
 }
 
 .analyticsOutcomeMetricTile {
@@ -1161,6 +1238,27 @@
   color: var(--red);
 }
 
+.analyticsPnlBreakdown {
+  gap: 2px;
+  margin-top: 10px;
+}
+
+.analyticsPnlBreakdownValue {
+  font-size: 0.88rem;
+  font-weight: 400 !important;
+  line-height: 1.25;
+}
+
+.analyticsGainDrawdownValue[data-gain-state="profit"] {
+  color: var(--green) !important;
+  font-weight: 850 !important;
+}
+
+.analyticsGainDrawdownValue[data-gain-state="loss"] {
+  color: var(--red) !important;
+  font-weight: 850 !important;
+}
+
 .analyticsPairSeparator {
   color: var(--muted);
 }
@@ -1208,6 +1306,141 @@
 
 .analyticsBarFillNegative {
   background: var(--red);
+}
+
+.analyticsPnlTablePanel {
+  min-height: 0;
+}
+
+.analyticsTradeToolbar {
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.analyticsTradeFilterSwitch .sapMSegBBtn {
+  min-width: 112px;
+  height: 36px;
+}
+
+.analyticsTradeFilterSwitch .sapMSegBBtnInner {
+  padding-inline: 34px !important;
+  line-height: 34px;
+  white-space: nowrap !important;
+}
+
+.analyticsTradeFilterSwitch .sapMSegB,
+.analyticsTradeFilterSwitch .sapMSegBScrollContainer {
+  width: auto !important;
+  min-width: 340px;
+  max-width: 100%;
+}
+
+.analyticsTradeCount {
+  color: #667085;
+  font-size: 0.8rem;
+}
+
+.analyticsTradeTable {
+  margin-top: 2px;
+}
+
+.analyticsTradeTable .sapMListTblRow:nth-child(even) .sapMListTblCell {
+  background: #f7f9fc;
+}
+
+.analyticsTradeTable .sapMListTblRow:nth-child(odd) .sapMListTblCell {
+  background: #ffffff;
+}
+
+.analyticsTradeTable .sapMListTblHeaderCell,
+.analyticsTradeTable .sapMListTblCell {
+  padding-inline: 8px;
+}
+
+.analyticsTradeTable .sapMListTblCell {
+  height: 38px;
+  vertical-align: middle;
+}
+
+.analyticsTradeTable .sapMListTblHeaderCell .sapMText {
+  color: #667085;
+  font-size: 0.78rem;
+  font-weight: 800 !important;
+}
+
+.analyticsTradeTable .sapMListTblCell .sapMText {
+  font-size: 0.83rem;
+}
+
+.analyticsTradeSymbol {
+  max-width: 100%;
+  color: #344054;
+  font-weight: 400 !important;
+}
+
+.analyticsTradeMeta {
+  color: #4d5b6d;
+  font-weight: 400 !important;
+  white-space: nowrap !important;
+}
+
+.analyticsTradeOutcome {
+  color: #667085;
+  font-weight: 400 !important;
+}
+
+.analyticsTradeOutcome[data-pnl-state="profit"],
+.analyticsTradePnl[data-pnl-state="profit"] {
+  color: var(--green) !important;
+}
+
+.analyticsTradeOutcome[data-pnl-state="loss"],
+.analyticsTradePnl[data-pnl-state="loss"] {
+  color: var(--red) !important;
+}
+
+.analyticsTradeRrr {
+  font-weight: 400 !important;
+  white-space: nowrap !important;
+}
+
+.analyticsTradeRrr[data-rrr-state="profit"] {
+  color: var(--green) !important;
+  font-weight: 800 !important;
+}
+
+.analyticsTradeRrr[data-rrr-state="loss"] {
+  color: var(--red) !important;
+  font-weight: 400 !important;
+}
+
+.analyticsTradePnl {
+  font-weight: 400 !important;
+  white-space: nowrap !important;
+}
+
+.analyticsPager {
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.analyticsPagerButton {
+  min-width: 32px;
+}
+
+.analyticsPagerLabel {
+  color: #4d5b6d;
+  font-size: 0.82rem;
+  min-width: 86px;
+  text-align: center;
+}
+
+.analyticsStreakValue[data-streak-state="win"] {
+  color: var(--green);
+}
+
+.analyticsStreakValue[data-streak-state="loss"] {
+  color: var(--red);
 }
 
 .analyticsOutcomeRow {
@@ -1780,6 +2013,7 @@
   }
 
   .statusGrid,
+  .analyticsMetricGrid,
   .permissionRow,
   .planningDashboardLayout,
   .planningModeFieldsRow,
@@ -1790,6 +2024,10 @@
   .riskInputRow,
   .riskControlRow {
     grid-template-columns: 1fr;
+  }
+
+  .analyticsEmptyMetricTile {
+    display: none !important;
   }
 
   .planningModeFieldsRow {

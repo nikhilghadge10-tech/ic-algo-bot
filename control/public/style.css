@@ -42,41 +42,63 @@
 
 .heroCard {
   position: relative;
-  gap: 18px;
+  isolation: isolate;
+  gap: 20px;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: space-between;
   overflow: hidden;
-  min-height: 128px;
-  padding: 22px 24px;
-  margin-bottom: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  min-height: 210px;
+  padding: 24px 26px 54px;
+  margin-bottom: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: var(--radius);
   background:
-    linear-gradient(120deg, rgba(12, 21, 38, 0.94), rgba(19, 55, 96, 0.88)),
-    url("images/ic-algo-bot.jpg") center / cover;
-  box-shadow: var(--shadow);
+    linear-gradient(110deg, rgba(7, 13, 26, 0.88) 0%, rgba(18, 45, 77, 0.68) 44%, rgba(18, 64, 83, 0.44) 100%),
+    url("images/ic-hero-banner.png") center / cover;
+  box-shadow:
+    0 18px 42px rgba(15, 23, 42, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.heroCard::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 42%),
+    radial-gradient(circle at 22% 12%, rgba(245, 184, 75, 0.14), transparent 30%);
+  content: "";
 }
 
 .heroCard::after {
   position: absolute;
-  inset: auto 24px 18px auto;
-  width: 210px;
+  inset: auto 26px 37px auto;
+  width: 240px;
   height: 3px;
   background: linear-gradient(90deg, var(--teal), #f5b84b, var(--red));
   content: "";
-  opacity: 0.9;
+  opacity: 0.82;
 }
 
 .botAvatar {
-  margin-right: 18px;
-  border: 2px solid rgba(255, 255, 255, 0.72);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+  width: 148px !important;
+  height: 148px !important;
+  margin-right: 22px;
+  border: 1px solid rgba(245, 184, 75, 0.34);
+  box-shadow:
+    0 14px 30px rgba(0, 0, 0, 0.22),
+    0 0 0 7px rgba(255, 255, 255, 0.045),
+    inset 0 0 0 1px rgba(12, 21, 38, 0.38);
+  opacity: 0.92;
 }
 
 .heroTitle .sapMTitleStyleAuto {
   color: #ffffff !important;
-  font-weight: 700;
+  font-size: 1.68rem;
+  font-weight: 800;
   letter-spacing: 0;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.28);
 }
 
 .heroTitle,
@@ -86,9 +108,10 @@
 
 .heroText {
   display: block;
-  margin-top: 7px;
+  margin-top: 8px;
   color: rgba(255, 255, 255, 0.82) !important;
-  font-size: 0.96rem;
+  font-size: 0.98rem;
+  line-height: 1.35;
 }
 
 .heroMainContent {
@@ -96,11 +119,35 @@
   min-width: 0;
 }
 
+.heroStatusPill {
+  display: inline-flex !important;
+  align-items: center;
+  flex: 0 0 auto !important;
+  gap: 7px;
+  width: fit-content !important;
+  max-width: 100%;
+  margin-top: 14px;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(3, 9, 18, 0.34);
+  backdrop-filter: blur(4px);
+}
+
+.heroStatusIcon {
+  color: #9ee7d8;
+  font-size: 0.9rem;
+}
+
+.heroStatusText {
+  color: rgba(255, 255, 255, 0.88) !important;
+  font-size: 0.82rem;
+  font-weight: 700 !important;
+  white-space: nowrap !important;
+}
+
 .marketDayStrip {
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 17px;
-  padding-bottom: 4px;
+  display: none !important;
 }
 
 .marketChip {
@@ -151,18 +198,63 @@
 }
 
 .marketEventsPanel {
-  flex: 1 1 clamp(260px, 34vw, 390px);
-  align-self: stretch;
-  justify-content: center;
-  min-width: 0;
-  padding: 13px 15px;
-  border: 1px solid rgba(255, 255, 255, 0.26);
-  border-left: 4px solid #6ee7f9;
-  border-radius: 7px;
-  background: rgba(14, 116, 144, 0.28);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    0 12px 28px rgba(8, 47, 73, 0.24);
+  display: none !important;
+}
+
+.marketTicker {
+  position: absolute !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  flex: none !important;
+  overflow: hidden;
+  width: 100% !important;
+  max-width: none !important;
+  height: 36px;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(3, 9, 18, 0.68);
+  backdrop-filter: blur(5px);
+}
+
+.heroCard > .sapMFlexItem:has(.marketTicker) {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+}
+
+.marketTickerTrack {
+  display: inline-flex !important;
+  width: max-content;
+  min-width: 200%;
+  animation: marketTickerScroll 34s linear infinite;
+  will-change: transform;
+}
+
+.marketTickerGroup {
+  gap: 34px;
+  flex: 0 0 auto;
+  padding-right: 34px;
+  white-space: nowrap;
+}
+
+.marketTickerItem {
+  color: rgba(255, 255, 255, 0.92) !important;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  white-space: nowrap !important;
+}
+
+@keyframes marketTickerScroll {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(-50%);
+  }
 }
 
 .marketEventsPanel[data-severity="danger"] {
@@ -218,16 +310,16 @@
 }
 
 .cockpitTabs .sapMITBHead {
-  gap: 8px;
-  padding: 8px 18px 0;
+  gap: 12px;
+  padding: 8px 20px 0;
   border-bottom: 1px solid var(--line);
   background: #ffffff;
 }
 
 .cockpitTabs .sapMITBFilter {
   width: auto !important;
-  min-width: 128px;
-  padding-inline: 10px;
+  min-width: 0;
+  padding-inline: 12px;
 }
 
 .cockpitTabs .sapMITBFilterWrapper {
@@ -291,6 +383,51 @@
 }
 
 /* Reusable status grid and tiles. */
+.cockpitLiveCard,
+.cockpitReadinessCard,
+.cockpitGuardrailsCard,
+.cockpitTelegramCard {
+  overflow: hidden;
+}
+
+.cockpitLiveCard > .sapMFlexItem:has(.sectionTitle),
+.cockpitReadinessCard > .sapMFlexItem:has(.sectionTitle),
+.cockpitGuardrailsCard > .sapMFlexItem:has(.sectionTitle),
+.cockpitTelegramCard > .sapMFlexItem:has(.sectionTitle) {
+  padding: 13px 15px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(37, 99, 235, 0.14);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(22, 128, 60, 0.07)),
+    #ffffff;
+}
+
+.cockpitReadinessCard > .sapMFlexItem:has(.sectionTitle) {
+  background:
+    linear-gradient(135deg, rgba(0, 140, 122, 0.08), rgba(37, 99, 235, 0.06)),
+    #ffffff;
+}
+
+.cockpitGuardrailsCard > .sapMFlexItem:has(.sectionTitle) {
+  background:
+    linear-gradient(135deg, rgba(181, 106, 0, 0.1), rgba(37, 99, 235, 0.06)),
+    #ffffff;
+}
+
+.cockpitTelegramCard > .sapMFlexItem:has(.sectionTitle) {
+  background:
+    linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(0, 140, 122, 0.06)),
+    #ffffff;
+}
+
+.cockpitLiveCard .sectionTitle,
+.cockpitReadinessCard .sectionTitle,
+.cockpitGuardrailsCard .sectionTitle,
+.cockpitTelegramCard .sectionTitle {
+  margin-bottom: 0;
+}
+
 .statusGrid {
   display: grid !important;
   grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
@@ -309,12 +446,62 @@
 
 .statusTile,
 .permissionTile {
+  position: relative;
+  overflow: hidden;
   width: auto;
   min-height: 96px;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: linear-gradient(180deg, #ffffff, var(--panel-soft));
+}
+
+.cockpitLiveCard .statusTile,
+.cockpitReadinessCard .statusTile,
+.cockpitGuardrailsCard .permissionTile,
+.cockpitTelegramCard .telegramControlRow {
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+}
+
+.cockpitLiveCard .statusTile::before,
+.cockpitReadinessCard .statusTile::before,
+.cockpitGuardrailsCard .permissionTile::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 3px;
+  background: rgba(37, 99, 235, 0.72);
+  content: "";
+}
+
+.cockpitLiveCard .statusGrid > .sapMFlexItem:nth-child(1) .statusTile::before {
+  background: var(--blue);
+}
+
+.cockpitLiveCard .statusGrid > .sapMFlexItem:nth-child(2) .statusTile::before {
+  background: var(--teal);
+}
+
+.cockpitLiveCard .statusGrid > .sapMFlexItem:nth-child(3) .statusTile::before {
+  background: var(--green);
+}
+
+.cockpitLiveCard .statusGrid > .sapMFlexItem:nth-child(4) .statusTile::before {
+  background: var(--red);
+}
+
+.cockpitReadinessCard .statusGrid > .sapMFlexItem:nth-child(1) .statusTile::before,
+.cockpitReadinessCard .statusGrid > .sapMFlexItem:nth-child(2) .statusTile::before {
+  background: var(--teal);
+}
+
+.cockpitReadinessCard .brokerTile::before {
+  background: var(--blue);
+}
+
+.cockpitReadinessCard .tradingModeTile::before {
+  background: var(--amber);
 }
 
 .statusTile {
@@ -440,17 +627,80 @@
   font-family:
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
     monospace !important;
+  background: #07111f !important;
+  color: #d8e7f3 !important;
   font-weight: 400 !important;
   overflow-x: auto !important;
   white-space: pre !important;
   word-break: normal !important;
 }
 
+.logsCard {
+  overflow: hidden;
+}
+
+.logsCard > .sapMFlexItem:has(.sectionTitle) {
+  padding: 13px 15px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(37, 99, 235, 0.14);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(0, 140, 122, 0.07)),
+    #ffffff;
+}
+
+.logsCard .sectionTitle {
+  margin-bottom: 0;
+}
+
 .logFilterRow {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 16px;
-  margin-bottom: 10px;
+  gap: 8px 14px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 11px 12px;
+  border: 1px solid rgba(102, 112, 133, 0.18);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+}
+
+.logFilterTitleGroup {
+  gap: 7px;
+  margin-right: 4px;
+  padding-right: 12px;
+  border-right: 1px solid rgba(102, 112, 133, 0.18);
+}
+
+.logFilterIcon {
+  color: var(--blue);
+  font-size: 0.95rem;
+}
+
+.logFilterTitle {
+  color: #344054;
+  font-size: 0.82rem;
+  font-weight: 800 !important;
+}
+
+.logFilterRow .sapMCbLabel {
+  color: #344054 !important;
+  font-size: 0.82rem !important;
+  font-weight: 700 !important;
+}
+
+.logFilterRow .sapMBtnInner {
+  min-width: 34px;
+  height: 34px;
+  background: #ffffff;
+}
+
+.activityLogTextArea {
+  border: 1px solid rgba(7, 17, 31, 0.24);
+  border-radius: var(--radius);
+  background: #07111f;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 .buttonRow,
@@ -499,12 +749,16 @@
 
 .telegramControlRow {
   gap: 16px;
-  padding: 8px 4px;
+  padding: 14px;
+  border: 1px solid rgba(37, 99, 235, 0.16);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #ffffff, #f7fbff);
 }
 
 .telegramControlRow .infoText {
-  padding: 6px 0 0;
+  padding: 8px 0 0;
   color: #667085;
+  line-height: 1.35;
 }
 
 .webhookBox,
@@ -531,7 +785,8 @@
 
 .readinessActionRow > .sapMFlexItem,
 .webhookUrlRow,
-.networkIpRow {
+.networkIpRow,
+.indicatorDownloadRow {
   min-width: 0;
 }
 
@@ -580,6 +835,20 @@
 
 .tradingViewReferenceCard {
   gap: 14px;
+  overflow: hidden;
+}
+
+.tradingViewReferenceCard > .sapMFlexItem:has(.sectionTitle) {
+  padding: 13px 15px;
+  border: 1px solid rgba(0, 140, 122, 0.16);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, rgba(0, 140, 122, 0.09), rgba(37, 99, 235, 0.07)),
+    #ffffff;
+}
+
+.tradingViewReferenceCard .sectionTitle {
+  margin-bottom: 0;
 }
 
 .tradingViewEndpointRow {
@@ -588,16 +857,45 @@
 }
 
 .tradingViewEndpointRow > .sapMFlexItem {
-  flex: 1 1 0;
-  min-width: 320px;
+  flex: 1 1 250px;
+  min-width: 250px;
 }
 
 .tradingViewReferenceRow {
   width: 100%;
+  min-height: 58px;
+  padding: 12px;
+  border: 1px solid rgba(102, 112, 133, 0.18);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
 }
 
 .tradingViewReferenceRow .sapMFlexItem {
   min-width: 0;
+}
+
+.tradingViewReferenceRow .sapMBtnInner {
+  min-width: 34px;
+  height: 34px;
+  background: #ffffff;
+}
+
+.tradingViewReferenceRow .webhookLabel,
+.tradingViewReferenceRow .sapMLabel {
+  color: #344054 !important;
+  font-size: 0.82rem !important;
+  font-weight: 800 !important;
+}
+
+.indicatorDownloadRow {
+  flex: 0 1 280px;
+  min-height: 36px;
+}
+
+.indicatorDownloadButton .sapMBtnInner {
+  min-width: 118px;
+  justify-content: center;
 }
 
 .payloadGrid {
@@ -612,16 +910,28 @@
 }
 
 .payloadCard {
+  position: relative;
   gap: 8px;
   min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--line);
+  padding: 13px;
+  overflow: hidden;
+  border: 1px solid rgba(102, 112, 133, 0.18);
   border-radius: var(--radius);
-  background: #fbfcfe;
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+}
+
+.payloadCard::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: linear-gradient(180deg, var(--blue), var(--green));
 }
 
 .payloadHeader {
   min-height: 32px;
+  padding-left: 4px;
 }
 
 .payloadTitle {
@@ -629,11 +939,22 @@
   font-weight: 800;
 }
 
+.payloadHeader .sapMBtnInner {
+  min-width: 34px;
+  height: 34px;
+  background: #ffffff;
+}
+
 .payloadTextArea .sapMInputBaseInner {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 0.78rem;
   font-weight: 400 !important;
   line-height: 1.45;
+}
+
+.payloadTextArea .sapMInputBaseContentWrapper {
+  border-color: rgba(102, 112, 133, 0.2) !important;
+  background: #ffffff !important;
 }
 
 .emergencyStopTile {
@@ -669,6 +990,18 @@
   text-align: center;
 }
 
+.cockpitGuardrailsCard .permissionTile {
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+}
+
+.cockpitGuardrailsCard .permissionRow:first-child .permissionTile::before {
+  background: var(--blue);
+}
+
+.cockpitGuardrailsCard .permissionExecutionRow .permissionTile::before {
+  background: var(--teal);
+}
+
 .permissionLabel {
   margin-right: 4px;
   color: #2d3748;
@@ -702,12 +1035,18 @@
   background: linear-gradient(180deg, #f3fcf6, #ffffff);
 }
 
+.tradeTodayPermissionTile::before {
+  background: var(--green) !important;
+}
+
 .tradeTodayPermissionTile .permissionLabel {
   color: #166534;
 }
 
 .tradingModeTile {
   gap: 8px;
+  border-color: rgba(181, 106, 0, 0.24);
+  background: linear-gradient(180deg, #ffffff, #fff8ea);
 }
 
 .tradingModeStatus .sapMObjStatusText {
@@ -737,6 +1076,7 @@
   border-color: rgba(195, 49, 49, 0.35) !important;
   background: #fff !important;
   color: var(--red) !important;
+  font-weight: 800;
 }
 
 .readinessEmergencyButton .sapMBtnIcon {
@@ -746,6 +1086,20 @@
 /* Planning and lot-sizing controls. */
 .planningCard {
   overflow: hidden;
+}
+
+.planningCard > .sapMFlexItem:has(.sectionTitle) {
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  border: 1px solid rgba(181, 106, 0, 0.16);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, rgba(245, 184, 75, 0.12), rgba(22, 128, 60, 0.07)),
+    #ffffff;
+}
+
+.planningCard .sectionTitle {
+  margin-bottom: 0 !important;
 }
 
 .planningDashboardLayout {
@@ -833,11 +1187,37 @@
 .planningInlineMetricTile,
 .planningEmbeddedMetricTile,
 .planningKeyMetricTile {
+  position: relative;
   min-height: 104px;
   padding: 14px;
-  border: 1px solid var(--line);
+  overflow: hidden;
+  border: 1px solid rgba(102, 112, 133, 0.18);
   border-radius: var(--radius);
   background: linear-gradient(180deg, #ffffff, var(--panel-soft));
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+}
+
+.planningCalcGroup::before,
+.planningMetricTile::before,
+.planningInlineMetricTile::before,
+.planningKeyMetricTile::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 3px;
+  background: rgba(37, 99, 235, 0.65);
+  content: "";
+}
+
+.planningRiskPair:first-child .planningCalcGroup::before,
+.planningRiskPair:first-child .planningInlineMetricTile::before {
+  background: var(--green);
+}
+
+.planningRiskPair:nth-child(2) .planningCalcGroup::before,
+.planningRiskPair:nth-child(2) .planningInlineMetricTile::before {
+  background: var(--amber);
 }
 
 .planningGroupTitle {
@@ -848,11 +1228,32 @@
   font-weight: 700;
 }
 
+.planningGroupTitleRow {
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.planningGroupTitleRow .planningGroupTitle {
+  margin-bottom: 0;
+}
+
+.planningGroupInfoIcon {
+  color: #667085;
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
 .planningFieldsRow {
   display: grid !important;
   grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   gap: 12px;
   width: 100%;
+}
+
+.planningCapitalFieldsRow,
+.planningSlFieldsRow,
+.premiumThresholdFieldsRow {
+  padding-top: 2px;
 }
 
 .planningModeFieldsRow {
@@ -865,9 +1266,14 @@
 }
 
 .planningModeControl {
+  gap: 8px;
   flex: 0 0 auto;
   min-width: 0;
   width: 100%;
+  padding: 10px;
+  border: 1px solid rgba(102, 112, 133, 0.14);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.74);
 }
 
 .planningModeControl .sapMSegB {
@@ -890,6 +1296,7 @@
   grid-template-columns: repeat(2, minmax(112px, 1fr));
 }
 
+.trailStrategyPlanningGroup,
 .premiumThresholdGroup {
   margin: 0;
   transition: border-color 0.18s ease, background 0.18s ease;
@@ -903,11 +1310,24 @@
   color: #8a5a00 !important;
 }
 
+.trailStrategyPlanningGroup[data-underlying="NIFTY"],
+.premiumThresholdGroup[data-underlying="NIFTY"] {
+  border-color: #45b7a6;
+  background: linear-gradient(180deg, #f2fffb, #e6f8f3);
+}
+
+.trailStrategyPlanningGroup[data-underlying="NIFTY"] .planningGroupTitle,
+.premiumThresholdGroup[data-underlying="NIFTY"] .planningGroupTitle {
+  color: #006b5f;
+}
+
+.trailStrategyPlanningGroup[data-underlying="BANKNIFTY"],
 .premiumThresholdGroup[data-underlying="BANKNIFTY"] {
   border-color: #e2aa3a;
   background: linear-gradient(180deg, #fffaf0, #fff3d8);
 }
 
+.trailStrategyPlanningGroup[data-underlying="BANKNIFTY"] .planningGroupTitle,
 .premiumThresholdGroup[data-underlying="BANKNIFTY"] .planningGroupTitle {
   color: #7a4f00;
 }
@@ -921,6 +1341,12 @@
 .planningModeBox {
   margin: 0;
   min-height: 352px;
+  border-color: rgba(37, 99, 235, 0.18);
+  background: linear-gradient(180deg, #ffffff, #f5f9ff);
+}
+
+.planningModeBox::before {
+  background: var(--blue);
 }
 
 .planningModeBox .sapMSegB,
@@ -988,6 +1414,74 @@
   background: #ffffff;
 }
 
+.planningKeyMetricTile::before {
+  background: linear-gradient(90deg, var(--green), var(--red));
+}
+
+.planningKeyMetricTile[data-lot-side] {
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.planningKeyMetricTile[data-lot-side][data-risk-mode="PER_TRADE"] {
+  border-color: rgba(195, 49, 49, 0.5);
+  background: linear-gradient(180deg, #fff7f7, #ffecec);
+  box-shadow: inset 0 0 0 1px rgba(195, 49, 49, 0.08);
+}
+
+.planningKeyMetricTile[data-lot-side][data-risk-mode="PER_TRADE"]
+  .statusTitle,
+.planningKeyMetricTile[data-lot-side][data-risk-mode="PER_TRADE"]
+  .planningMetricValue {
+  color: var(--red) !important;
+}
+
+.planningKeyMetricTile[data-lot-side="LONG"][data-market-bias="BULLISH"] {
+  border-color: rgba(22, 128, 60, 0.5);
+  background: linear-gradient(180deg, #f3fff7, #e7f8ed);
+  box-shadow: inset 0 0 0 1px rgba(22, 128, 60, 0.08);
+}
+
+.planningKeyMetricTile[data-lot-side="LONG"][data-market-bias="BULLISH"]
+  .statusTitle,
+.planningKeyMetricTile[data-lot-side="LONG"][data-market-bias="BULLISH"]
+  .planningMetricValue {
+  color: var(--green) !important;
+}
+
+.planningKeyMetricTile[data-lot-side="SHORT"][data-market-bias="BEARISH"] {
+  border-color: rgba(195, 49, 49, 0.5);
+  background: linear-gradient(180deg, #fff7f7, #ffecec);
+  box-shadow: inset 0 0 0 1px rgba(195, 49, 49, 0.08);
+}
+
+.planningKeyMetricTile[data-lot-side="SHORT"][data-market-bias="BEARISH"]
+  .statusTitle,
+.planningKeyMetricTile[data-lot-side="SHORT"][data-market-bias="BEARISH"]
+  .planningMetricValue {
+  color: var(--red) !important;
+}
+
+.planningKeyMetricTile[data-lot-side="SHORT"][data-market-bias="BULLISH"],
+.planningKeyMetricTile[data-lot-side="LONG"][data-market-bias="BEARISH"] {
+  border-color: var(--line-strong);
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.planningKeyMetricTile[data-lot-side="SHORT"][data-market-bias="BULLISH"]
+  .statusTitle,
+.planningKeyMetricTile[data-lot-side="SHORT"][data-market-bias="BULLISH"]
+  .planningMetricValue,
+.planningKeyMetricTile[data-lot-side="LONG"][data-market-bias="BEARISH"]
+  .statusTitle,
+.planningKeyMetricTile[data-lot-side="LONG"][data-market-bias="BEARISH"]
+  .planningMetricValue {
+  color: var(--ink) !important;
+}
+
 .planningKeyMetricTile .planningMetricValue {
   font-size: 2rem;
 }
@@ -1020,23 +1514,47 @@
 }
 
 /* Trade analytics tab. */
+.analyticsCard {
+  overflow: hidden;
+}
+
 .analyticsHeader {
+  padding: 14px 16px;
+  border: 1px solid rgba(37, 99, 235, 0.14);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(22, 128, 60, 0.08)),
+    #ffffff;
   flex-wrap: wrap;
   gap: 12px;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
+}
+
+.analyticsHeader .sectionTitle {
+  margin-bottom: 0;
 }
 
 .analyticsSwitchRow {
   flex-wrap: wrap;
-  gap: 30px;
+  gap: 10px;
   justify-content: flex-end;
 }
 
 .analyticsFilterRow {
+  align-items: center;
   justify-content: flex-start;
   width: 100%;
-  margin-top: 10px;
-  margin-bottom: 14px;
+  margin-top: 0;
+  margin-bottom: 16px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #f8fafc;
+}
+
+.analyticsFilterRow > .sapMFlexItem:has(.analyticsOptionTypeSwitch),
+.analyticsFilterRow > .sapMFlexItem:has(.analyticsPeriodSwitch) {
+  margin-left: 18px;
 }
 
 .analyticsUnderlyingSwitch,
@@ -1078,6 +1596,21 @@
   white-space: nowrap !important;
 }
 
+.analyticsPeriodNavButton .sapMBtnInner {
+  min-width: 38px;
+  height: 30px;
+  padding-inline: 8px;
+  border-color: var(--line-strong);
+  background: #ffffff;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.analyticsPeriodNavButton .sapMBtnInner:hover {
+  border-color: rgba(37, 99, 235, 0.45);
+  background: #eff6ff;
+}
+
 .analyticsRangeText {
   display: block;
   color: #667085;
@@ -1085,8 +1618,13 @@
 }
 
 .analyticsHeaderRangeText {
-  gap: 10px;
+  align-items: center;
+  gap: 8px;
   margin-left: auto;
+  padding: 7px 10px;
+  border: 1px solid rgba(245, 184, 75, 0.28);
+  border-radius: var(--radius);
+  background: rgba(255, 250, 240, 0.76);
   text-align: right;
   white-space: nowrap !important;
 }
@@ -1149,8 +1687,43 @@
   background: linear-gradient(180deg, #ffffff, var(--panel-soft));
 }
 
+.analyticsMetricTile {
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+}
+
+.analyticsMetricTile::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 3px;
+  background: linear-gradient(90deg, rgba(37, 99, 235, 0.72), rgba(22, 128, 60, 0.72));
+  content: "";
+}
+
+.analyticsMetricTile .statusTitle {
+  color: #475467;
+  letter-spacing: 0;
+}
+
 .analyticsEmptyMetricTile {
   visibility: hidden;
+}
+
+.analyticsPnlTablePanel {
+  border-color: rgba(22, 128, 60, 0.32);
+  background: linear-gradient(180deg, #fbfffc, #f2fbf5);
+  box-shadow:
+    inset 0 0 0 1px rgba(22, 128, 60, 0.06),
+    0 10px 24px rgba(15, 23, 42, 0.05);
+}
+
+.analyticsPnlTablePanel .planningGroupTitle {
+  margin-bottom: 10px;
+  color: var(--green);
+  font-size: 1rem;
 }
 
 .analyticsMetricValue {
@@ -1163,6 +1736,7 @@
 .analyticsMetricTitleRow {
   gap: 6px;
   align-items: center;
+  margin-bottom: 8px;
 }
 
 .analyticsMetricTitleRow .statusTitle {
@@ -1210,6 +1784,34 @@
 
 .analyticsWinRateTile .analyticsMetricValue {
   color: var(--amber);
+}
+
+.analyticsWinRateTile::before {
+  background: var(--amber);
+}
+
+.analyticsPnlTile::before,
+.analyticsGainDrawdownTile::before {
+  background: var(--green);
+}
+
+.analyticsPnlTile,
+.analyticsGainDrawdownTile {
+  border-color: rgba(22, 128, 60, 0.22);
+  background: linear-gradient(180deg, #ffffff, #f1fbf4);
+}
+
+.analyticsOutcomeMetricTile::before {
+  background: linear-gradient(90deg, var(--green), var(--red));
+}
+
+.analyticsLossTile::before {
+  background: var(--red);
+}
+
+.analyticsLossTile {
+  border-color: rgba(195, 49, 49, 0.2);
+  background: linear-gradient(180deg, #ffffff, #fff5f5);
 }
 
 .analyticsPairMetricValue {
@@ -1313,8 +1915,29 @@
 }
 
 .analyticsTradeToolbar {
+  flex-wrap: wrap;
   gap: 12px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid rgba(22, 128, 60, 0.16);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.analyticsPanelTitleMeta {
+  gap: 7px;
+  margin-right: auto;
+}
+
+.analyticsPanelTitleIcon {
+  color: var(--green);
+  font-size: 0.95rem;
+}
+
+.analyticsPanelSubtitle {
+  color: #475467;
+  font-size: 0.82rem;
+  font-weight: 700 !important;
 }
 
 .analyticsTradeFilterSwitch .sapMSegBBtn {
@@ -1336,12 +1959,20 @@
 }
 
 .analyticsTradeCount {
-  color: #667085;
+  padding: 5px 9px;
+  border: 1px solid rgba(102, 112, 133, 0.18);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #475467;
   font-size: 0.8rem;
+  font-weight: 700 !important;
 }
 
 .analyticsTradeTable {
   margin-top: 2px;
+  overflow: hidden;
+  border: 1px solid rgba(102, 112, 133, 0.16);
+  border-radius: var(--radius);
 }
 
 .analyticsTradeTable .sapMListTblRow:nth-child(even) .sapMListTblCell {
@@ -1363,7 +1994,7 @@
 }
 
 .analyticsTradeTable .sapMListTblHeaderCell .sapMText {
-  color: #667085;
+  color: #344054;
   font-size: 0.78rem;
   font-weight: 800 !important;
 }
@@ -1562,14 +2193,33 @@
 
 .manualSpotStatus {
   display: block;
-  margin-top: 8px;
+  margin-top: 9px;
   color: var(--muted);
-  font-size: 0.84rem;
+  font-size: 0.82rem;
+  line-height: 1.25;
 }
 
 /* Manual signal command surface. */
+.manualSignalsCard {
+  overflow: hidden;
+}
+
+.manualSignalsCard > .sapMFlexItem:has(.sectionTitle) {
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(37, 99, 235, 0.14);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(245, 184, 75, 0.1)),
+    #ffffff;
+}
+
+.manualSignalsCard .sectionTitle {
+  margin-bottom: 0;
+}
+
 .manualSignalWarning {
-  margin: 0;
+  margin: 2px 0 0;
 }
 
 .manualSignalWarning .sapMMsgStripMessage {
@@ -1577,15 +2227,21 @@
 }
 
 .manualSignalComposer {
-  gap: 14px;
+  gap: 16px;
 }
 
 .manualConfigGrid,
-.manualActionGrid {
+.manualActionGrid,
+.manualSignalControlGrid {
   display: grid !important;
   gap: 12px;
   align-items: stretch;
   width: 100%;
+}
+
+.manualSignalControlGrid {
+  grid-template-columns: minmax(470px, 1fr) minmax(380px, 1fr);
+  gap: 14px;
 }
 
 .manualConfigGrid {
@@ -1601,6 +2257,8 @@
 
 .manualConfigGrid > .sapMFlexItem,
 .manualActionGrid > .sapMFlexItem,
+.manualSignalControlGrid > .sapMFlexItem,
+.manualEntryExitGroup > .sapMFlexItem,
 .manualUnderlyingSpotGroup > .sapMFlexItem,
 .manualSpotControl > .sapMFlexItem,
 .manualActionButtons > .sapMFlexItem {
@@ -1609,10 +2267,25 @@
 
 .manualControlGroup,
 .manualActionGroup {
-  padding: 14px;
-  border: 1px solid var(--line);
+  position: relative;
+  overflow: hidden;
+  min-height: 126px;
+  padding: 16px;
+  border: 1px solid rgba(102, 112, 133, 0.18);
   border-radius: var(--radius);
-  background: #fbfcfe;
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+}
+
+.manualControlGroup::before,
+.manualActionGroup::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 3px;
+  background: rgba(37, 99, 235, 0.72);
+  content: "";
 }
 
 .manualControlGroup {
@@ -1620,9 +2293,18 @@
 }
 
 .manualUnderlyingSpotGroup {
+  border-color: rgba(102, 112, 133, 0.18);
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+}
+
+.manualUnderlyingSpotGroup::before {
+  background: var(--teal);
+}
+
+.manualUnderlyingSpotGroup {
   display: grid !important;
   grid-template-columns: minmax(212px, 0.95fr) minmax(220px, 1.05fr);
-  gap: 16px;
+  gap: 18px;
   align-items: start;
 }
 
@@ -1655,9 +2337,9 @@
 }
 
 .manualSpotInput {
-  flex: 0 1 164px;
+  flex: 1 1 164px;
   min-width: 112px;
-  max-width: 178px;
+  max-width: 220px;
 }
 
 .manualSpotInput .sapMInputBaseInner {
@@ -1665,9 +2347,13 @@
 }
 
 .manualIntervalGroup {
-  border-color: rgba(37, 99, 235, 0.4);
-  background: linear-gradient(180deg, #eff6ff 0%, #fbfdff 100%);
-  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.08) inset;
+  border-color: rgba(102, 112, 133, 0.18);
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+}
+
+.manualIntervalGroup::before {
+  background: var(--blue);
 }
 
 .manualIntervalSelector {
@@ -1706,9 +2392,16 @@
 }
 
 .manualActionGroup {
-  gap: 10px;
+  gap: 12px;
   justify-content: space-between;
   min-height: 112px;
+}
+
+.manualEntryExitGroup {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  width: 100%;
 }
 
 .manualActionTitle {
@@ -1723,14 +2416,32 @@
   color: var(--green);
 }
 
+.manualLongGroup {
+  border-color: rgba(22, 128, 60, 0.24);
+  background: linear-gradient(180deg, #ffffff, #f1fbf4);
+}
+
+.manualLongGroup::before {
+  background: var(--green);
+}
+
 .manualShortTitle {
   color: var(--red);
+}
+
+.manualShortGroup {
+  border-color: rgba(195, 49, 49, 0.22);
+  background: linear-gradient(180deg, #ffffff, #fff5f5);
+}
+
+.manualShortGroup::before {
+  background: var(--red);
 }
 
 .manualActionButtons {
   display: grid !important;
   grid-template-columns: repeat(2, minmax(92px, 1fr));
-  gap: 8px;
+  gap: 10px;
   width: 100%;
 }
 
@@ -1742,8 +2453,26 @@
 }
 
 .manualSignalButton .sapMBtnInner {
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
-  min-height: 42px;
+  min-height: 46px;
+  border-radius: 7px;
+  font-weight: 800;
+}
+
+.manualSignalButton .sapMBtnContent {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.manualSignalButton .sapMBtnIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 
 .manualDiagnosticGroup {
@@ -1751,7 +2480,13 @@
 }
 
 .trailSlGroup {
-  gap: 10px;
+  gap: 12px;
+  border-color: rgba(181, 106, 0, 0.28);
+  background: linear-gradient(180deg, #ffffff, #fff8ea);
+}
+
+.trailSlGroup::before {
+  background: var(--amber);
 }
 
 .trailSlHeader {
@@ -1771,6 +2506,15 @@
   color: rgba(17, 24, 39, 0.72);
   font-size: 0.84rem;
   line-height: 1.35;
+}
+
+.trailModeFooter {
+  align-self: flex-end;
+  color: rgba(17, 24, 39, 0.72);
+  font-size: 0.82rem;
+  font-weight: 400;
+  line-height: 1.2;
+  margin-top: 2px;
 }
 
 .trailStrategySettings {
@@ -1857,9 +2601,9 @@
 
 .trailSlControls {
   display: grid !important;
-  grid-template-columns: minmax(90px, 0.75fr) auto minmax(90px, 0.75fr) minmax(76px, 0.34fr);
+  grid-template-columns: minmax(116px, 0.9fr) auto minmax(116px, 0.9fr) minmax(92px, 0.42fr);
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
 }
 
@@ -1899,9 +2643,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
+  min-width: 24px;
   height: 2.25rem;
-  color: var(--ink);
+  color: var(--amber);
 }
 
 .trailPriceOperatorText {
@@ -1918,6 +2662,14 @@
 .trailSlButton .sapMBtnInner {
   min-width: 0;
   width: 100%;
+}
+
+.trailSlInput .sapMInputBaseInner {
+  font-weight: 400 !important;
+}
+
+.trailSlInput .sapMInputBaseInner::placeholder {
+  font-weight: 400 !important;
 }
 
 /* Dhan token update dialog. */
@@ -1962,6 +2714,8 @@
 @media (max-width: 840px) {
   .manualConfigGrid,
   .manualActionGrid,
+  .manualSignalControlGrid,
+  .manualEntryExitGroup,
   .manualUnderlyingSpotGroup {
     grid-template-columns: 1fr;
   }
@@ -1980,7 +2734,21 @@
   .heroCard {
     align-items: stretch !important;
     flex-direction: column !important;
-    padding: 18px;
+    min-height: 188px;
+    padding: 18px 18px 54px;
+  }
+
+  .heroTitle .sapMTitleStyleAuto {
+    font-size: 1.34rem;
+  }
+
+  .heroStatusPill {
+    max-width: 100%;
+  }
+
+  .heroStatusText {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .marketDayStrip {
@@ -2000,6 +2768,7 @@
   .heroCard::after {
     left: 18px;
     right: 18px;
+    bottom: 39px;
     width: auto;
   }
 
@@ -2020,6 +2789,7 @@
   .planningKeyMetricsRow,
   .manualConfigGrid,
   .manualActionGrid,
+  .manualSignalControlGrid,
   .trailSlControls,
   .riskInputRow,
   .riskControlRow {

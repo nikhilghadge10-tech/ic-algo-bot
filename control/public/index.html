@@ -32,8 +32,8 @@
           "tradingDesk",
           "planning",
           "manualSignals",
-          "tradingView",
           "monitoring",
+          "tradingView",
           "analytics",
         ];
         const LOG_FILTER_PATHS = [
@@ -317,6 +317,8 @@
         config.MARKET_TODAY_LABEL = formatMarketDate();
         config.NIFTY_NEXT_EXPIRY_LABEL = "Loading expiry...";
         config.NIFTY_NEXT_EXPIRY_META = "";
+        config.BANKNIFTY_NEXT_EXPIRY_LABEL = "Loading expiry...";
+        config.BANKNIFTY_NEXT_EXPIRY_META = "";
         config.NSE_NEXT_HOLIDAY_LABEL = "Loading holiday...";
         config.NSE_NEXT_HOLIDAY_META = "";
         config.RBI_MARKET_LABEL = "Loading RBI...";
@@ -338,6 +340,7 @@
         config.NETWORK_LOCAL_IPS = [];
         config.NETWORK_IP_ERROR = "";
         config.ANALYTICS_PERIOD = "week";
+        config.ANALYTICS_PERIOD_OFFSET = 0;
         config.ANALYTICS_UNDERLYING = "ALL";
         config.ANALYTICS_OPTION_TYPE = "ALL";
         config.ANALYTICS_INCLUDE_TEST_DATA = true;
@@ -379,6 +382,10 @@
           fresh.MARKET_TODAY_LABEL = currentData.MARKET_TODAY_LABEL;
           fresh.NIFTY_NEXT_EXPIRY_LABEL = currentData.NIFTY_NEXT_EXPIRY_LABEL;
           fresh.NIFTY_NEXT_EXPIRY_META = currentData.NIFTY_NEXT_EXPIRY_META;
+          fresh.BANKNIFTY_NEXT_EXPIRY_LABEL =
+            currentData.BANKNIFTY_NEXT_EXPIRY_LABEL;
+          fresh.BANKNIFTY_NEXT_EXPIRY_META =
+            currentData.BANKNIFTY_NEXT_EXPIRY_META;
           fresh.NSE_NEXT_HOLIDAY_LABEL = currentData.NSE_NEXT_HOLIDAY_LABEL;
           fresh.NSE_NEXT_HOLIDAY_META = currentData.NSE_NEXT_HOLIDAY_META;
           fresh.RBI_MARKET_LABEL = currentData.RBI_MARKET_LABEL;
@@ -424,6 +431,8 @@
           fresh.NETWORK_LOCAL_IPS = currentData.NETWORK_LOCAL_IPS || [];
           fresh.NETWORK_IP_ERROR = currentData.NETWORK_IP_ERROR || "";
           fresh.ANALYTICS_PERIOD = currentData.ANALYTICS_PERIOD || "week";
+          fresh.ANALYTICS_PERIOD_OFFSET =
+            Number(currentData.ANALYTICS_PERIOD_OFFSET || 0);
           fresh.ANALYTICS_UNDERLYING =
             currentData.ANALYTICS_UNDERLYING || "ALL";
           fresh.ANALYTICS_OPTION_TYPE =
@@ -539,9 +548,17 @@
           }
         }
 
+        function downloadTradingViewIndicatorCode() {
+          window.location.href = "/api/tradingview-indicator";
+          sap.m.MessageToast.show("TradingView indicator code downloaded");
+        }
+
         async function refreshTradeAnalytics() {
           try {
             const period = model.getProperty("/ANALYTICS_PERIOD") || "week";
+            const offset = Number(
+              model.getProperty("/ANALYTICS_PERIOD_OFFSET") || 0,
+            );
             const underlying =
               model.getProperty("/ANALYTICS_UNDERLYING") || "ALL";
             const optionType =
@@ -549,10 +566,14 @@
             const includeTestData =
               model.getProperty("/ANALYTICS_INCLUDE_TEST_DATA") !== false;
             const result = await fetch(
-              `/api/trade-analytics?period=${encodeURIComponent(period)}&underlying=${encodeURIComponent(underlying)}&optionType=${encodeURIComponent(optionType)}&includeTestData=${encodeURIComponent(includeTestData)}`,
+              `/api/trade-analytics?period=${encodeURIComponent(period)}&offset=${encodeURIComponent(offset)}&underlying=${encodeURIComponent(underlying)}&optionType=${encodeURIComponent(optionType)}&includeTestData=${encodeURIComponent(includeTestData)}`,
             ).then((r) => r.json());
 
             model.setProperty("/tradeAnalytics", result.analytics || null);
+            model.setProperty(
+              "/ANALYTICS_PERIOD_OFFSET",
+              Number(result.analytics?.periodOffset || 0),
+            );
             model.setProperty("/ANALYTICS_TRADE_PAGE", 1);
             updateAnalyticsTradeTableState();
           } catch (error) {
@@ -632,39 +653,54 @@
           let rbiIntel = null;
 
           try {
-            const expiryResult = await fetch("/api/nifty-expiry").then((r) =>
+            const expiryResult = await fetch("/api/index-expiries").then((r) =>
               r.json(),
             );
-
-            if (expiryResult.success && expiryResult.expiry?.date) {
-              const expiryUnderlying =
-                expiryResult.underlyingDisplayName || "Index";
-              const expiryDistance = formatExpiryDistance(
-                expiryResult.expiry.date,
+            const expiries = Array.isArray(expiryResult.expiries)
+              ? expiryResult.expiries
+              : [];
+            const setExpiryState = function (symbol, labelPath, metaPath) {
+              const item = expiries.find(
+                (entry) => entry.underlyingSymbol === symbol,
               );
 
-              model.setProperty(
-                "/NIFTY_NEXT_EXPIRY_LABEL",
-                formatExpiryDate(expiryResult.expiry.date),
-              );
-              model.setProperty(
-                "/NIFTY_NEXT_EXPIRY_META",
-                `${expiryUnderlying} • ${expiryDistance}`,
-              );
-            } else {
-              model.setProperty(
-                "/NIFTY_NEXT_EXPIRY_LABEL",
-                "Expiry unavailable",
-              );
-              model.setProperty(
-                "/NIFTY_NEXT_EXPIRY_META",
-                expiryResult.message || "Instrument master check failed",
-              );
-            }
+              if (expiryResult.success && item?.expiry?.date) {
+                model.setProperty(labelPath, formatExpiryDate(item.expiry.date));
+                model.setProperty(
+                  metaPath,
+                  formatExpiryDistance(item.expiry.date),
+                );
+              } else {
+                model.setProperty(labelPath, "Expiry unavailable");
+                model.setProperty(
+                  metaPath,
+                  expiryResult.message || "Instrument master check failed",
+                );
+              }
+            };
+
+            setExpiryState(
+              "NIFTY",
+              "/NIFTY_NEXT_EXPIRY_LABEL",
+              "/NIFTY_NEXT_EXPIRY_META",
+            );
+            setExpiryState(
+              "BANKNIFTY",
+              "/BANKNIFTY_NEXT_EXPIRY_LABEL",
+              "/BANKNIFTY_NEXT_EXPIRY_META",
+            );
           } catch (error) {
             model.setProperty("/NIFTY_NEXT_EXPIRY_LABEL", "Expiry unavailable");
             model.setProperty(
               "/NIFTY_NEXT_EXPIRY_META",
+              "Instrument master check failed",
+            );
+            model.setProperty(
+              "/BANKNIFTY_NEXT_EXPIRY_LABEL",
+              "Expiry unavailable",
+            );
+            model.setProperty(
+              "/BANKNIFTY_NEXT_EXPIRY_META",
               "Instrument master check failed",
             );
           }
@@ -1260,6 +1296,72 @@
           }
         }
 
+        function getLogKeyValue(line, key) {
+          const match = String(line || "").match(
+            new RegExp(`(?:^|\\s)${key}=([^\\s:]+)`, "i"),
+          );
+
+          return match ? match[1] : "";
+        }
+
+        function getManualSignalLifecyclePayload(line) {
+          if (!/MANUAL_SIGNAL/i.test(line)) {
+            return null;
+          }
+
+          const signal = getLogKeyValue(line, "signal");
+
+          if (!signal) {
+            return null;
+          }
+
+          return {
+            signal,
+            source: getLogKeyValue(line, "source") || "MANUAL_SIGNAL",
+            symbol:
+              getLogKeyValue(line, "symbol") ||
+              model.getProperty("/UNDERLYING_SYMBOL") ||
+              "",
+            price: getLogKeyValue(line, "price"),
+            interval:
+              getLogKeyValue(line, "interval") ||
+              model.getProperty("/TEST_INTERVAL") ||
+              model.getProperty("/PREMIUM_SL_INTERVAL") ||
+              "",
+          };
+        }
+
+        function getManualSignalLifecycleContext(lines) {
+          const contextLine = lines.find((line) =>
+            /MANUAL_SIGNAL/i.test(line) &&
+            (/\btradeMode=/i.test(line) || /\bsignal=/i.test(line)),
+          );
+
+          if (!contextLine) {
+            return null;
+          }
+
+          const currentTradeMode =
+            model.getProperty("/PAPER_TRADE") === "true"
+              ? "PAPER"
+              : String(model.getProperty("/DHAN_ENV") || "LIVE").toUpperCase() ===
+                  "SANDBOX"
+                ? "SANDBOX"
+                : "LIVE";
+
+          return {
+            tradeMode: getLogKeyValue(contextLine, "tradeMode") || currentTradeMode,
+            orderRoute: "",
+            dhanEnvironment: "",
+            marketData: "",
+            interval:
+              getLogKeyValue(contextLine, "interval") ||
+              model.getProperty("/TEST_INTERVAL") ||
+              model.getProperty("/PREMIUM_SL_INTERVAL") ||
+              "",
+          };
+        }
+
         function getLatestTradingViewWebhook(logs) {
           const lines = String(logs || "").split("\n");
 
@@ -1724,7 +1826,7 @@
           }
 
           const manualSignalFailureMatch = line.match(
-            /MANUAL_SIGNAL failed:\s*(.+)$/i,
+            /MANUAL_SIGNAL failed(?:\s+.*?)?:\s*(.+)$/i,
           );
 
           if (manualSignalFailureMatch) {
@@ -1746,11 +1848,20 @@
           const payloadItems = signalLines
             .map((line) => ({ line, payload: getWebhookPayload(line) }))
             .filter((item) => item.payload);
-          const payloads = payloadItems.map((item) => item.payload);
-          const entryItem = payloadItems.find((item) =>
+          const lifecyclePayloadItems = signalLines
+            .map((line) => ({
+              line,
+              payload: getManualSignalLifecyclePayload(line),
+            }))
+            .filter((item) => item.payload);
+          const effectivePayloadItems = payloadItems.length
+            ? payloadItems
+            : lifecyclePayloadItems;
+          const payloads = effectivePayloadItems.map((item) => item.payload);
+          const entryItem = effectivePayloadItems.find((item) =>
             /_ENTRY$/.test(item.payload.signal),
           );
-          const exitItem = payloadItems.find((item) =>
+          const exitItem = effectivePayloadItems.find((item) =>
             /_EXIT$/.test(item.payload.signal),
           );
           const entry = entryItem?.payload;
@@ -1769,7 +1880,8 @@
             /Execution context:/i.test(line),
           );
           const executionContext =
-            getExecutionContextDetails(executionContextLine);
+            getExecutionContextDetails(executionContextLine) ||
+            getManualSignalLifecycleContext(signalLines);
           const openOption = getReadableOption(openOptionLine);
           const closeOption = getReadableOption(
             closeOptionLine || openOptionLine,
@@ -1794,7 +1906,7 @@
             /MANUAL_SIGNAL response lost after processing/i.test(line),
           );
           const manualSignalFailureLine = signalLines.find((line) =>
-            /MANUAL_SIGNAL failed:/i.test(line),
+            /MANUAL_SIGNAL failed(?:\s|:)/i.test(line),
           );
           const telegramErrorLine = signalLines.find((line) =>
             /Telegram Error/i.test(line),
@@ -1976,7 +2088,7 @@
             pushSummaryLine(
               `${sourceLabel} Signal`,
               payload?.signal || "UNKNOWN",
-              payloadItems[0]?.line,
+              effectivePayloadItems[0]?.line,
             );
             pushSummaryLine(
               "Signal Ignored",
@@ -1990,7 +2102,7 @@
             pushSummaryLine(
               `${sourceLabel} Signal`,
               payload?.signal || "UNKNOWN",
-              payloadItems[0]?.line,
+              effectivePayloadItems[0]?.line,
             );
             pushSummaryLine(
               "Signal Failed",
@@ -2004,7 +2116,7 @@
             pushSummaryLine(
               `${sourceLabel} Signal`,
               payload?.signal || "UNKNOWN",
-              payloadItems[0]?.line,
+              effectivePayloadItems[0]?.line,
             );
             pushSummaryLine(
               "Signal Warning",
@@ -2065,13 +2177,19 @@
           );
           const signalPayloadItem = lines
             .map((line) => ({ line, payload: getWebhookPayload(line) }))
-            .find((item) => item.payload);
+            .find((item) => item.payload) ||
+            lines
+              .map((line) => ({
+                line,
+                payload: getManualSignalLifecyclePayload(line),
+              }))
+              .find((item) => item.payload);
           const source = signalItem?.label.startsWith("Manual")
             ? "Manual"
             : "TradingView";
           const executionContext = getExecutionContextDetails(
             lines.find((line) => /Execution context:/i.test(line)),
-          );
+          ) || getManualSignalLifecycleContext(lines);
           const signalInterval = getSignalInterval(
             lines,
             signalPayloadItem,
@@ -2622,6 +2740,43 @@
           });
         }
 
+        function confirmManualEntrySignal(payload) {
+          if (!["LONG_ENTRY", "SHORT_ENTRY"].includes(payload.signal)) {
+            return Promise.resolve(true);
+          }
+
+          const side = payload.signal === "LONG_ENTRY" ? "LONG" : "SHORT";
+          const displayName =
+            UNDERLYING_DEFAULTS[payload.symbol]?.displayName || payload.symbol;
+          const interval = `${payload.interval} min`;
+          const mode =
+            model.getProperty("/PAPER_TRADE") === "true"
+              ? "Paper Trade"
+              : `${model.getProperty("/DHAN_ENV") || "LIVE"} Live`;
+
+          return new Promise((resolve) => {
+            sap.ui.require(["sap/m/MessageBox"], function (MessageBox) {
+              MessageBox.confirm(
+                [
+                  `Send ${side} entry signal?`,
+                  "",
+                  `Underlying: ${displayName}`,
+                  `Spot: ${payload.price}`,
+                  `Interval: ${interval}`,
+                  `Mode: ${mode}`,
+                ].join("\n"),
+                {
+                  title: "Confirm Manual Entry",
+                  actions: [MessageBox.Action.CANCEL, MessageBox.Action.OK],
+                  emphasizedAction: MessageBox.Action.OK,
+                  onClose: (action) =>
+                    resolve(action === MessageBox.Action.OK),
+                },
+              );
+            });
+          });
+        }
+
         async function sendTestSignal(signal) {
           const data = model.getData();
           model.setProperty("/SHOW_MANUAL_SIGNAL_LOGS", true);
@@ -2657,6 +2812,13 @@
               data.TEST_INTERVAL || data.PREMIUM_SL_INTERVAL || "15",
             ),
           };
+
+          const confirmed = await confirmManualEntrySignal(payload);
+
+          if (!confirmed) {
+            sap.m.MessageToast.show("Manual entry cancelled");
+            return;
+          }
 
           const result = await fetch("/api/test-signal", {
             method: "POST",
@@ -3183,6 +3345,21 @@
                           await refreshTradeAnalytics();
                         },
                       }).addStyleClass("analyticsTestDataCheckbox"),
+                      new sap.m.Button({
+                        text: "<<",
+                        tooltip: "Previous analytics period",
+                        type: "Transparent",
+                        press: async function () {
+                          const offset = Number(
+                            model.getProperty("/ANALYTICS_PERIOD_OFFSET") || 0,
+                          );
+                          model.setProperty(
+                            "/ANALYTICS_PERIOD_OFFSET",
+                            offset - 1,
+                          );
+                          await refreshTradeAnalytics();
+                        },
+                      }).addStyleClass("analyticsPeriodNavButton"),
                       new sap.m.Text({
                         text: {
                           path: "/tradeAnalytics/label",
@@ -3208,6 +3385,25 @@
                           },
                         },
                       }).addStyleClass("analyticsRangeDateText"),
+                      new sap.m.Button({
+                        text: ">>",
+                        tooltip: "Next analytics period",
+                        type: "Transparent",
+                        enabled: {
+                          path: "/ANALYTICS_PERIOD_OFFSET",
+                          formatter: (offset) => Number(offset || 0) < 0,
+                        },
+                        press: async function () {
+                          const offset = Number(
+                            model.getProperty("/ANALYTICS_PERIOD_OFFSET") || 0,
+                          );
+                          model.setProperty(
+                            "/ANALYTICS_PERIOD_OFFSET",
+                            Math.min(0, offset + 1),
+                          );
+                          await refreshTradeAnalytics();
+                        },
+                      }).addStyleClass("analyticsPeriodNavButton"),
                     ],
                   }).addStyleClass("analyticsHeaderRangeText"),
                 ],
@@ -3267,6 +3463,7 @@
                       const selected =
                         e.getParameter("item")?.getKey() || "week";
                       model.setProperty("/ANALYTICS_PERIOD", selected);
+                      model.setProperty("/ANALYTICS_PERIOD_OFFSET", 0);
                       await refreshTradeAnalytics();
                     },
                     items: [
@@ -3312,6 +3509,7 @@
                   createAnalyticsLossMoneyMetricTile(
                     "Avg Loss",
                     "totals/averageLoss",
+                    "analyticsMetricTile analyticsLossTile",
                   ),
                   createAnalyticsStreakMetricTile(),
                   createAnalyticsEmptyMetricTile(),
@@ -3334,6 +3532,18 @@
                         justifyContent: "SpaceBetween",
                         alignItems: "Center",
                         items: [
+                          new sap.m.HBox({
+                            alignItems: "Center",
+                            items: [
+                              new sap.ui.core.Icon({
+                                src: "sap-icon://table-view",
+                                decorative: true,
+                              }).addStyleClass("analyticsPanelTitleIcon"),
+                              new sap.m.Text({
+                                text: "Trade Ledger",
+                              }).addStyleClass("analyticsPanelSubtitle"),
+                            ],
+                          }).addStyleClass("analyticsPanelTitleMeta"),
                           new sap.m.SegmentedButton({
                             selectedKey: "{/ANALYTICS_TRADE_OUTCOME_FILTER}",
                             selectionChange: function (e) {
@@ -3788,8 +3998,8 @@
           activePremiumHugeCandleUnderlying = normalized;
         }
 
-        function createPlanningMetricTile(label, path, className) {
-          return new sap.m.VBox({
+        function createPlanningMetricTile(label, path, className, customData) {
+          const tile = new sap.m.VBox({
             width: "100%",
             items: [
               new sap.m.Text({ text: label }).addStyleClass("statusTitle"),
@@ -3815,6 +4025,18 @@
               }).addStyleClass("planningMetricValue"),
             ],
           }).addStyleClass(className || "planningMetricTile");
+
+          (customData || []).forEach((data) => {
+            tile.addCustomData(
+              new sap.ui.core.CustomData({
+                key: data.key,
+                value: data.value,
+                writeToDom: true,
+              }),
+            );
+          });
+
+          return tile;
         }
 
         function createTradingViewTimeframeCheckbox(field) {
@@ -4984,7 +5206,7 @@
                 ],
               }).addStyleClass("statusGrid"),
             ],
-          }).addStyleClass("card");
+          }).addStyleClass("card cockpitLiveCard");
         }
 
         // Operational card for algo server, ngrok, webhook, and emergency stop.
@@ -5308,7 +5530,7 @@
               }).addStyleClass("statusGrid"),
 
             ],
-          }).addStyleClass("card");
+          }).addStyleClass("card cockpitReadinessCard");
         }
 
         // Toggle card for the trading permissions that the webhook enforces.
@@ -5408,7 +5630,7 @@
                 ],
               }).addStyleClass("permissionRows"),
             ],
-          }).addStyleClass("card");
+          }).addStyleClass("card cockpitGuardrailsCard");
         }
 
         function telegramCard() {
@@ -5462,7 +5684,7 @@
                 ],
               }).addStyleClass("telegramControlRow"),
             ],
-          }).addStyleClass("card");
+          }).addStyleClass("card cockpitTelegramCard");
         }
 
         // Planning card for capital/risk inputs and estimated lot sizing.
@@ -5558,11 +5780,21 @@
                             "LONG Lots",
                             "CALC_LONG_LOTS",
                             "planningKeyMetricTile",
+                            [
+                              { key: "lot-side", value: "LONG" },
+                              { key: "risk-mode", value: "{/RISK_MODE}" },
+                              { key: "market-bias", value: "{/MARKET_BIAS}" },
+                            ],
                           ),
                           createPlanningMetricTile(
                             "SHORT Lots",
                             "CALC_SHORT_LOTS",
                             "planningKeyMetricTile",
+                            [
+                              { key: "lot-side", value: "SHORT" },
+                              { key: "risk-mode", value: "{/RISK_MODE}" },
+                              { key: "market-bias", value: "{/MARKET_BIAS}" },
+                            ],
                           ),
                         ],
                       }).addStyleClass("planningKeyMetricsRow"),
@@ -5720,7 +5952,15 @@
                     ],
                   }).addStyleClass("trailStrategySettings"),
                 ],
-              }).addStyleClass("planningCalcGroup trailStrategyPlanningGroup"),
+              })
+                .addCustomData(
+                  new sap.ui.core.CustomData({
+                    key: "underlying",
+                    value: "{/UNDERLYING_SYMBOL}",
+                    writeToDom: true,
+                  }),
+                )
+                .addStyleClass("planningCalcGroup trailStrategyPlanningGroup"),
                     ],
                   }).addStyleClass("planningMainColumn"),
 
@@ -5792,13 +6032,13 @@
                                     },
                                     items: [
                                       new sap.m.SegmentedButtonItem({
-                                        text: "Per Trade",
-                                        key: "PER_TRADE",
+                                        text: "Per Day",
+                                        key: "PER_DAY",
                                         width: "120px",
                                       }),
                                       new sap.m.SegmentedButtonItem({
-                                        text: "Per Day",
-                                        key: "PER_DAY",
+                                        text: "Per Trade",
+                                        key: "PER_TRADE",
                                         width: "120px",
                                       }),
                                     ],
@@ -5857,9 +6097,18 @@
 
                       new sap.m.VBox({
                         items: [
-                          new sap.m.Text({
-                            text: "🕯 Premium SL Thresholds",
-                          }).addStyleClass("planningGroupTitle"),
+                          new sap.m.HBox({
+                            alignItems: "Center",
+                            items: [
+                              new sap.m.Text({
+                                text: "🕯 Premium SL Thresholds",
+                              }).addStyleClass("planningGroupTitle"),
+                              createInfoIcon(
+                                "Special Case - Inside candle with huge body (SL): when a premium candle size exceeds the threshold for its time interval, the default SL trigger moves to the candle midpoint to reduce stop loss.",
+                                "planningGroupInfoIcon",
+                              ),
+                            ],
+                          }).addStyleClass("planningGroupTitleRow"),
 
                           new sap.m.HBox({
                             items: PREMIUM_HUGE_CANDLE_FIELDS.map((field) =>
@@ -5868,10 +6117,6 @@
                           }).addStyleClass(
                             "planningFieldsRow premiumThresholdFieldsRow",
                           ),
-
-                          new sap.m.Text({
-                            text: "Special Case - Inside candle with huge body (SL): when a premium candle size exceeds the threshold for its time interval, the default SL trigger moves to the candle midpoint to reduce stop loss.",
-                          }).addStyleClass("planningHelperText"),
                         ],
                       })
                         .addCustomData(
@@ -5900,7 +6145,21 @@
               }).addStyleClass("sectionTitle"),
 
               new sap.m.HBox({
+                alignItems: "Center",
                 items: [
+                  new sap.m.HBox({
+                    alignItems: "Center",
+                    items: [
+                      new sap.ui.core.Icon({
+                        src: "sap-icon://filter",
+                        decorative: true,
+                      }).addStyleClass("logFilterIcon"),
+                      new sap.m.Text({
+                        text: "Filters",
+                      }).addStyleClass("logFilterTitle"),
+                    ],
+                  }).addStyleClass("logFilterTitleGroup"),
+
                   new sap.m.CheckBox({
                     text: "TradingView",
                     selected: "{/SHOW_TRADINGVIEW_SIGNAL_LOGS}",
@@ -5960,7 +6219,7 @@
                 editable: false,
               }).addStyleClass("activityLogTextArea"),
             ],
-          }).addStyleClass("card");
+          }).addStyleClass("card logsCard");
         }
 
         // Manual signal sender. In live mode, these buttons can place real orders.
@@ -6151,15 +6410,11 @@
                           ),
                           intervalSelector,
                         ],
-                      }).addStyleClass(
-                        "manualControlGroup manualIntervalGroup",
-                      ),
-                    ],
-                  }).addStyleClass("manualConfigGrid"),
-
-                  new sap.m.HBox({
-                    alignItems: "Stretch",
-                    items: [
+                          }).addStyleClass(
+                            "manualControlGroup manualIntervalGroup",
+                          ),
+                      new sap.m.VBox({
+                        items: [
                       new sap.m.VBox({
                         items: [
                           new sap.m.Text({
@@ -6175,7 +6430,7 @@
                                 "LONG_ENTRY",
                               ),
                               createManualSignalButton(
-                                "Exit LONG",
+                                "Exit",
                                 "sap-icon://sys-cancel-2",
                                 "Default",
                                 "LONG_EXIT",
@@ -6202,7 +6457,7 @@
                                 "SHORT_ENTRY",
                               ),
                               createManualSignalButton(
-                                "Exit SHORT",
+                                "Exit",
                                 "sap-icon://sys-cancel-2",
                                 "Default",
                                 "SHORT_EXIT",
@@ -6211,6 +6466,8 @@
                           }).addStyleClass("manualActionButtons"),
                         ],
                       }).addStyleClass("manualActionGroup manualShortGroup"),
+                        ],
+                      }).addStyleClass("manualEntryExitGroup"),
 
                       new sap.m.VBox({
                         items: [
@@ -6240,10 +6497,6 @@
                               }),
                             ],
                           }).addStyleClass("trailSlHeader"),
-
-                          new sap.m.Text({
-                            text: "Trail SL Manually",
-                          }).addStyleClass("trailModeDescription"),
 
                           new sap.m.HBox({
                             items: [
@@ -6299,10 +6552,14 @@
                               ),
                             ],
                           }).addStyleClass("trailSlControls"),
+
+                          new sap.m.Text({
+                            text: "Trail SL Manually",
+                          }).addStyleClass("trailModeFooter"),
                         ],
                       }).addStyleClass("manualActionGroup trailSlGroup"),
                     ],
-                  }).addStyleClass("manualActionGrid"),
+                  }).addStyleClass("manualSignalControlGrid"),
 
                   new sap.m.MessageStrip({
                     text: "These buttons send webhook signals into the bot. Paper Trade ON simulates orders; Paper Trade OFF sends orders to the selected Dhan environment.",
@@ -6312,7 +6569,7 @@
                 ],
               }).addStyleClass("manualSignalComposer"),
             ],
-          }).addStyleClass("card");
+          }).addStyleClass("card manualSignalsCard");
         }
 
         function tradingViewPayloadCard(item) {
@@ -6421,6 +6678,24 @@
                       }),
                     ],
                   }).addStyleClass("networkIpRow tradingViewReferenceRow"),
+
+                  new sap.m.HBox({
+                    alignItems: "Center",
+                    items: [
+                      createLabelWithInfo(
+                        "Indicator Code",
+                        "Download the TradingView Pine Script indicator stored in this project.",
+                        "webhookLabel",
+                      ),
+                      new sap.m.Button({
+                        text: "Download",
+                        icon: "sap-icon://download",
+                        type: "Emphasized",
+                        tooltip: "Download TradingView indicator code",
+                        press: downloadTradingViewIndicatorCode,
+                      }).addStyleClass("indicatorDownloadButton"),
+                    ],
+                  }).addStyleClass("indicatorDownloadRow tradingViewReferenceRow"),
                 ],
               }).addStyleClass("tradingViewEndpointRow"),
 
@@ -6429,6 +6704,60 @@
               }).addStyleClass("payloadGrid"),
             ],
           }).addStyleClass("card tradingViewReferenceCard");
+        }
+
+        function createHeroTickerGroup() {
+          return new sap.m.HBox({
+            alignItems: "Center",
+            items: [
+              new sap.m.Text({
+                text: {
+                  parts: [
+                    { path: "/NIFTY_NEXT_EXPIRY_LABEL" },
+                    { path: "/NIFTY_NEXT_EXPIRY_META" },
+                  ],
+                  formatter: (label, meta) =>
+                    `NIFTY Expiry • ${label || "-"}${meta ? ` • ${meta}` : ""}`,
+                },
+              }).addStyleClass("marketTickerItem"),
+              new sap.m.Text({
+                text: {
+                  parts: [
+                    { path: "/BANKNIFTY_NEXT_EXPIRY_LABEL" },
+                    { path: "/BANKNIFTY_NEXT_EXPIRY_META" },
+                  ],
+                  formatter: (label, meta) =>
+                    `BANKNIFTY Expiry • ${label || "-"}${meta ? ` • ${meta}` : ""}`,
+                },
+              }).addStyleClass("marketTickerItem"),
+              new sap.m.Text({
+                text: {
+                  parts: [
+                    { path: "/NSE_NEXT_HOLIDAY_LABEL" },
+                    { path: "/NSE_NEXT_HOLIDAY_META" },
+                  ],
+                  formatter: (label, meta) =>
+                    `Next Holiday • ${label || "-"}${meta ? ` • ${meta}` : ""}`,
+                },
+              }).addStyleClass("marketTickerItem"),
+              new sap.m.Text({
+                text: {
+                  parts: [
+                    { path: "/INDIA_VIX_LABEL" },
+                    { path: "/INDIA_VIX_META" },
+                  ],
+                  formatter: function (label, meta) {
+                    const value = String(label || "-").replace(
+                      /^India VIX\s*/i,
+                      "",
+                    );
+
+                    return `India VIX • ${value}${meta ? ` • ${meta}` : ""}`;
+                  },
+                },
+              }).addStyleClass("marketTickerItem"),
+            ],
+          }).addStyleClass("marketTickerGroup");
         }
 
         // Assemble the dashboard page and group cards into tabs.
@@ -6446,6 +6775,7 @@
             }
 
             if (selectedKey === "analytics") {
+              model.setProperty("/ANALYTICS_PERIOD_OFFSET", 0);
               refreshTradeAnalytics();
             }
 
@@ -6494,17 +6824,17 @@
             }),
 
             new sap.m.IconTabFilter({
+              key: "monitoring",
+              text: "🧾 Logs",
+              icon: "sap-icon://notes",
+              content: [monitoringCard()],
+            }),
+
+            new sap.m.IconTabFilter({
               key: "tradingView",
               text: "📡 Webhooks",
               icon: "sap-icon://connected",
               content: [tradingViewReferenceCard()],
-            }),
-
-            new sap.m.IconTabFilter({
-              key: "monitoring",
-              text: "🔔 Alerts",
-              icon: "sap-icon://bell",
-              content: [monitoringCard()],
             }),
 
             new sap.m.IconTabFilter({
@@ -6526,7 +6856,7 @@
                   alignItems: "Center",
                   items: [
                     new sap.m.Avatar({
-                      src: "images/ic-algo-bot.jpg",
+                      src: "images/ic-bull-face.png",
                       displaySize: "XL",
                       displayShape: "Circle",
                     }).addStyleClass("botAvatar"),
@@ -6534,13 +6864,41 @@
                     new sap.m.VBox({
                       items: [
                         new sap.m.Title({
-                          text: "Algo Trading Cockpit",
+                          text: "Inside Candle Trading Cockpit",
                           level: "H2",
                         }).addStyleClass("heroTitle"),
 
                         new sap.m.Text({
-                          text: "Inside Candle Automation • NIFTY Risk Console",
+                          text: "Strategy automation, risk controls, and execution monitoring",
                         }).addStyleClass("heroText"),
+
+                        new sap.m.HBox({
+                          alignItems: "Center",
+                          items: [
+                            new sap.ui.core.Icon({
+                              src: "sap-icon://activity-individual",
+                              decorative: true,
+                            }).addStyleClass("heroStatusIcon"),
+                            new sap.m.Text({
+                              text: {
+                                parts: [
+                                  { path: "/PAPER_TRADE" },
+                                  { path: "/DHAN_ENV" },
+                                  { path: "/algoLiveStatus/running" },
+                                ],
+                                formatter: function (paperTrade, dhanEnv, running) {
+                                  const mode =
+                                    paperTrade === "true"
+                                      ? "Paper Mode"
+                                      : `${dhanEnv || "LIVE"} Mode`;
+                                  return `${mode} • ${
+                                    running ? "Algo online" : "Algo offline"
+                                  }`;
+                                },
+                              },
+                            }).addStyleClass("heroStatusText"),
+                          ],
+                        }).addStyleClass("heroStatusPill"),
 
                         new sap.m.HBox({
                           items: [
@@ -6627,6 +6985,19 @@
                         }).addStyleClass("marketEventStopButton"),
                       ],
                     }).addStyleClass("marketEventsPanel"),
+
+                    new sap.m.HBox({
+                      alignItems: "Center",
+                      items: [
+                        new sap.m.HBox({
+                          alignItems: "Center",
+                          items: [
+                            createHeroTickerGroup(),
+                            createHeroTickerGroup(),
+                          ],
+                        }).addStyleClass("marketTickerTrack"),
+                      ],
+                    }).addStyleClass("marketTicker"),
                   ],
                 }).addStyleClass("heroCard"),
 

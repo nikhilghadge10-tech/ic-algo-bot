@@ -22,6 +22,12 @@ let ngrokProcess = null;
 let ngrokUrl = "";
 const logPath = path.join(__dirname, "..", "logs", "app.log");
 const instrumentMasterPath = path.join(__dirname, "..", "api-scrip-master.csv");
+const tradingViewIndicatorPath = path.join(
+  __dirname,
+  "..",
+  "tradingview",
+  "nikhil-inside-candle-15min.pine",
+);
 const positionPath = path.join(__dirname, "..", "src", "data", "position.json");
 const tradeStatePath = path.join(__dirname, "..", "src", "data", "tradeState.json");
 const tradeHistoryPath = path.join(
@@ -239,6 +245,30 @@ function appendLifecycleLog(message, level = "info") {
     logPath,
     `${new Date().toISOString()} [${level.toUpperCase()}] LIFECYCLE ${message}\n`,
   );
+}
+
+function getManualSignalLogContext(payload = {}) {
+  let env = {};
+
+  try {
+    env = readEnv();
+  } catch (error) {
+    env = {};
+  }
+
+  const paperTrade = String(env.PAPER_TRADE || "true").toLowerCase() === "true";
+  const dhanEnv = String(env.DHAN_ENV || "LIVE").toUpperCase();
+  const tradeMode = paperTrade ? "PAPER" : dhanEnv === "SANDBOX" ? "SANDBOX" : "LIVE";
+  const parts = [
+    `signal=${payload.signal || "unknown"}`,
+    `symbol=${payload.symbol || "unknown"}`,
+    `price=${payload.price ?? "unknown"}`,
+    `interval=${payload.interval || payload.timeframe || "unknown"}`,
+    `tradeMode=${tradeMode}`,
+    `source=${payload.source || "MANUAL_SIGNAL"}`,
+  ];
+
+  return parts.join(" ");
 }
 
 function readJsonFile(filePath) {
@@ -615,16 +645,68 @@ function getTradeSeparator(sequence) {
   return `---------------------------        Trade ${sequence}        ---------------------------`;
 }
 
-function getPeriodStartDateKey(period) {
-  const today = new Date(`${getIstIsoDateKey(new Date())}T00:00:00+05:30`);
-  const days = period === "month" ? 29 : 6;
-
-  today.setDate(today.getDate() - days);
-  return getIstIsoDateKey(today);
+function addUtcDays(date, days) {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
 }
 
-function isDateKeyInPeriod(dateKey, startDateKey) {
-  return Boolean(dateKey) && dateKey >= startDateKey;
+function addUtcMonths(date, months) {
+  const next = new Date(date);
+  next.setUTCMonth(next.getUTCMonth() + months);
+  return next;
+}
+
+function getPeriodDateRange(period, offset = 0) {
+  const normalizedOffset = Math.min(
+    0,
+    Number.isFinite(Number(offset)) ? Math.trunc(Number(offset)) : 0,
+  );
+  const todayKey = getIstIsoDateKey(new Date());
+  const today = new Date(`${todayKey}T12:00:00+05:30`);
+
+  if (period === "month") {
+    const start = addUtcMonths(
+      new Date(`${todayKey.slice(0, 8)}01T12:00:00+05:30`),
+      normalizedOffset,
+    );
+    const nextMonthStart = addUtcMonths(start, 1);
+    const end = normalizedOffset === 0 ? today : addUtcDays(nextMonthStart, -1);
+
+    return {
+      startDateKey: getIstIsoDateKey(start),
+      endDateKey: getIstIsoDateKey(end),
+      offset: normalizedOffset,
+    };
+  }
+
+  const dayOfWeek = today.getUTCDay();
+  const daysSinceMonday = (dayOfWeek + 6) % 7;
+  const currentWeekStart = addUtcDays(today, -daysSinceMonday);
+  const start = addUtcDays(currentWeekStart, normalizedOffset * 7);
+  const end = normalizedOffset === 0 ? today : addUtcDays(start, 6);
+
+  return {
+    startDateKey: getIstIsoDateKey(start),
+    endDateKey: getIstIsoDateKey(end),
+    offset: normalizedOffset,
+  };
+}
+
+function getAnalyticsPeriodLabel(period, offset = 0) {
+  if (period === "month") {
+    if (offset === 0) return "This month";
+    if (offset === -1) return "Previous month";
+    return `${Math.abs(offset)} months ago`;
+  }
+
+  if (offset === 0) return "This week";
+  if (offset === -1) return "Previous week";
+  return `${Math.abs(offset)} weeks ago`;
+}
+
+function isDateKeyInPeriod(dateKey, startDateKey, endDateKey) {
+  return Boolean(dateKey) && dateKey >= startDateKey && dateKey <= endDateKey;
 }
 
 function getTradeDateKey(trade) {
@@ -805,7 +887,111 @@ function getTradeRrr(trade) {
   return roundMoney(profit / plannedLoss);
 }
 
-function parseAnalyticsLogStats(startDateKey) {
+function getDateKeysBetween(startDateKey, endDateKey) {
+  const keys = [];
+  let cursor = new Date(`${startDateKey}T12:00:00+05:30`);
+  const end = new Date(`${endDateKey}T12:00:00+05:30`);
+
+  while (cursor <= end) {
+    keys.push(getIstIsoDateKey(cursor));
+    cursor = addUtcDays(cursor, 1);
+  }
+
+  return keys;
+}
+
+function getAnalyticsSeedTradePlan(symbol, index) {
+  const profile = UNDERLYING_PROFILES[symbol] || UNDERLYING_PROFILES.NIFTY;
+  const lots = symbol === "BANKNIFTY" ? 4 : 3;
+  const quantity = profile.lotSize * lots;
+  const riskPoints = profile.planningSlPoints;
+  const plannedLoss = riskPoints * quantity;
+  const strikeBase = symbol === "BANKNIFTY" ? 57900 : 24250;
+  const strike = strikeBase + ((index % 5) - 2) * profile.strikeStep;
+  const optionType = index % 2 === 0 ? "CALL" : "PUT";
+  const entrySignal = optionType === "CALL" ? "LONG_ENTRY" : "SHORT_ENTRY";
+  const exitSignal = optionType === "CALL" ? "LONG_EXIT" : "SHORT_EXIT";
+  const rMultiples = [1.25, -1, 2.1, -0.75, 3.5, 1.8, -1, 5];
+  const rMultiple = rMultiples[index % rMultiples.length];
+  const realizedProfit = roundMoney(plannedLoss * rMultiple);
+
+  return {
+    profile,
+    lots,
+    quantity,
+    riskPoints,
+    plannedLoss,
+    strike,
+    optionType,
+    entrySignal,
+    exitSignal,
+    rMultiple,
+    realizedProfit,
+  };
+}
+
+function buildAnalyticsSeedTrades(startDateKey, endDateKey) {
+  const dateKeys = getDateKeysBetween(startDateKey, endDateKey);
+  let sequence = 1;
+
+  return dateKeys.flatMap((dateKey, dayIndex) => {
+    const tradesForDay = dayIndex % 2 === 0 ? 3 : 2;
+
+    return Array.from({ length: tradesForDay }, (_, slotIndex) => {
+      const globalIndex = dayIndex * 3 + slotIndex;
+      const symbol =
+        (dayIndex + slotIndex) % 4 === 2 ? "BANKNIFTY" : "NIFTY";
+      const plan = getAnalyticsSeedTradePlan(symbol, globalIndex);
+      const entryHour = 9 + Math.floor((slotIndex + 1) * 1.45);
+      const entryMinute = slotIndex % 2 === 0 ? 20 : 45;
+      const exitMinute = entryMinute + 11;
+      const entryTime = new Date(
+        `${dateKey}T${String(entryHour).padStart(2, "0")}:${String(entryMinute).padStart(2, "0")}:00+05:30`,
+      );
+      const exitTime = new Date(
+        `${dateKey}T${String(entryHour).padStart(2, "0")}:${String(exitMinute).padStart(2, "0")}:00+05:30`,
+      );
+      const tradeSequence = sequence++;
+      const expiry = symbol === "BANKNIFTY" ? "30 JUL" : "07 JUL";
+
+      return {
+        id: `analytics-seed-${dateKey}-${tradeSequence}`,
+        sequence: tradeSequence,
+        analyticsSeed: true,
+        isTestData: true,
+        dataSource: "TEST_DUMMY",
+        tradeMode: "PAPER",
+        status: "MANUAL_EXIT",
+        entrySignal: plan.entrySignal,
+        entryTime: entryTime.toISOString(),
+        entryOrderId: `ANALYTICS-SEED-BUY-${tradeSequence}`,
+        securityId: `ANALYTICS-${tradeSequence}`,
+        quantity: plan.quantity,
+        optionSymbol: `${symbol} ${expiry} ${plan.strike} ${plan.optionType}`,
+        premiumSlInterval: 15,
+        riskPoints: plan.riskPoints,
+        riskSource: "ANALYTICS_SEED_PLANNED_LOSS",
+        exitSignal: plan.exitSignal,
+        exitTime: exitTime.toISOString(),
+        exitOrderId: `ANALYTICS-SEED-SELL-${tradeSequence}`,
+        stopLossMoney: plan.plannedLoss,
+        realizedProfit: plan.realizedProfit,
+        rewardPoints:
+          plan.realizedProfit > 0
+            ? roundMoney(plan.riskPoints * plan.rMultiple)
+            : null,
+        riskRewardRatio:
+          plan.realizedProfit > 0 ? roundMoney(plan.rMultiple) : null,
+        riskReward:
+          plan.realizedProfit > 0
+            ? `1:${roundMoney(plan.rMultiple)}`
+            : "-1",
+      };
+    });
+  });
+}
+
+function parseAnalyticsLogStats(startDateKey, endDateKey) {
   const stats = {
     successfulEntries: 0,
     failedSignals: 0,
@@ -828,7 +1014,7 @@ function parseAnalyticsLogStats(startDateKey) {
       const timestamp = timestampMatch ? new Date(timestampMatch[1]) : null;
       const dateKey = timestamp ? getIstIsoDateKey(timestamp) : "";
 
-      if (!isDateKeyInPeriod(dateKey, startDateKey)) {
+      if (!isDateKeyInPeriod(dateKey, startDateKey, endDateKey)) {
         return;
       }
 
@@ -859,8 +1045,11 @@ function buildTradeAnalytics(
   underlying = "ALL",
   optionType = "ALL",
   includeTestData = true,
+  periodOffset = 0,
 ) {
   const normalizedPeriod = period === "month" ? "month" : "week";
+  const periodRange = getPeriodDateRange(normalizedPeriod, periodOffset);
+  const { startDateKey, endDateKey } = periodRange;
   const shouldIncludeTestData =
     includeTestData === true ||
     String(includeTestData ?? "true").toLowerCase() !== "false";
@@ -874,11 +1063,15 @@ function buildTradeAnalytics(
   )
     ? String(optionType).toUpperCase()
     : "ALL";
-  const startDateKey = getPeriodStartDateKey(normalizedPeriod);
   const history = readJsonFile(tradeHistoryPath);
-  const trades = Array.isArray(history?.trades)
-    ? history.trades
-        .filter((trade) => isDateKeyInPeriod(getTradeDateKey(trade), startDateKey))
+  const historyTrades = Array.isArray(history?.trades) ? history.trades : [];
+  const analyticsSeedTrades = shouldIncludeTestData
+    ? buildAnalyticsSeedTrades(startDateKey, endDateKey)
+    : [];
+  const trades = [...historyTrades, ...analyticsSeedTrades]
+        .filter((trade) =>
+          isDateKeyInPeriod(getTradeDateKey(trade), startDateKey, endDateKey),
+        )
         .filter((trade) => shouldIncludeTestData || !isTestTradeRecord(trade))
         .map((trade) => ({
           ...trade,
@@ -901,8 +1094,8 @@ function buildTradeAnalytics(
             (normalizedOptionType === "ALL" ||
               trade.optionType === normalizedOptionType),
         )
-    : [];
-  const logStats = parseAnalyticsLogStats(startDateKey);
+;
+  const logStats = parseAnalyticsLogStats(startDateKey, endDateKey);
   const realizedTrades = trades.filter((trade) => trade.profit !== null);
   const winners = realizedTrades.filter((trade) => trade.profit > 0);
   const losers = realizedTrades.filter((trade) => trade.profit < 0);
@@ -945,12 +1138,13 @@ function buildTradeAnalytics(
 
   return {
     period: normalizedPeriod,
+    periodOffset: periodRange.offset,
     underlying: normalizedUnderlying,
     optionType: normalizedOptionType,
     includeTestData: shouldIncludeTestData,
-    label: normalizedPeriod === "month" ? "Last 30 days" : "Last 7 days",
+    label: getAnalyticsPeriodLabel(normalizedPeriod, periodRange.offset),
     startDate: startDateKey,
-    endDate: getIstIsoDateKey(new Date()),
+    endDate: endDateKey,
     totals: {
       tradesTaken: totalTrades,
       successfulTrades: winners.length,
@@ -1667,6 +1861,20 @@ app.get("/api/network-ip", async (req, res) => {
   }
 });
 
+app.get("/api/tradingview-indicator", (req, res) => {
+  if (!fs.existsSync(tradingViewIndicatorPath)) {
+    return res.status(404).json({
+      success: false,
+      message: "TradingView indicator file not found",
+    });
+  }
+
+  res.download(
+    tradingViewIndicatorPath,
+    "nikhil-inside-candle-15min.pine",
+  );
+});
+
 // Hard safety action: disable entries and block all trading for the day.
 app.post("/api/emergency-stop", (req, res) => {
   writeEnv({
@@ -1685,9 +1893,10 @@ app.post("/api/emergency-stop", (req, res) => {
 app.post("/api/test-signal", async (req, res) => {
   const payload = req.body;
   const beforeSnapshot = await getAlgoSnapshot();
+  const manualSignalContext = getManualSignalLogContext(payload);
 
   try {
-    appendLifecycleLog(`MANUAL_SIGNAL requested signal=${payload.signal || "unknown"}`);
+    appendLifecycleLog(`MANUAL_SIGNAL requested ${manualSignalContext}`);
 
     const response = await axios.post(
       "http://localhost:3000/webhook",
@@ -1710,13 +1919,13 @@ app.post("/api/test-signal", async (req, res) => {
         : `Test signal sent: ${payload.signal}`,
       response: webhookResult,
     });
-    appendLifecycleLog(`MANUAL_SIGNAL completed signal=${payload.signal || "unknown"}`);
+    appendLifecycleLog(`MANUAL_SIGNAL completed ${manualSignalContext}`);
   } catch (error) {
     const afterSnapshot = await getAlgoSnapshot();
 
     if (didAlgoStateChange(beforeSnapshot, afterSnapshot)) {
       appendLifecycleLog(
-        `MANUAL_SIGNAL response lost after processing signal=${payload.signal || "unknown"}: ${error.message}`,
+        `MANUAL_SIGNAL response lost after processing ${manualSignalContext}: ${error.message}`,
         "warn",
       );
 
@@ -1729,7 +1938,7 @@ app.post("/api/test-signal", async (req, res) => {
       });
     }
 
-    appendLifecycleLog(`MANUAL_SIGNAL failed: ${error.message}`, "warn");
+    appendLifecycleLog(`MANUAL_SIGNAL failed ${manualSignalContext}: ${error.message}`, "warn");
 
     res.json({
       success: false,
@@ -1799,6 +2008,7 @@ app.get("/api/trade-analytics", (req, res) => {
         req.query.underlying,
         req.query.optionType,
         req.query.includeTestData,
+        req.query.offset,
       ),
     });
   } catch (error) {
@@ -1867,6 +2077,29 @@ app.get("/api/nifty-expiry", (req, res) => {
       underlyingSymbol: profile.symbol,
       underlyingDisplayName: profile.displayName,
       message: `${profile.displayName} expiry unavailable`,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/api/index-expiries", (req, res) => {
+  try {
+    const now = new Date();
+    const expiries = Object.values(UNDERLYING_PROFILES).map((profile) => ({
+      underlyingSymbol: profile.symbol,
+      underlyingDisplayName: profile.displayName,
+      expiry: getNextNiftyExpiry(profile, now),
+    }));
+
+    res.json({
+      success: true,
+      expiries,
+    });
+  } catch (error) {
+    res.json({
+      success: false,
+      expiries: [],
+      message: "Index expiries unavailable",
       error: error.message,
     });
   }

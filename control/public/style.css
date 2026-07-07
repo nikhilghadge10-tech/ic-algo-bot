@@ -310,8 +310,9 @@
 }
 
 .cockpitTabs .sapMITBHead {
-  gap: 12px;
-  padding: 8px 20px 0;
+  gap: 20px;
+  min-height: 114px;
+  padding: 16px 24px 12px;
   border-bottom: 1px solid var(--line);
   background: #ffffff;
 }
@@ -319,22 +320,39 @@
 .cockpitTabs .sapMITBFilter {
   width: auto !important;
   min-width: 0;
-  padding-inline: 12px;
+  padding-inline: 10px;
 }
 
 .cockpitTabs .sapMITBFilterWrapper {
   width: auto !important;
   min-width: 100%;
+  min-height: 96px;
 }
 
 .cockpitTabs .sapMITBText {
   width: auto !important;
   max-width: none !important;
   min-width: max-content;
+  margin-top: 8px;
   padding-inline: 4px;
+  line-height: 1.2;
   overflow: visible !important;
   text-overflow: clip !important;
   white-space: nowrap !important;
+}
+
+.cockpitTabs .sapMITBFilterIcon.sapMImg[src*="/images/tab-"],
+.cockpitTabs .sapMITBFilterIcon.sapMImg[src^="images/tab-"] {
+  width: 58px !important;
+  height: 58px !important;
+  border: 0 !important;
+  border-radius: 10px !important;
+  background: transparent !important;
+  object-fit: cover;
+}
+
+.cockpitTabs .sapMITBFilterWrapper .sapMITBTab {
+  height: 68px;
 }
 
 .cockpitTabs .sapMITBContent {
@@ -639,7 +657,7 @@
   overflow: hidden;
 }
 
-.logsCard > .sapMFlexItem:has(.sectionTitle) {
+.logHeader {
   padding: 13px 15px;
   margin-bottom: 12px;
   border: 1px solid rgba(37, 99, 235, 0.14);
@@ -647,6 +665,8 @@
   background:
     linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(0, 140, 122, 0.07)),
     #ffffff;
+  flex-wrap: wrap;
+  gap: 10px 14px;
 }
 
 .logsCard .sectionTitle {
@@ -656,32 +676,9 @@
 .logFilterRow {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 14px;
+  gap: 6px 12px;
   align-items: center;
-  margin-bottom: 12px;
-  padding: 11px 12px;
-  border: 1px solid rgba(102, 112, 133, 0.18);
-  border-radius: var(--radius);
-  background: linear-gradient(180deg, #ffffff, #f8fafc);
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
-}
-
-.logFilterTitleGroup {
-  gap: 7px;
-  margin-right: 4px;
-  padding-right: 12px;
-  border-right: 1px solid rgba(102, 112, 133, 0.18);
-}
-
-.logFilterIcon {
-  color: var(--blue);
-  font-size: 0.95rem;
-}
-
-.logFilterTitle {
-  color: #344054;
-  font-size: 0.82rem;
-  font-weight: 800 !important;
+  justify-content: flex-end;
 }
 
 .logFilterRow .sapMCbLabel {
@@ -1100,6 +1097,73 @@
 
 .planningCard .sectionTitle {
   margin-bottom: 0 !important;
+}
+
+.riskPlanHeader {
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+
+.expiryRiskHeaderMessage {
+  position: relative;
+  overflow: hidden;
+  flex-wrap: nowrap;
+  gap: 0;
+  justify-content: flex-end;
+  max-width: min(100%, 520px);
+  padding: 7px 12px;
+  border: 1px solid rgba(220, 38, 38, 0.24);
+  border-radius: 999px;
+  background: linear-gradient(90deg, #fff7ed, #fff1f2, #fefce8);
+  box-shadow: 0 10px 22px rgba(220, 38, 38, 0.09);
+  animation: expiryRiskPulse 1.8s ease-in-out infinite;
+}
+
+.expiryRiskHeaderMessage::before {
+  position: absolute;
+  top: 0;
+  left: -45%;
+  width: 36%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.72),
+    transparent
+  );
+  content: "";
+  animation: expiryRiskShine 2.4s linear infinite;
+}
+
+.expiryRiskDayText {
+  position: relative;
+  color: #b42318 !important;
+  font-size: 0.84rem !important;
+  font-weight: 800 !important;
+  white-space: nowrap;
+}
+
+@keyframes expiryRiskPulse {
+  0%,
+  100% {
+    border-color: rgba(220, 38, 38, 0.22);
+    box-shadow: 0 10px 22px rgba(220, 38, 38, 0.08);
+  }
+
+  50% {
+    border-color: rgba(220, 38, 38, 0.48);
+    box-shadow: 0 12px 28px rgba(220, 38, 38, 0.18);
+  }
+}
+
+@keyframes expiryRiskShine {
+  from {
+    left: -45%;
+  }
+
+  to {
+    left: 115%;
+  }
 }
 
 .planningDashboardLayout {

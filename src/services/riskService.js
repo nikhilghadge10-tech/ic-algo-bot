@@ -6,19 +6,40 @@
  */
 const { getUnderlyingProfile } = require("./underlyingService");
 
+function getLocalDateKey(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+
+  return formatter.format(date);
+}
+
+function isExpiryToday(expiryDate) {
+  const dateKey = String(expiryDate || "").slice(0, 10);
+
+  return /^\d{4}-\d{2}-\d{2}$/.test(dateKey) && dateKey === getLocalDateKey();
+}
+
 function calculateLots({ signal, riskPoints, settings = process.env }) {
   const underlyingProfile = getUnderlyingProfile(settings);
 
   // Pull numeric risk settings from environment with conservative defaults.
   const capital = Number(settings.TRADING_CAPITAL || 0);
   const riskPercent = Number(settings.RISK_PERCENT || 1);
+  const expiryRiskReductionActive = isExpiryToday(settings.CONTRACT_EXPIRY_DATE);
+  const effectiveRiskPercent = expiryRiskReductionActive
+    ? riskPercent / 2
+    : riskPercent;
   const lotSize = Number(settings.LOT_SIZE || underlyingProfile.lotSize);
   const maxTrades = Number(settings.MAX_DAILY_TRADES || 1);
 
   const riskMode = settings.RISK_MODE || "PER_TRADE";
   const marketBias = settings.MARKET_BIAS || "NEUTRAL";
 
-  const riskAmount = (capital * riskPercent) / 100;
+  const riskAmount = (capital * effectiveRiskPercent) / 100;
   const lossPerLot = Number(riskPoints || 0) * lotSize;
 
   let lots = 0;
@@ -49,6 +70,8 @@ function calculateLots({ signal, riskPoints, settings = process.env }) {
   return {
     capital,
     riskPercent,
+    effectiveRiskPercent,
+    expiryRiskReductionActive,
     riskMode,
     marketBias,
     riskPoints,

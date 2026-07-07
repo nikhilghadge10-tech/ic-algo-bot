@@ -41,8 +41,7 @@
           "SHOW_MANUAL_SIGNAL_LOGS",
           "SHOW_PAPER_TRADE_LOGS",
           "SHOW_IGNORED_SIGNAL_LOGS",
-          "SHOW_READINESS_LOGS",
-          "SHOW_DETAILED_SIGNAL_LOGS",
+          "SHOW_FAILED_SIGNAL_LOGS",
         ];
         const TRAIL_STRATEGY_KEYS = ["CONSERVATIVE", "AGGRESSIVE", "CLASSIC"];
         const TRAIL_DEFAULTS = {
@@ -84,6 +83,7 @@
           { label: "3 min", key: "ALLOW_TV_TIMEFRAME_3M" },
           { label: "5 min", key: "ALLOW_TV_TIMEFRAME_5M" },
           { label: "30 min", key: "ALLOW_TV_TIMEFRAME_30M" },
+          { label: "1 hr", key: "ALLOW_TV_TIMEFRAME_60M" },
         ];
         const TRADINGVIEW_TIMEFRAME_FIELDS = [
           ...TRADINGVIEW_ADDITIONAL_TIMEFRAME_FIELDS,
@@ -248,6 +248,7 @@
             SHOW_MANUAL_SIGNAL_LOGS: true,
             SHOW_PAPER_TRADE_LOGS: true,
             SHOW_IGNORED_SIGNAL_LOGS: false,
+            SHOW_FAILED_SIGNAL_LOGS: true,
             SHOW_READINESS_LOGS: false,
             SHOW_DETAILED_SIGNAL_LOGS: false,
           };
@@ -278,6 +279,12 @@
         }
 
         function applyLogFilterPrefs(target, prefs) {
+          const defaultPrefs = getDefaultLogFilterPrefs();
+
+          target.SHOW_READINESS_LOGS = defaultPrefs.SHOW_READINESS_LOGS;
+          target.SHOW_DETAILED_SIGNAL_LOGS =
+            defaultPrefs.SHOW_DETAILED_SIGNAL_LOGS;
+
           LOG_FILTER_PATHS.forEach((path) => {
             target[path] = prefs[path] === true;
           });
@@ -319,6 +326,9 @@
         config.NIFTY_NEXT_EXPIRY_META = "";
         config.BANKNIFTY_NEXT_EXPIRY_LABEL = "Loading expiry...";
         config.BANKNIFTY_NEXT_EXPIRY_META = "";
+        config.EXPIRY_RISK_REDUCTION_ACTIVE = false;
+        config.EXPIRY_RISK_REDUCTION_TEXT = "";
+        config.CALC_EFFECTIVE_RISK_PERCENT = Number(config.RISK_PERCENT || 1);
         config.NSE_NEXT_HOLIDAY_LABEL = "Loading holiday...";
         config.NSE_NEXT_HOLIDAY_META = "";
         config.RBI_MARKET_LABEL = "Loading RBI...";
@@ -343,7 +353,7 @@
         config.ANALYTICS_PERIOD_OFFSET = 0;
         config.ANALYTICS_UNDERLYING = "ALL";
         config.ANALYTICS_OPTION_TYPE = "ALL";
-        config.ANALYTICS_INCLUDE_TEST_DATA = true;
+        config.ANALYTICS_INCLUDE_TEST_DATA = false;
         config.ANALYTICS_TRADE_OUTCOME_FILTER = "ALL";
         config.ANALYTICS_TRADE_PAGE = 1;
         config.ANALYTICS_TRADE_PAGE_SIZE = 15;
@@ -386,6 +396,13 @@
             currentData.BANKNIFTY_NEXT_EXPIRY_LABEL;
           fresh.BANKNIFTY_NEXT_EXPIRY_META =
             currentData.BANKNIFTY_NEXT_EXPIRY_META;
+          fresh.EXPIRY_RISK_REDUCTION_ACTIVE =
+            currentData.EXPIRY_RISK_REDUCTION_ACTIVE || false;
+          fresh.EXPIRY_RISK_REDUCTION_TEXT =
+            currentData.EXPIRY_RISK_REDUCTION_TEXT || "";
+          fresh.CALC_EFFECTIVE_RISK_PERCENT =
+            currentData.CALC_EFFECTIVE_RISK_PERCENT ||
+            Number(fresh.RISK_PERCENT || 1);
           fresh.NSE_NEXT_HOLIDAY_LABEL = currentData.NSE_NEXT_HOLIDAY_LABEL;
           fresh.NSE_NEXT_HOLIDAY_META = currentData.NSE_NEXT_HOLIDAY_META;
           fresh.RBI_MARKET_LABEL = currentData.RBI_MARKET_LABEL;
@@ -438,7 +455,7 @@
           fresh.ANALYTICS_OPTION_TYPE =
             currentData.ANALYTICS_OPTION_TYPE || "ALL";
           fresh.ANALYTICS_INCLUDE_TEST_DATA =
-            currentData.ANALYTICS_INCLUDE_TEST_DATA !== false;
+            currentData.ANALYTICS_INCLUDE_TEST_DATA === true;
           fresh.ANALYTICS_TRADE_OUTCOME_FILTER =
             currentData.ANALYTICS_TRADE_OUTCOME_FILTER || "ALL";
           fresh.ANALYTICS_TRADE_PAGE = currentData.ANALYTICS_TRADE_PAGE || 1;
@@ -564,7 +581,7 @@
             const optionType =
               model.getProperty("/ANALYTICS_OPTION_TYPE") || "ALL";
             const includeTestData =
-              model.getProperty("/ANALYTICS_INCLUDE_TEST_DATA") !== false;
+              model.getProperty("/ANALYTICS_INCLUDE_TEST_DATA") === true;
             const result = await fetch(
               `/api/trade-analytics?period=${encodeURIComponent(period)}&offset=${encodeURIComponent(offset)}&underlying=${encodeURIComponent(underlying)}&optionType=${encodeURIComponent(optionType)}&includeTestData=${encodeURIComponent(includeTestData)}`,
             ).then((r) => r.json());
@@ -704,6 +721,8 @@
               "Instrument master check failed",
             );
           }
+
+          calculateRisk();
 
           try {
             const holidayResult = await fetch("/api/next-market-holiday").then(
@@ -1277,7 +1296,17 @@
         }
 
         function isSignalLogLine(line) {
-          return /Webhook received:|Last Signal Updated:|Execution context:|Selected Option:|Entry sizing:|Position changed to|Position closed|Premium stop-loss hit|Manual SL trail confirmed|Automatic SL trail confirmed|DHAN option SL-Limit modify|Duplicate webhook ignored|ignored because|Unknown signal|DHAN .* ERROR|Telegram Error|failed/i.test(
+          return /Webhook received:|Last Signal Updated:|Execution context:|Selected Option:|Entry sizing:|Position changed to|Position closed|Premium stop-loss hit|Manual SL trail confirmed|Automatic SL trail confirmed|DHAN option SL-Limit modify|Duplicate .*ignored|ignored because|Unknown signal|DHAN .* ERROR|Telegram Error|failed/i.test(
+            line,
+          );
+        }
+
+        function isIgnoredSignalLogLine(line) {
+          return /ignored because|Unknown signal|Duplicate .*ignored/i.test(line);
+        }
+
+        function isFailedSignalLogLine(line) {
+          return /DHAN .* ERROR|(?:LONG_ENTRY|SHORT_ENTRY).*(?:not filled|rejected|failed)|MANUAL_SIGNAL failed(?:\s|:)|premium stop-loss setup failed|Telegram Error/i.test(
             line,
           );
         }
@@ -1738,8 +1767,14 @@
             return "Unknown signal";
           }
 
-          if (/Duplicate webhook ignored/i.test(line)) {
+          if (/Duplicate .*ignored/i.test(line)) {
+            const duplicateSignalMatch = line.match(/Duplicate\s+([A-Z_]+)\s+ignored/i);
             const duplicateSymbolMatch = line.match(/symbol=([A-Z0-9]+)/i);
+
+            if (duplicateSignalMatch) {
+              return `Duplicate ${duplicateSignalMatch[1].toUpperCase()} ignored`;
+            }
+
             return duplicateSymbolMatch
               ? `Duplicate ${duplicateSymbolMatch[1].toUpperCase()} signal ignored`
               : "Duplicate signal ignored";
@@ -1887,9 +1922,7 @@
             closeOptionLine || openOptionLine,
           );
           const ignoredLine = signalLines.find((line) =>
-            /ignored because|Unknown signal|Duplicate webhook ignored/i.test(
-              line,
-            ),
+            isIgnoredSignalLogLine(line),
           );
           const orderErrorLine = signalLines.find((line) =>
             /DHAN .* ERROR/i.test(line),
@@ -2355,11 +2388,16 @@
 
             if (
               !data.SHOW_IGNORED_SIGNAL_LOGS &&
-              sectionLines.some((line) =>
-                /ignored because|Unknown signal|Duplicate webhook ignored/i.test(
-                  line,
-                ),
-              )
+              sectionLines.some(isIgnoredSignalLogLine)
+            ) {
+              pendingSectionSeparators = [];
+              sectionLines = [];
+              return;
+            }
+
+            if (
+              !data.SHOW_FAILED_SIGNAL_LOGS &&
+              sectionLines.some(isFailedSignalLogLine)
             ) {
               pendingSectionSeparators = [];
               sectionLines = [];
@@ -4089,25 +4127,33 @@
         }
 
         // Frontend copy of the lot sizing math for quick planning.
-        function calculateRisk() {
-          const data = model.getData();
+        function isSelectedUnderlyingExpiryToday(data = model.getData()) {
+          const underlying = normalizeUnderlyingSymbol(data.UNDERLYING_SYMBOL);
+          const meta =
+            underlying === "BANKNIFTY"
+              ? data.BANKNIFTY_NEXT_EXPIRY_META
+              : data.NIFTY_NEXT_EXPIRY_META;
 
-          const capital = Number(data.TRADING_CAPITAL || 0);
-          const riskPercent = Number(data.RISK_PERCENT || 1);
-          const sl = Number(data.PLANNING_SL_POINTS || 0);
-          const lotSize = Number(data.LOT_SIZE || 65);
-          const maxTrades = Number(data.MAX_DAILY_TRADES || 1);
+          return meta === "Expiry today";
+        }
 
+        function getPlanningLotsForRisk({
+          capital,
+          riskPercent,
+          sl,
+          lotSize,
+          maxTrades,
+          riskMode,
+          marketBias,
+        }) {
           const riskAmount = (capital * riskPercent) / 100;
           const lossPerLot = sl * lotSize;
-          const actualRisk = lossPerLot * maxTrades;
-
           let lots = 0;
 
           if (lossPerLot > 0) {
             lots = Math.floor(riskAmount / lossPerLot);
 
-            if (data.RISK_MODE === "PER_DAY") {
+            if (riskMode === "PER_DAY") {
               lots = Math.floor(lots / maxTrades);
             }
           }
@@ -4115,19 +4161,64 @@
           let longLots = lots;
           let shortLots = lots;
 
-          if (data.MARKET_BIAS === "BULLISH") {
+          if (marketBias === "BULLISH") {
             shortLots = lots > 1 ? Math.max(1, Math.floor(lots / 2)) : lots;
           }
 
-          if (data.MARKET_BIAS === "BEARISH") {
+          if (marketBias === "BEARISH") {
             longLots = lots > 1 ? Math.max(1, Math.floor(lots / 2)) : lots;
           }
 
-          model.setProperty("/CALC_RISK_AMOUNT", riskAmount);
-          model.setProperty("/CALC_LOSS_PER_LOT", lossPerLot);
-          model.setProperty("/CALC_ACTUAL_RISK", actualRisk);
-          model.setProperty("/CALC_LONG_LOTS", longLots);
-          model.setProperty("/CALC_SHORT_LOTS", shortLots);
+          return {
+            riskAmount,
+            lossPerLot,
+            actualRisk: lossPerLot * maxTrades,
+            longLots,
+            shortLots,
+          };
+        }
+
+        function calculateRisk() {
+          const data = model.getData();
+
+          const capital = Number(data.TRADING_CAPITAL || 0);
+          const riskPercent = Number(data.RISK_PERCENT || 1);
+          const expiryRiskReductionActive = isSelectedUnderlyingExpiryToday(data);
+          const effectiveRiskPercent = expiryRiskReductionActive
+            ? riskPercent / 2
+            : riskPercent;
+          const sl = Number(data.PLANNING_SL_POINTS || 0);
+          const lotSize = Number(data.LOT_SIZE || 65);
+          const maxTrades = Number(data.MAX_DAILY_TRADES || 1);
+          const revisedPlan = getPlanningLotsForRisk({
+            capital,
+            riskPercent: effectiveRiskPercent,
+            sl,
+            lotSize,
+            maxTrades,
+            riskMode: data.RISK_MODE,
+            marketBias: data.MARKET_BIAS,
+          });
+
+          model.setProperty(
+            "/EXPIRY_RISK_REDUCTION_ACTIVE",
+            expiryRiskReductionActive,
+          );
+          model.setProperty(
+            "/CALC_EFFECTIVE_RISK_PERCENT",
+            effectiveRiskPercent,
+          );
+          model.setProperty(
+            "/EXPIRY_RISK_REDUCTION_TEXT",
+            expiryRiskReductionActive
+              ? "Expiry day mode: half-size trades."
+              : "",
+          );
+          model.setProperty("/CALC_RISK_AMOUNT", revisedPlan.riskAmount);
+          model.setProperty("/CALC_LOSS_PER_LOT", revisedPlan.lossPerLot);
+          model.setProperty("/CALC_ACTUAL_RISK", revisedPlan.actualRisk);
+          model.setProperty("/CALC_LONG_LOTS", revisedPlan.longLots);
+          model.setProperty("/CALC_SHORT_LOTS", revisedPlan.shortLots);
         }
 
         // Shows live position state and the trade/no-trade toggle.
@@ -5691,10 +5782,69 @@
         function planningCard() {
           return new sap.m.VBox({
             items: [
-              new sap.m.Title({
-                text: "📊 Risk Plan",
-                level: "H3",
-              }).addStyleClass("sectionTitle sapUiMediumMarginBottom"),
+              new sap.m.HBox({
+                alignItems: "Center",
+                justifyContent: "SpaceBetween",
+                items: [
+                  new sap.m.Title({
+                    text: "📊 Risk Plan",
+                    level: "H3",
+                  }).addStyleClass("sectionTitle"),
+
+                  new sap.m.HBox({
+                    alignItems: "Center",
+                    visible: {
+                      parts: [
+                        { path: "/UNDERLYING_SYMBOL" },
+                        { path: "/NIFTY_NEXT_EXPIRY_LABEL" },
+                        { path: "/BANKNIFTY_NEXT_EXPIRY_LABEL" },
+                      ],
+                      formatter: function (underlying, niftyLabel, bankniftyLabel) {
+                        const symbol = normalizeUnderlyingSymbol(underlying);
+                        const label = symbol === "BANKNIFTY" ? bankniftyLabel : niftyLabel;
+                        return Boolean(label && label !== "Loading expiry...");
+                      },
+                    },
+                    items: [
+                      new sap.m.Text({
+                        text: {
+                          parts: [
+                            { path: "/UNDERLYING_SYMBOL" },
+                            { path: "/NIFTY_NEXT_EXPIRY_LABEL" },
+                            { path: "/NIFTY_NEXT_EXPIRY_META" },
+                            { path: "/BANKNIFTY_NEXT_EXPIRY_LABEL" },
+                            { path: "/BANKNIFTY_NEXT_EXPIRY_META" },
+                            { path: "/EXPIRY_RISK_REDUCTION_TEXT" },
+                          ],
+                          formatter: function (
+                            underlying,
+                            niftyLabel,
+                            niftyMeta,
+                            bankniftyLabel,
+                            bankniftyMeta,
+                            riskText,
+                          ) {
+                            const symbol = normalizeUnderlyingSymbol(underlying);
+                            const label = symbol === "BANKNIFTY" ? bankniftyLabel : niftyLabel;
+                            const meta = symbol === "BANKNIFTY" ? bankniftyMeta : niftyMeta;
+                            const displayName =
+                              UNDERLYING_DEFAULTS[symbol]?.displayName || symbol;
+                            const expiryLabel = meta === "Expiry today" ? "Today" : label || "-";
+                            const parts = [displayName + " Expiry: " + expiryLabel];
+
+                            if (meta && meta !== "Expiry today") {
+                              parts.push(meta);
+                            }
+                            if (riskText) parts.push(riskText);
+
+                            return parts.join(" • ");
+                          },
+                        },
+                      }).addStyleClass("expiryRiskDayText"),
+                    ],
+                  }).addStyleClass("expiryRiskHeaderMessage"),
+                ],
+              }).addStyleClass("riskPlanHeader"),
 
               new sap.m.HBox({
                 items: [
@@ -6139,78 +6289,65 @@
         function monitoringCard() {
           return new sap.m.VBox({
             items: [
-              new sap.m.Title({
-                text: "📋 Event Log",
-                level: "H3",
-              }).addStyleClass("sectionTitle"),
-
               new sap.m.HBox({
                 alignItems: "Center",
+                justifyContent: "SpaceBetween",
                 items: [
+                  new sap.m.Title({
+                    text: "📋 Event Log",
+                    level: "H3",
+                  }).addStyleClass("sectionTitle"),
+
                   new sap.m.HBox({
                     alignItems: "Center",
                     items: [
-                      new sap.ui.core.Icon({
-                        src: "sap-icon://filter",
-                        decorative: true,
-                      }).addStyleClass("logFilterIcon"),
-                      new sap.m.Text({
-                        text: "Filters",
-                      }).addStyleClass("logFilterTitle"),
+                      new sap.m.CheckBox({
+                        text: "TradingView",
+                        selected: "{/SHOW_TRADINGVIEW_SIGNAL_LOGS}",
+                        select: updateLogFilters,
+                      }),
+
+                      new sap.m.CheckBox({
+                        text: "Manual",
+                        selected: "{/SHOW_MANUAL_SIGNAL_LOGS}",
+                        select: updateLogFilters,
+                      }),
+
+                      new sap.m.CheckBox({
+                        text: "Paper trades",
+                        selected: "{/SHOW_PAPER_TRADE_LOGS}",
+                        select: updateLogFilters,
+                      }),
+
+                      new sap.m.CheckBox({
+                        text: "Ignored",
+                        selected: "{/SHOW_IGNORED_SIGNAL_LOGS}",
+                        select: updateLogFilters,
+                      }),
+
+                      new sap.m.CheckBox({
+                        text: "Failed",
+                        selected: "{/SHOW_FAILED_SIGNAL_LOGS}",
+                        select: updateLogFilters,
+                      }),
+
+                      new sap.m.Button({
+                        icon: "sap-icon://refresh",
+                        tooltip: "Refresh Logs",
+                        type: "Transparent",
+                        press: refreshLogs,
+                      }),
+
+                      new sap.m.Button({
+                        icon: "sap-icon://copy",
+                        tooltip: "Copy Log",
+                        type: "Transparent",
+                        press: copyDisplayedLogs,
+                      }),
                     ],
-                  }).addStyleClass("logFilterTitleGroup"),
-
-                  new sap.m.CheckBox({
-                    text: "TradingView",
-                    selected: "{/SHOW_TRADINGVIEW_SIGNAL_LOGS}",
-                    select: updateLogFilters,
-                  }),
-
-                  new sap.m.CheckBox({
-                    text: "Manual",
-                    selected: "{/SHOW_MANUAL_SIGNAL_LOGS}",
-                    select: updateLogFilters,
-                  }),
-
-                  new sap.m.CheckBox({
-                    text: "Paper trades",
-                    selected: "{/SHOW_PAPER_TRADE_LOGS}",
-                    select: updateLogFilters,
-                  }),
-
-                  new sap.m.CheckBox({
-                    text: "Ignored",
-                    selected: "{/SHOW_IGNORED_SIGNAL_LOGS}",
-                    select: updateLogFilters,
-                  }),
-
-                  new sap.m.CheckBox({
-                    text: "Readiness",
-                    selected: "{/SHOW_READINESS_LOGS}",
-                    select: updateLogFilters,
-                  }),
-
-                  new sap.m.CheckBox({
-                    text: "Detailed",
-                    selected: "{/SHOW_DETAILED_SIGNAL_LOGS}",
-                    select: updateLogFilters,
-                  }),
-
-                  new sap.m.Button({
-                    icon: "sap-icon://refresh",
-                    tooltip: "Refresh Logs",
-                    type: "Transparent",
-                    press: refreshLogs,
-                  }),
-
-                  new sap.m.Button({
-                    icon: "sap-icon://copy",
-                    tooltip: "Copy Log",
-                    type: "Transparent",
-                    press: copyDisplayedLogs,
-                  }),
+                  }).addStyleClass("logFilterRow"),
                 ],
-              }).addStyleClass("logFilterRow"),
+              }).addStyleClass("logHeader"),
 
               new sap.m.TextArea({
                 value: "{/LIVE_LOGS}",
@@ -6247,7 +6384,7 @@
 
           const intervalSelector = new sap.m.SegmentedButton({
             selectedKey: "{/TEST_INTERVAL}",
-            width: "240px",
+            width: "288px",
             items: [
               new sap.m.SegmentedButtonItem({
                 key: "1",
@@ -6272,6 +6409,11 @@
               new sap.m.SegmentedButtonItem({
                 key: "30",
                 text: "30m",
+                width: "48px",
+              }),
+              new sap.m.SegmentedButtonItem({
+                key: "60",
+                text: "1h",
                 width: "48px",
               }),
             ],
@@ -6699,6 +6841,12 @@
                 ],
               }).addStyleClass("tradingViewEndpointRow"),
 
+              new sap.m.MessageStrip({
+                text: "TradingView trigger: use Once Per Bar. Once only stops after 1 alert; Bar Close can widen SL risk.",
+                type: "Information",
+                showIcon: true,
+              }).addStyleClass("tradingViewTriggerNote"),
+
               new sap.m.HBox({
                 items: TRADINGVIEW_PAYLOADS.map(tradingViewPayloadCard),
               }).addStyleClass("payloadGrid"),
@@ -6799,8 +6947,8 @@
           items: [
             new sap.m.IconTabFilter({
               key: "tradingDesk",
-              text: "📊 Cockpit",
-              icon: "sap-icon://business-objects-experience",
+              text: "Cockpit",
+              icon: "images/tab-cockpit.png",
               content: [
                 liveTradingStatusCard(),
                 readinessCenterCard(),
@@ -6811,36 +6959,36 @@
 
             new sap.m.IconTabFilter({
               key: "planning",
-              text: "🛡 Risk Guard",
-              icon: "sap-icon://shield",
+              text: "Risk Guard",
+              icon: "images/tab-risk-guard.png",
               content: [planningCard()],
             }),
 
             new sap.m.IconTabFilter({
               key: "manualSignals",
-              text: "⚡ Manual Signals",
-              icon: "sap-icon://action",
+              text: "Manual Signals",
+              icon: "images/tab-manual-signals.png",
               content: [testCenterCard()],
             }),
 
             new sap.m.IconTabFilter({
               key: "monitoring",
-              text: "🧾 Logs",
-              icon: "sap-icon://notes",
+              text: "Logs",
+              icon: "images/tab-logs.png",
               content: [monitoringCard()],
             }),
 
             new sap.m.IconTabFilter({
               key: "tradingView",
-              text: "📡 Webhooks",
-              icon: "sap-icon://connected",
+              text: "TV Webhook",
+              icon: "images/tab-tv-webhook.png",
               content: [tradingViewReferenceCard()],
             }),
 
             new sap.m.IconTabFilter({
               key: "analytics",
-              text: "📈 Analytics",
-              icon: "sap-icon://business-objects-mobile",
+              text: "Analytics",
+              icon: "images/tab-analytics.png",
               content: [analyticsCard()],
             }),
           ],

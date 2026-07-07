@@ -66,6 +66,9 @@ const {
   getUnderlyingProfileForSymbol,
   isAllowedUnderlyingSymbol: isConfiguredUnderlyingSymbol,
 } = require("./services/underlyingService");
+const {
+  applyDailyControlReset,
+} = require("./services/dailyControlResetService");
 
 const positionData = loadPosition();
 const envPath = path.join(__dirname, "..", ".env");
@@ -772,6 +775,7 @@ async function runAutoTrailWorker() {
 // Merge process env with the latest .env file values written by the dashboard.
 function getRuntimeConfig() {
   try {
+    applyDailyControlReset(envPath, { logger });
     const envFile = fs.readFileSync(envPath);
     return {
       ...process.env,
@@ -981,6 +985,7 @@ function getTradingViewTimeframeKey(intervalMinutes) {
     5: "ALLOW_TV_TIMEFRAME_5M",
     15: "ALLOW_TV_TIMEFRAME_15M",
     30: "ALLOW_TV_TIMEFRAME_30M",
+    60: "ALLOW_TV_TIMEFRAME_60M",
   }[Number(intervalMinutes)];
 }
 
@@ -2169,11 +2174,14 @@ No entry order placed.`,
   return res.status(200).send("Premium stop loss setup failed\n");
 }
 
-function getEntrySizing(signal, config, riskPoints) {
+function getEntrySizing(signal, config, riskPoints, contract) {
   return calculateLots({
     signal,
     riskPoints,
-    settings: config,
+    settings: {
+      ...config,
+      CONTRACT_EXPIRY_DATE: contract?.SEM_EXPIRY_DATE,
+    },
   });
 }
 
@@ -2499,6 +2507,10 @@ Paper Warning : ${paperEntryWarning.message}
 Actual SL Distance : ${paperEntryWarning.actualRiskPoints ?? "-"}
 Sizing Risk Points : ${paperEntryWarning.sizingRiskPoints ?? "-"}`
     : "";
+  const expiryRiskText = sizing.expiryRiskReductionActive
+    ? `
+Expiry Day Risk : ${sizing.effectiveRiskPercent}% used instead of ${sizing.riskPercent}%`
+    : "";
 
   return `${emoji} ${getTradeModeLabel(config, "TRADE")}
 -----------------------------
@@ -2507,6 +2519,7 @@ Lots : ${sizing.finalLots} (Qty : ${quantity})
 -----------------------------
 ${getRiskBudgetLabel(config)} : ${sizing.riskAmount}
 Loss Per Lot : ${sizing.lossPerLot}
+${expiryRiskText}
 
 Entry Premium : ${entryPremium || "-"}
 Risk Points : ${riskPoints || "-"}
@@ -2537,6 +2550,131 @@ function getBrokerErrorText(result) {
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+function isInsufficientFundsError(result) {
+  const text = getBrokerErrorText(result).toLowerCase();
+
+  return text.includes("insufficient funds");
+}
+
+function getLotStepDownSizing(sizing, lots) {
+  const lotSize = Number(sizing.lotSize || 0);
+
+  if (!Number.isFinite(lotSize) || lotSize <= 0 || lots <= 0) {
+    return null;
+  }
+
+  return {
+    ...sizing,
+    finalLots: lots,
+    quantity: lots * lotSize,
+    fundsRetry: lots !== sizing.finalLots,
+    originalFinalLots: sizing.originalFinalLots || sizing.finalLots,
+    originalQuantity: sizing.originalQuantity || sizing.quantity,
+  };
+}
+
+async function placeAndConfirmEntryWithFundsRetry({
+  signal,
+  symbol,
+  price,
+  contract,
+  sizing,
+}) {
+  const startingLots = Number(sizing.finalLots || 0);
+  let lastOrderResult = null;
+  let lastEntryConfirmation = null;
+  let lastFailureReason = "";
+
+  for (let lots = startingLots; lots > 0; lots -= 1) {
+    const attemptSizing = getLotStepDownSizing(sizing, lots);
+
+    if (!attemptSizing?.quantity || attemptSizing.quantity <= 0) {
+      continue;
+    }
+
+    if (lots < startingLots) {
+      logger.warn(
+        `${signal} insufficient funds at ${lots + 1} lots; retrying ${lots} lots quantity=${attemptSizing.quantity}`,
+      );
+
+      await sendTelegram(
+        `⚠️ ${signal} retrying with lower quantity
+
+Symbol : ${symbol}
+Price  : ${price}
+
+Reason:
+${lastFailureReason}
+
+Retry Lots : ${lots}
+Retry Qty : ${attemptSizing.quantity}`,
+      );
+    }
+
+    const orderResult = await placeMarketBuyOrder(
+      contract,
+      attemptSizing.quantity,
+    );
+    lastOrderResult = orderResult;
+
+    console.log(orderResult);
+
+    if (!orderResult.success) {
+      lastFailureReason =
+        getBrokerErrorText(orderResult) ||
+        JSON.stringify(orderResult.error || "Entry order failed");
+
+      if (isInsufficientFundsError(orderResult)) {
+        continue;
+      }
+
+      return {
+        orderResult,
+        entryConfirmation: null,
+        sizing: attemptSizing,
+        quantity: attemptSizing.quantity,
+      };
+    }
+
+    const entryConfirmation = await confirmEntryOrderExecution(orderResult);
+    lastEntryConfirmation = entryConfirmation;
+
+    if (entryConfirmation.success) {
+      return {
+        orderResult,
+        entryConfirmation,
+        sizing: attemptSizing,
+        quantity: attemptSizing.quantity,
+      };
+    }
+
+    lastFailureReason = entryConfirmation.error || "Entry order not filled";
+
+    if (!isInsufficientFundsError(entryConfirmation)) {
+      return {
+        orderResult,
+        entryConfirmation,
+        sizing: attemptSizing,
+        quantity: attemptSizing.quantity,
+      };
+    }
+  }
+
+  return {
+    orderResult: lastOrderResult,
+    entryConfirmation:
+      lastEntryConfirmation || {
+        success: false,
+        status: "NO_AFFORDABLE_LOTS",
+        error:
+          lastFailureReason ||
+          "Insufficient funds remained after reducing to one lot",
+      },
+    sizing: getLotStepDownSizing(sizing, 1) || sizing,
+    quantity: getLotStepDownSizing(sizing, 1)?.quantity || sizing.quantity,
+  };
 }
 
 function isAlreadyCancelledError(result) {
@@ -3081,14 +3219,15 @@ Signal Mode      : ${activeTradeMode}`,
             }
           }
 
-          const sizing = getEntrySizing(
+          let sizing = getEntrySizing(
             signal,
             config,
             riskPlan.riskPoints,
+            contract,
           );
 
           logger.info(
-            `Entry sizing: source=${riskPlan.source} premium=${riskPlan.entryPremium ?? "n/a"} premiumSL=${riskPlan.stopLossPremium ?? "n/a"} candleLow=${stopLossPlan?.candle?.low ?? "n/a"} candleHigh=${stopLossPlan?.candle?.high ?? "n/a"} candleRange=${stopLossPlan?.candleRange ?? "n/a"} halfCandle=${stopLossPlan?.hugeCandleAdjusted ?? false} hugeThreshold=${stopLossPlan?.hugeCandleThreshold ?? "n/a"} riskPoints=${sizing.riskPoints} riskAmount=${sizing.riskAmount} lossPerLot=${sizing.lossPerLot} baseLots=${sizing.lots} lots=${sizing.finalLots} quantity=${sizing.quantity}`,
+            `Entry sizing: source=${riskPlan.source} premium=${riskPlan.entryPremium ?? "n/a"} premiumSL=${riskPlan.stopLossPremium ?? "n/a"} candleLow=${stopLossPlan?.candle?.low ?? "n/a"} candleHigh=${stopLossPlan?.candle?.high ?? "n/a"} candleRange=${stopLossPlan?.candleRange ?? "n/a"} halfCandle=${stopLossPlan?.hugeCandleAdjusted ?? false} hugeThreshold=${stopLossPlan?.hugeCandleThreshold ?? "n/a"} expiryRiskReduction=${sizing.expiryRiskReductionActive ?? false} riskPercent=${sizing.riskPercent} effectiveRiskPercent=${sizing.effectiveRiskPercent ?? sizing.riskPercent} riskPoints=${sizing.riskPoints} riskAmount=${sizing.riskAmount} lossPerLot=${sizing.lossPerLot} baseLots=${sizing.lots} lots=${sizing.finalLots} quantity=${sizing.quantity}`,
           );
 
           if (!sizing.quantity || sizing.quantity <= 0) {
@@ -3108,11 +3247,18 @@ Signal Mode      : ${activeTradeMode}`,
           console.log("ORDER CONTRACT");
           console.log(contract);
 
-          const orderResult = await placeMarketBuyOrder(contract, quantity);
+          const entryAttempt = await placeAndConfirmEntryWithFundsRetry({
+            signal,
+            symbol,
+            price,
+            contract,
+            sizing,
+          });
+          let orderResult = entryAttempt.orderResult;
+          let entryConfirmation = entryAttempt.entryConfirmation;
+          sizing = entryAttempt.sizing;
+          quantity = entryAttempt.quantity;
 
-          console.log(orderResult);
-
-          // Only mark position open after Dhan/paper order reports success.
           if (!orderResult.success) {
             clearWebhookDedupe({ signal, symbol, time });
             await sendTelegram(
@@ -3129,9 +3275,6 @@ Position NOT changed.`,
 
             return res.status(200).send("LONG_ENTRY failed\n");
           }
-
-          const entryConfirmation =
-            await confirmEntryOrderExecution(orderResult);
 
           if (!entryConfirmation.success) {
             clearWebhookDedupe({ signal, symbol, time });
@@ -3564,14 +3707,15 @@ Signal Mode      : ${activeTradeMode}`,
             }
           }
 
-          const sizing = getEntrySizing(
+          let sizing = getEntrySizing(
             signal,
             config,
             riskPlan.riskPoints,
+            contract,
           );
 
           logger.info(
-            `Entry sizing: source=${riskPlan.source} premium=${riskPlan.entryPremium ?? "n/a"} premiumSL=${riskPlan.stopLossPremium ?? "n/a"} candleLow=${stopLossPlan?.candle?.low ?? "n/a"} candleHigh=${stopLossPlan?.candle?.high ?? "n/a"} candleRange=${stopLossPlan?.candleRange ?? "n/a"} halfCandle=${stopLossPlan?.hugeCandleAdjusted ?? false} hugeThreshold=${stopLossPlan?.hugeCandleThreshold ?? "n/a"} riskPoints=${sizing.riskPoints} riskAmount=${sizing.riskAmount} lossPerLot=${sizing.lossPerLot} baseLots=${sizing.lots} lots=${sizing.finalLots} quantity=${sizing.quantity}`,
+            `Entry sizing: source=${riskPlan.source} premium=${riskPlan.entryPremium ?? "n/a"} premiumSL=${riskPlan.stopLossPremium ?? "n/a"} candleLow=${stopLossPlan?.candle?.low ?? "n/a"} candleHigh=${stopLossPlan?.candle?.high ?? "n/a"} candleRange=${stopLossPlan?.candleRange ?? "n/a"} halfCandle=${stopLossPlan?.hugeCandleAdjusted ?? false} hugeThreshold=${stopLossPlan?.hugeCandleThreshold ?? "n/a"} expiryRiskReduction=${sizing.expiryRiskReductionActive ?? false} riskPercent=${sizing.riskPercent} effectiveRiskPercent=${sizing.effectiveRiskPercent ?? sizing.riskPercent} riskPoints=${sizing.riskPoints} riskAmount=${sizing.riskAmount} lossPerLot=${sizing.lossPerLot} baseLots=${sizing.lots} lots=${sizing.finalLots} quantity=${sizing.quantity}`,
           );
 
           if (!sizing.quantity || sizing.quantity <= 0) {
@@ -3591,11 +3735,18 @@ Signal Mode      : ${activeTradeMode}`,
           console.log("ORDER QUANTITY");
           console.log(quantity);
 
-          const orderResult = await placeMarketBuyOrder(contract, quantity);
+          const entryAttempt = await placeAndConfirmEntryWithFundsRetry({
+            signal,
+            symbol,
+            price,
+            contract,
+            sizing,
+          });
+          let orderResult = entryAttempt.orderResult;
+          let entryConfirmation = entryAttempt.entryConfirmation;
+          sizing = entryAttempt.sizing;
+          quantity = entryAttempt.quantity;
 
-          console.log(orderResult);
-
-          // Only mark position open after Dhan/paper order reports success.
           if (!orderResult.success) {
             clearWebhookDedupe({ signal, symbol, time });
             await sendTelegram(
@@ -3612,9 +3763,6 @@ Position NOT changed.`,
 
             return res.status(200).send("SHORT_ENTRY failed\n");
           }
-
-          const entryConfirmation =
-            await confirmEntryOrderExecution(orderResult);
 
           if (!entryConfirmation.success) {
             clearWebhookDedupe({ signal, symbol, time });

@@ -458,7 +458,7 @@ function getDashboardTrades(limit = 3, tradeMode, fallbackPremiumSlInterval) {
     ? history.trades.filter((trade) => trade.tradeMode === normalizedMode)
     : history.trades;
 
-  return trades.slice(-limit).map((trade) => {
+  return trades.slice(-limit).reverse().map((trade) => {
     const riskPoints = Number(trade.riskPoints);
     const quantity = Number(trade.quantity);
     const riskAmount =

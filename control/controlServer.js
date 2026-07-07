@@ -19,6 +19,7 @@ const axios = require("axios");
 
 let algoProcess = null;
 let ngrokProcess = null;
+let ngrokStarting = false;
 let ngrokUrl = "";
 const logPath = path.join(__dirname, "..", "logs", "app.log");
 const instrumentMasterPath = path.join(__dirname, "..", "api-scrip-master.csv");
@@ -41,6 +42,9 @@ const {
   UNDERLYING_PROFILES,
   getUnderlyingProfile,
 } = require("../src/services/underlyingService");
+const {
+  applyDailyControlReset,
+} = require("../src/services/dailyControlResetService");
 
 // Accept JSON API requests and serve the dashboard assets from control/public.
 app.use(express.json());
@@ -103,6 +107,7 @@ const TRADINGVIEW_TIMEFRAME_FIELDS = [
   "ALLOW_TV_TIMEFRAME_5M",
   "ALLOW_TV_TIMEFRAME_15M",
   "ALLOW_TV_TIMEFRAME_30M",
+  "ALLOW_TV_TIMEFRAME_60M",
 ];
 
 function normalizeUnderlyingSymbol(symbol) {
@@ -1044,7 +1049,7 @@ function buildTradeAnalytics(
   period = "week",
   underlying = "ALL",
   optionType = "ALL",
-  includeTestData = true,
+  includeTestData = false,
   periodOffset = 0,
 ) {
   const normalizedPeriod = period === "month" ? "month" : "week";
@@ -1052,7 +1057,7 @@ function buildTradeAnalytics(
   const { startDateKey, endDateKey } = periodRange;
   const shouldIncludeTestData =
     includeTestData === true ||
-    String(includeTestData ?? "true").toLowerCase() !== "false";
+    String(includeTestData ?? "false").toLowerCase() === "true";
   const normalizedUnderlying = ["NIFTY", "BANKNIFTY"].includes(
     String(underlying || "").toUpperCase(),
   )
@@ -1557,6 +1562,9 @@ function formatDashboardLogs(content, telegramEnabled = false) {
 
 // Dashboard bootstrap endpoint: config plus live process/tunnel status.
 app.get("/api/config", async (req, res) => {
+  const reset = applyDailyControlReset(envPath, {
+    logger: { info: appendLifecycleLog },
+  });
   const env = readEnv();
   const underlyingProfile = getUnderlyingProfile(env);
 
@@ -1614,6 +1622,8 @@ app.get("/api/config", async (req, res) => {
     algoRunning,
     ngrokRunning: ngrokHealth.running,
     ngrokUrl: ngrokHealth.url,
+    CONTROL_PANEL_RESET_DATE: env.CONTROL_PANEL_RESET_DATE,
+    dailyControlResetApplied: reset.applied,
   });
 });
 
@@ -1630,25 +1640,62 @@ async function isAlgoActuallyRunning() {
   }
 }
 
-// Ask ngrok's local API for the current public HTTPS tunnel.
+const NGROK_API_URLS = [
+  "http://127.0.0.1:4040/api/tunnels",
+  "http://127.0.0.1:4041/api/tunnels",
+  "http://127.0.0.1:4042/api/tunnels",
+];
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function stopAllNgrokProcesses() {
+  return new Promise((resolve) => {
+    const pkill = spawn("pkill", ["ngrok"]);
+
+    pkill.on("error", () => resolve());
+    pkill.on("exit", () => resolve());
+  });
+}
+
+// Ask ngrok's local APIs for the current public HTTPS tunnel.
 async function getNgrokHealth() {
-  try {
-    const response = await axios.get("http://127.0.0.1:4040/api/tunnels", {
-      timeout: 1500,
-    });
+  const tunnels = [];
 
-    const tunnel = response.data.tunnels.find((t) => t.proto === "https");
+  await Promise.all(
+    NGROK_API_URLS.map(async (apiUrl) => {
+      try {
+        const response = await axios.get(apiUrl, {
+          timeout: 700,
+        });
 
-    return {
-      running: !!tunnel,
-      url: tunnel ? tunnel.public_url + "/webhook" : "",
-    };
-  } catch (error) {
+        response.data.tunnels
+          .filter((tunnel) => tunnel.proto === "https")
+          .forEach((tunnel) => tunnels.push({ ...tunnel, apiUrl }));
+      } catch (error) {
+        // It is normal for unused ngrok API ports to be closed.
+      }
+    }),
+  );
+
+  const tunnel = tunnels[0];
+
+  if (!tunnel) {
     return {
       running: false,
       url: "",
+      tunnelCount: 0,
+      duplicate: false,
     };
   }
+
+  return {
+    running: true,
+    url: tunnel.public_url + "/webhook",
+    tunnelCount: tunnels.length,
+    duplicate: tunnels.length > 1,
+  };
 }
 
 // Save dashboard-edited settings back to .env.
@@ -1728,37 +1775,66 @@ app.post("/api/stop-server", (req, res) => {
 
 // Start ngrok so TradingView can reach the local webhook.
 app.post("/api/start-ngrok", async (req, res) => {
-  const health = await getNgrokHealth();
-
-  if (health.running) {
-    appendLifecycleLog(
-      `Ngrok start requested but already running url=${health.url || "unknown"}`,
-    );
+  if (ngrokStarting) {
+    appendLifecycleLog("Ngrok start requested while startup is already in progress");
     return res.json({
       success: true,
-      message: "Ngrok already running",
+      message: "Ngrok startup already in progress",
     });
   }
 
-  appendLifecycleLog("Ngrok start requested");
+  ngrokStarting = true;
 
-  ngrokProcess = spawn("ngrok", ["http", "3000"], {
-    shell: true,
-    stdio: "inherit",
-  });
+  try {
+    const health = await getNgrokHealth();
 
-  ngrokProcess.on("exit", (code, signal) => {
-    appendLifecycleLog(
-      `Ngrok process exited code=${code ?? "null"} signal=${signal ?? "null"}`,
-      code === 0 || signal === "SIGTERM" ? "info" : "warn",
-    );
-    ngrokProcess = null;
-  });
+    if (health.running && !health.duplicate) {
+      appendLifecycleLog(
+        `Ngrok start requested but already running url=${health.url || "unknown"}`,
+      );
+      return res.json({
+        success: true,
+        message: "Ngrok already running",
+      });
+    }
 
-  res.json({
-    success: true,
-    message: "Ngrok started",
-  });
+    if (health.duplicate) {
+      appendLifecycleLog(
+        `Ngrok duplicate tunnels detected count=${health.tunnelCount}; restarting cleanly`,
+        "warn",
+      );
+      await stopAllNgrokProcesses();
+      await delay(1000);
+    }
+
+    appendLifecycleLog("Ngrok start requested");
+
+    ngrokProcess = spawn("ngrok", ["http", "3000"], {
+      shell: true,
+      stdio: "inherit",
+    });
+
+    ngrokProcess.on("exit", (code, signal) => {
+      appendLifecycleLog(
+        `Ngrok process exited code=${code ?? "null"} signal=${signal ?? "null"}`,
+        code === 0 || signal === "SIGTERM" ? "info" : "warn",
+      );
+      ngrokProcess = null;
+    });
+
+    return res.json({
+      success: true,
+      message: "Ngrok started",
+    });
+  } catch (error) {
+    appendLifecycleLog(`Ngrok start failed: ${error.message}`, "error");
+    return res.json({
+      success: false,
+      message: error.message,
+    });
+  } finally {
+    ngrokStarting = false;
+  }
 });
 
 // Stop ngrok, including any process that may have been started separately.
@@ -1771,10 +1847,7 @@ app.post("/api/stop-ngrok", async (req, res) => {
       ngrokProcess = null;
     }
 
-    // kill any existing ngrok process
-    spawn("pkill", ["ngrok"], {
-      shell: true,
-    });
+    await stopAllNgrokProcesses();
 
     res.json({
       success: true,

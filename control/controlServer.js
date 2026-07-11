@@ -16,11 +16,16 @@ const DHAN_SANDBOX_CLIENT_ID = "2601312809";
 
 const envPath = path.join(__dirname, "..", ".env");
 const axios = require("axios");
+const { sendTelegram } = require("../src/services/telegramService");
 
 let algoProcess = null;
 let ngrokProcess = null;
 let ngrokStarting = false;
 let ngrokUrl = "";
+let keepAlgoRunning = process.env.IC_AUTO_MANAGE === "true";
+let keepNgrokRunning = process.env.IC_AUTO_MANAGE === "true";
+let shuttingDown = false;
+const SELF_HEAL_DELAY_MS = 5000;
 const logPath = path.join(__dirname, "..", "logs", "app.log");
 const instrumentMasterPath = path.join(__dirname, "..", "api-scrip-master.csv");
 const tradingViewIndicatorPath = path.join(
@@ -38,6 +43,88 @@ const tradeHistoryPath = path.join(
   "data",
   "tradeHistory.json",
 );
+const streakPlannerPath = path.join(
+  __dirname,
+  "..",
+  "src",
+  "data",
+  "streakPlanner.json",
+);
+const STREAK_PLANNER_INTERVALS = ["1", "3", "5", "15", "30", "60"];
+const STREAK_PLANNER_TRADE_COUNT = 50;
+const STREAK_PLANNER_OUTCOMES = new Set([
+  "",
+  "-1",
+  ...Array.from({ length: 10 }, (_, index) => String(index)),
+]);
+
+function getEmptyStreakPlanner() {
+  return {
+    updatedAt: null,
+    rows: STREAK_PLANNER_INTERVALS.map((interval) => ({
+      interval,
+      trades: Array(STREAK_PLANNER_TRADE_COUNT).fill(""),
+      updatedAt: Array(STREAK_PLANNER_TRADE_COUNT).fill(""),
+    })),
+  };
+}
+
+function normalizeStreakPlanner(payload) {
+  const rowsByInterval = new Map(
+    (Array.isArray(payload?.rows) ? payload.rows : []).map((row) => [
+      String(row?.interval || ""),
+      row,
+    ]),
+  );
+
+  return {
+    updatedAt: payload?.updatedAt || null,
+    rows: STREAK_PLANNER_INTERVALS.map((interval) => {
+      const source = rowsByInterval.get(interval);
+      const trades = Array.isArray(source?.trades) ? source.trades : [];
+      const updatedAt = Array.isArray(source?.updatedAt) ? source.updatedAt : [];
+      const normalizedTrades = Array.from(
+        { length: STREAK_PLANNER_TRADE_COUNT },
+        (_, index) => {
+          const rawOutcome = String(trades[index] ?? "").toUpperCase();
+          const outcome = rawOutcome === "PROFIT"
+            ? "1"
+            : rawOutcome === "SL"
+              ? "-1"
+              : rawOutcome;
+          return STREAK_PLANNER_OUTCOMES.has(outcome) ? outcome : "";
+        },
+      );
+
+      return {
+        interval,
+        trades: normalizedTrades,
+        updatedAt: Array.from({ length: STREAK_PLANNER_TRADE_COUNT }, (_, index) => {
+          const value = String(updatedAt[index] || "");
+          return normalizedTrades[index] && !Number.isNaN(new Date(value).getTime())
+            ? value
+            : "";
+        }),
+      };
+    }),
+  };
+}
+
+function readStreakPlanner() {
+  return normalizeStreakPlanner(readJsonFile(streakPlannerPath) || getEmptyStreakPlanner());
+}
+
+function writeStreakPlanner(payload) {
+  const planner = normalizeStreakPlanner(payload);
+  const requestedUpdatedAt = String(payload?.updatedAt || "");
+  planner.updatedAt = Number.isNaN(new Date(requestedUpdatedAt).getTime())
+    ? new Date().toISOString()
+    : requestedUpdatedAt;
+  fs.mkdirSync(path.dirname(streakPlannerPath), { recursive: true });
+  fs.writeFileSync(streakPlannerPath, `${JSON.stringify(planner, null, 2)}\n`);
+  return planner;
+}
+
 const {
   UNDERLYING_PROFILES,
   getUnderlyingProfile,
@@ -1140,6 +1227,41 @@ function buildTradeAnalytics(
   );
   const sortedRealizedTrades = [...realizedTrades].sort(compareTradesByDate);
   const outcomeStreaks = buildOutcomeStreaks(sortedRealizedTrades);
+  const optionTypePnl = ["CALL", "PUT"].map((type) => ({
+    label: type,
+    value: roundMoney(
+      realizedTrades
+        .filter((trade) => trade.optionType === type)
+        .reduce((sum, trade) => sum + Number(trade.profit || 0), 0),
+    ),
+  }));
+  const optionTypePnlMagnitude = optionTypePnl.reduce(
+    (sum, item) => sum + Math.abs(item.value),
+    0,
+  );
+  optionTypePnl.forEach((item) => {
+    item.percent = optionTypePnlMagnitude
+      ? roundMoney((Math.abs(item.value) / optionTypePnlMagnitude) * 100)
+      : 0;
+  });
+  const withAbsolutePercent = (items) => {
+    const total = items.reduce((sum, item) => sum + Math.abs(Number(item.value || 0)), 0);
+    return items.map((item) => ({
+      ...item,
+      percent: total ? roundMoney((Math.abs(Number(item.value || 0)) / total) * 100) : 0,
+    }));
+  };
+  const averageByOptionType = (sourceTrades, negative = false) =>
+    withAbsolutePercent(
+      ["CALL", "PUT"].map((type) => {
+        const matching = sourceTrades.filter((trade) => trade.optionType === type);
+        const average = matching.length
+          ? matching.reduce((sum, trade) => sum + Number(trade.profit || 0), 0) /
+            matching.length
+          : 0;
+        return { label: type, value: roundMoney(negative ? -Math.abs(average) : average) };
+      }),
+    );
 
   return {
     period: normalizedPeriod,
@@ -1176,6 +1298,29 @@ function buildTradeAnalytics(
       bestLosingStreak: outcomeStreaks.bestLosing,
     },
     charts: {
+      optionTypePnl,
+      outcomeMix: withAbsolutePercent([
+        { label: "WIN", value: winners.length },
+        { label: "LOSS", value: losers.length },
+        { label: "BREAKEVEN", value: breakeven.length },
+      ]),
+      optionTypeAverageProfit: averageByOptionType(winners),
+      optionTypeAverageLoss: averageByOptionType(losers, true),
+      underlyingPnl: withAbsolutePercent(
+        ["NIFTY", "BANKNIFTY"].map((symbol) => ({
+          label: symbol,
+          value: roundMoney(
+            realizedTrades
+              .filter((trade) => trade.underlying === symbol)
+              .reduce((sum, trade) => sum + Number(trade.profit || 0), 0),
+          ),
+        })),
+      ),
+      streakSequence: sortedRealizedTrades.slice(-12).map((trade) => ({
+        label: Number(trade.profit || 0) > 0 ? "W" : Number(trade.profit || 0) < 0 ? "L" : "B",
+        date: trade.dateKey,
+        value: trade.profit || 0,
+      })),
       pnlByTrade: sortedRealizedTrades.map((trade, index) => ({
         label: getDashboardTradeLabel(trade.sequence || index + 1),
         date: trade.dateKey,
@@ -1640,6 +1785,33 @@ async function isAlgoActuallyRunning() {
   }
 }
 
+// Stop only the listener on port 3000. This also works after the dashboard
+// restarts and no longer owns the original child-process handle.
+function stopAlgoListener() {
+  return new Promise((resolve) => {
+    let output = "";
+    const lookup = spawn("lsof", ["-tiTCP:3000", "-sTCP:LISTEN"]);
+    lookup.stdout.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+    lookup.on("error", () => resolve(false));
+    lookup.on("exit", () => {
+      const pids = output
+        .split(/\s+/)
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value > 0);
+      pids.forEach((pid) => {
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch (error) {
+          // It may have exited between discovery and termination.
+        }
+      });
+      resolve(pids.length > 0);
+    });
+  });
+}
+
 const NGROK_API_URLS = [
   "http://127.0.0.1:4040/api/tunnels",
   "http://127.0.0.1:4041/api/tunnels",
@@ -1730,6 +1902,7 @@ app.post("/api/config", (req, res) => {
 
 // Start the algo webhook server as a child process.
 app.post("/api/start-server", async (req, res) => {
+  keepAlgoRunning = true;
   if (algoProcess) {
     appendLifecycleLog("Algo server start requested but already running");
     return res.json({ success: true, message: "Algo server already running" });
@@ -1754,20 +1927,33 @@ app.post("/api/start-server", async (req, res) => {
       code === 0 || signal === "SIGTERM" ? "info" : "warn",
     );
     algoProcess = null;
+    if (keepAlgoRunning && !shuttingDown) {
+      appendLifecycleLog("Algo server stopped unexpectedly; restarting in 5 seconds", "warn");
+      sendTelegram("⚠️ IC Algo Bot: algo server stopped unexpectedly. Automatic restart is in progress.");
+      setTimeout(() => {
+        if (keepAlgoRunning && !shuttingDown) {
+          axios.post(`http://localhost:${PORT}/api/start-server`).catch((error) =>
+            appendLifecycleLog(`Algo server automatic restart failed: ${error.message}`, "error"),
+          );
+        }
+      }, SELF_HEAL_DELAY_MS);
+    }
   });
 
   res.json({ success: true, message: "Algo server started" });
 });
 
 // Stop the child algo server if this dashboard started it.
-app.post("/api/stop-server", (req, res) => {
-  if (!algoProcess) {
+app.post("/api/stop-server", async (req, res) => {
+  keepAlgoRunning = false;
+  const stoppedListener = await stopAlgoListener();
+  if (!algoProcess && !stoppedListener) {
     appendLifecycleLog("Algo server stop requested but dashboard has no child process");
     return res.json({ success: true, message: "Algo server not running" });
   }
 
   appendLifecycleLog("Algo server stop requested");
-  algoProcess.kill();
+  if (algoProcess) algoProcess.kill();
   algoProcess = null;
 
   res.json({ success: true, message: "Algo server stopped" });
@@ -1775,6 +1961,7 @@ app.post("/api/stop-server", (req, res) => {
 
 // Start ngrok so TradingView can reach the local webhook.
 app.post("/api/start-ngrok", async (req, res) => {
+  keepNgrokRunning = true;
   if (ngrokStarting) {
     appendLifecycleLog("Ngrok start requested while startup is already in progress");
     return res.json({
@@ -1820,6 +2007,17 @@ app.post("/api/start-ngrok", async (req, res) => {
         code === 0 || signal === "SIGTERM" ? "info" : "warn",
       );
       ngrokProcess = null;
+      if (keepNgrokRunning && !shuttingDown) {
+        appendLifecycleLog("Ngrok stopped unexpectedly; restarting in 5 seconds", "warn");
+        sendTelegram("⚠️ IC Algo Bot: ngrok stopped unexpectedly. Automatic restart is in progress.");
+        setTimeout(() => {
+          if (keepNgrokRunning && !shuttingDown) {
+            axios.post(`http://localhost:${PORT}/api/start-ngrok`).catch((error) =>
+              appendLifecycleLog(`Ngrok automatic restart failed: ${error.message}`, "error"),
+            );
+          }
+        }, SELF_HEAL_DELAY_MS);
+      }
     });
 
     return res.json({
@@ -1839,6 +2037,7 @@ app.post("/api/start-ngrok", async (req, res) => {
 
 // Stop ngrok, including any process that may have been started separately.
 app.post("/api/stop-ngrok", async (req, res) => {
+  keepNgrokRunning = false;
   try {
     appendLifecycleLog("Ngrok stop requested");
 
@@ -1861,6 +2060,86 @@ app.post("/api/stop-ngrok", async (req, res) => {
       message: error.message,
     });
   }
+});
+
+// One-click startup used by the macOS launcher. Existing individual controls
+// remain available and an intentional Stop disables recovery for that service.
+app.post("/api/start-all", async (req, res) => {
+  keepAlgoRunning = true;
+  keepNgrokRunning = true;
+
+  const results = await Promise.allSettled([
+    axios.post(`http://localhost:${PORT}/api/start-server`, null, { timeout: 5000 }),
+    axios.post(`http://localhost:${PORT}/api/start-ngrok`, null, { timeout: 5000 }),
+  ]);
+  const failures = results
+    .filter((result) => result.status === "rejected")
+    .map((result) => result.reason?.message || "Unknown startup error");
+
+  appendLifecycleLog(
+    failures.length
+      ? `One-click startup completed with warnings: ${failures.join("; ")}`
+      : "One-click startup requested for algo server and ngrok",
+    failures.length ? "warn" : "info",
+  );
+  res.status(failures.length ? 207 : 200).json({
+    success: failures.length === 0,
+    message: failures.length ? "Startup needs attention" : "Startup initiated",
+    failures,
+  });
+
+  setTimeout(async () => {
+    const [algoRunning, ngrokHealth] = await Promise.all([
+      isAlgoActuallyRunning(),
+      getNgrokHealth(),
+    ]);
+    let dhanConnected = false;
+    let dhanMessage = "Algo server unavailable";
+    if (algoRunning) {
+      try {
+        const response = await axios.get("http://localhost:3000/dhan-health", { timeout: 6000 });
+        dhanConnected = Boolean(response.data.connected);
+        dhanMessage = response.data.message || "";
+      } catch (error) {
+        dhanMessage = error.message;
+      }
+    }
+
+    if (algoRunning && ngrokHealth.running && dhanConnected) {
+      sendTelegram(`✅ IC Algo Bot is ready. Webhook: ${ngrokHealth.url}`);
+    } else {
+      sendTelegram(
+        `⚠️ IC Algo Bot needs attention. Server: ${algoRunning ? "running" : "stopped"}; ngrok: ${ngrokHealth.running ? "running" : "stopped"}; Dhan: ${dhanMessage}`,
+      );
+    }
+  }, 8000);
+});
+
+// Consolidated readiness result for the launcher and dashboard diagnostics.
+app.get("/api/readiness", async (req, res) => {
+  const [algoRunning, ngrokHealth] = await Promise.all([
+    isAlgoActuallyRunning(),
+    getNgrokHealth(),
+  ]);
+  let dhan = { connected: false, message: "Algo server is still starting" };
+  if (algoRunning) {
+    try {
+      const response = await axios.get("http://localhost:3000/dhan-health", { timeout: 6000 });
+      dhan = response.data;
+    } catch (error) {
+      dhan = { connected: false, message: error.message };
+    }
+  }
+
+  const ready = algoRunning && ngrokHealth.running && Boolean(dhan.connected);
+  res.status(ready ? 200 : 503).json({
+    ready,
+    algoRunning,
+    ngrokRunning: ngrokHealth.running,
+    ngrokUrl: ngrokHealth.url,
+    dhanConnected: Boolean(dhan.connected),
+    dhanMessage: dhan.message || "",
+  });
 });
 
 // Proxy the algo server status into the dashboard.
@@ -2092,6 +2371,23 @@ app.get("/api/trade-analytics", (req, res) => {
   }
 });
 
+// Manual, non-executed trade outcomes used for timeframe streak planning.
+app.get("/api/streak-planner", (req, res) => {
+  try {
+    res.json({ success: true, planner: readStreakPlanner() });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.post("/api/streak-planner", (req, res) => {
+  try {
+    res.json({ success: true, planner: writeStreakPlanner(req.body) });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // Proxy Dhan health from the algo server so the dashboard has one API host.
 app.get("/api/dhan-health", async (req, res) => {
   try {
@@ -2276,4 +2572,44 @@ app.post("/api/update-dhan-token", (req, res) => {
 app.listen(PORT, () => {
   appendLifecycleLog(`Control dashboard started on port ${PORT}`);
   console.log(`Control dashboard running at http://localhost:${PORT}`);
+
+  if (process.env.IC_AUTO_MANAGE === "true") {
+    setTimeout(() => {
+      axios.post(`http://localhost:${PORT}/api/start-all`).catch((error) =>
+        appendLifecycleLog(`Automatic startup failed: ${error.message}`, "error"),
+      );
+    }, 1000);
+  }
 });
+
+// Also supervise processes that survived a dashboard restart and are therefore
+// no longer direct children of this Node process.
+setInterval(async () => {
+  if (shuttingDown) return;
+
+  if (keepAlgoRunning && !(await isAlgoActuallyRunning())) {
+    axios.post(`http://localhost:${PORT}/api/start-server`).catch((error) =>
+      appendLifecycleLog(`Algo server health recovery failed: ${error.message}`, "error"),
+    );
+  }
+
+  if (keepNgrokRunning && !(await getNgrokHealth()).running) {
+    axios.post(`http://localhost:${PORT}/api/start-ngrok`).catch((error) =>
+      appendLifecycleLog(`Ngrok health recovery failed: ${error.message}`, "error"),
+    );
+  }
+}, 15000).unref();
+
+function markDashboardShutdown() {
+  shuttingDown = true;
+  keepAlgoRunning = false;
+  keepNgrokRunning = false;
+}
+
+function shutdownDashboardProcess() {
+  markDashboardShutdown();
+  process.exit(0);
+}
+
+process.on("SIGINT", shutdownDashboardProcess);
+process.on("SIGTERM", shutdownDashboardProcess);

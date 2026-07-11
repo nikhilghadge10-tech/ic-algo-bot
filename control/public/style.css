@@ -400,6 +400,453 @@
   letter-spacing: 0;
 }
 
+/* Manual timeframe outcome matrix. */
+.streakPlannerCard {
+  overflow: hidden;
+}
+
+.streakPlannerHeader,
+.streakPlannerEntryToolbar {
+  gap: 10px;
+}
+
+.streakPlannerHeader {
+  margin-bottom: 14px;
+}
+
+.streakPlannerSavedAt {
+  color: var(--muted) !important;
+  font-size: 0.78rem;
+}
+
+.streakPlannerEntryToolbar {
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(102, 112, 133, 0.16);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.streakPlannerEntryActions {
+  gap: 8px;
+}
+
+.streakPlannerTimestampPicker .sapMInputBaseContentWrapper {
+  border-color: rgba(71, 84, 103, 0.26) !important;
+  border-radius: 7px !important;
+  background: #ffffff !important;
+}
+
+.streakPlannerTimeframeSwitch {
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(102, 112, 133, 0.16);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+}
+
+.streakPlannerTimeframeSwitch .sapMSegB {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.streakPlannerTimeframeControl,
+.streakPlannerToolbarStats {
+  gap: 10px;
+}
+
+.streakPlannerTimeframeSwitch .sapMSegBBtn {
+  border-radius: 7px !important;
+}
+
+.streakPlannerTimeframeSwitch .sapMSegBBtn.sapMSegBBtnSel,
+.streakPlannerTimeframeSwitch .sapMSegBBtn.sapMSegBBtnSel .sapMSegBBtnInner {
+  border-color: #93b4ff !important;
+  background: #eaf1ff !important;
+  color: #1847b8 !important;
+  box-shadow: 0 0 0 2px rgba(31, 94, 255, 0.08);
+}
+
+.streakPlannerTimeframeSwitch .sapMSegBBtn.sapMSegBBtnSel .sapMSegBBtnInner {
+  font-weight: 900 !important;
+}
+
+.streakPlannerTimeframeLabel {
+  font-weight: 700;
+}
+
+.streakPlannerModeButton .sapMBtnInner {
+  min-width: 2.25rem;
+  justify-content: center;
+}
+
+.streakPlannerModePanel {
+  margin-top: 0;
+  padding: 10px;
+  border: 1px solid rgba(102, 112, 133, 0.16);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+}
+
+.streakPlannerToolbarChip {
+  display: inline-flex !important;
+  align-items: center;
+  min-height: 2.15rem;
+  padding: 0.22rem 0.7rem !important;
+  border: 1px solid rgba(71, 84, 103, 0.26);
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 5px 12px rgba(15, 23, 42, 0.06);
+}
+
+.streakPlannerToolbarChip .sapMObjStatusTitle,
+.streakPlannerToolbarChip .sapMObjStatusText {
+  font-size: 0.8rem !important;
+  font-weight: 800 !important;
+  line-height: 1 !important;
+  text-shadow: none !important;
+}
+
+.streakPlannerToolbarChip .sapMObjStatusTitle {
+  color: #344054 !important;
+  margin-right: 0.32rem;
+}
+
+.streakPlannerToolbarChip:not(.sapMObjStatusInverted) .sapMObjStatusText {
+  color: #101828 !important;
+}
+
+.streakPlannerToolbarChip.sapMObjStatusInverted .sapMObjStatusWrapper {
+  min-width: 1.8rem;
+  justify-content: center;
+  padding: 0.26rem 0.42rem !important;
+  border-radius: 999px !important;
+}
+
+.streakPlannerToolbarChip.sapMObjStatusInverted .sapMObjStatusText {
+  color: #ffffff !important;
+}
+
+.streakPlannerToolbarChip.sapMObjStatusInverted.sapMObjStatusSuccess .sapMObjStatusWrapper {
+  background: #16803c !important;
+  border-color: #16803c !important;
+}
+
+.streakPlannerToolbarChip.sapMObjStatusInverted.sapMObjStatusWarning .sapMObjStatusWrapper {
+  background: #c26a00 !important;
+  border-color: #c26a00 !important;
+}
+
+.streakPlannerToolbarChip.sapMObjStatusInverted.sapMObjStatusError .sapMObjStatusWrapper {
+  background: #c33131 !important;
+  border-color: #c33131 !important;
+}
+
+.streakPlannerEntryHelp {
+  color: var(--muted) !important;
+  font-size: 0.82rem;
+}
+
+.streakPlannerScroll {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.streakPlannerTable {
+  min-width: 900px;
+}
+
+.streakPlannerEntryTable {
+  min-width: 36rem;
+}
+
+.streakPlannerTable .sapMListTblHeaderCell {
+  background: var(--panel-soft);
+}
+
+.streakPlannerTable .sapMListTblCell {
+  padding: 0.48rem 0.35rem;
+}
+
+.streakOutcomeDisplay {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  min-width: 2rem;
+  min-height: 2rem;
+  padding: 0.2rem 0.45rem !important;
+  border-radius: 999px !important;
+  text-align: center;
+}
+
+/* OpenUI5 paints inverted ObjectStatus colors on the inner wrapper. Keep the
+   wrapper transparent so our value-band colors on the outer badge are visible. */
+.streakOutcomeDisplay.sapMObjStatusInverted .sapMObjStatusWrapper {
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: inherit !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.streakOutcomeDisplay.sapMObjStatusInverted .sapMObjStatusText,
+.streakOutcomeDisplay.sapMObjStatusInverted span.sapMObjStatusText {
+  font-size: 0.9rem !important;
+  font-weight: 800 !important;
+  line-height: 1 !important;
+  text-shadow: none;
+}
+
+.streakOutcomeDisplay:not(.sapMObjStatusInverted) .sapMObjStatusText {
+  color: var(--muted) !important;
+  text-shadow: none;
+}
+
+.streakOutcomeSelect {
+  border: 2px solid var(--line-strong) !important;
+  border-radius: 7px !important;
+  background: #ffffff !important;
+}
+
+.streakOutcomeSelect[data-outcome-band]:not([data-outcome-band="empty"]) .sapMSltLabel,
+.streakOutcomeSelect[data-outcome-band]:not([data-outcome-band="empty"]) .sapMSltArrow {
+  font-weight: 800 !important;
+  text-shadow: none;
+}
+
+.streakOutcomeDisplay[data-outcome-band="loss"],
+.streakOutcomeSelect[data-outcome-band="loss"] {
+  border-color: #f3a0a8 !important;
+  background: #fff1f2 !important;
+}
+
+.streakOutcomeDisplay[data-outcome-band="loss"] .sapMObjStatusText,
+.streakOutcomeSelect[data-outcome-band="loss"] .sapMSltLabel,
+.streakOutcomeSelect[data-outcome-band="loss"] .sapMSltArrow {
+  color: #e5484d !important;
+}
+
+.streakOutcomeDisplay[data-outcome-band="r1"],
+.streakOutcomeSelect[data-outcome-band="r1"] {
+  border-color: #a7ddb9 !important;
+  background: #effaf2 !important;
+}
+
+.streakOutcomeDisplay[data-outcome-band="r1"] .sapMObjStatusText,
+.streakOutcomeSelect[data-outcome-band="r1"] .sapMSltLabel,
+.streakOutcomeSelect[data-outcome-band="r1"] .sapMSltArrow {
+  color: #56a86f !important;
+}
+
+.streakOutcomeDisplay[data-outcome-band="r2-3"],
+.streakOutcomeSelect[data-outcome-band="r2-3"] {
+  border-color: #72c58d !important;
+  background: #e4f6e9 !important;
+}
+
+.streakOutcomeDisplay[data-outcome-band="r2-3"] .sapMObjStatusText,
+.streakOutcomeSelect[data-outcome-band="r2-3"] .sapMSltLabel,
+.streakOutcomeSelect[data-outcome-band="r2-3"] .sapMSltArrow {
+  color: #2f914f !important;
+}
+
+.streakOutcomeDisplay[data-outcome-band="r4-5"],
+.streakOutcomeSelect[data-outcome-band="r4-5"] {
+  border-color: #3ba764 !important;
+  background: #d8f0df !important;
+}
+
+.streakOutcomeDisplay[data-outcome-band="r4-5"] .sapMObjStatusText,
+.streakOutcomeSelect[data-outcome-band="r4-5"] .sapMSltLabel,
+.streakOutcomeSelect[data-outcome-band="r4-5"] .sapMSltArrow {
+  color: #16763b !important;
+}
+
+.streakOutcomeDisplay[data-outcome-band="r6plus"],
+.streakOutcomeSelect[data-outcome-band="r6plus"] {
+  border-color: #14723d !important;
+  background: #c9e9d3 !important;
+}
+
+.streakOutcomeDisplay[data-outcome-band="r6plus"] .sapMObjStatusText,
+.streakOutcomeSelect[data-outcome-band="r6plus"] .sapMSltLabel,
+.streakOutcomeSelect[data-outcome-band="r6plus"] .sapMSltArrow {
+  color: #075c2f !important;
+}
+
+.streakOutcomeSelect .sapMSltLabel {
+  font-size: 0.9rem !important;
+  font-weight: 700 !important;
+  text-align: center;
+}
+
+.streakOutcomeInput .sapMInputBaseContentWrapper {
+  border: 2px solid var(--line-strong) !important;
+  border-radius: 7px !important;
+  background: #ffffff !important;
+}
+
+.streakOutcomeInput .sapMInputBaseInner {
+  color: var(--ink) !important;
+  background: transparent !important;
+  font-size: 0.9rem !important;
+  font-weight: 800 !important;
+  text-align: center !important;
+}
+
+.streakOutcomeInput:focus-within .sapMInputBaseContentWrapper {
+  outline: 2px solid rgba(31, 94, 255, 0.3);
+  outline-offset: 1px;
+}
+
+.streakOutcomeInput[data-outcome-band="loss"] .sapMInputBaseContentWrapper {
+  border-color: #f3a0a8 !important;
+  background: #fff1f2 !important;
+}
+
+.streakOutcomeInput[data-outcome-band="loss"] .sapMInputBaseInner {
+  color: #e5484d !important;
+}
+
+.streakOutcomeInput[data-outcome-band="r1"] .sapMInputBaseContentWrapper {
+  border-color: #a7ddb9 !important;
+  background: #effaf2 !important;
+}
+
+.streakOutcomeInput[data-outcome-band="r1"] .sapMInputBaseInner {
+  color: #56a86f !important;
+}
+
+.streakOutcomeInput[data-outcome-band="r2-3"] .sapMInputBaseContentWrapper {
+  border-color: #72c58d !important;
+  background: #e4f6e9 !important;
+}
+
+.streakOutcomeInput[data-outcome-band="r2-3"] .sapMInputBaseInner {
+  color: #2f914f !important;
+}
+
+.streakOutcomeInput[data-outcome-band="r4-5"] .sapMInputBaseContentWrapper {
+  border-color: #3ba764 !important;
+  background: #d8f0df !important;
+}
+
+.streakOutcomeInput[data-outcome-band="r4-5"] .sapMInputBaseInner {
+  color: #16763b !important;
+}
+
+.streakOutcomeInput[data-outcome-band="r6plus"] .sapMInputBaseContentWrapper {
+  border-color: #14723d !important;
+  background: #c9e9d3 !important;
+}
+
+.streakOutcomeInput[data-outcome-band="r6plus"] .sapMInputBaseInner {
+  color: #075c2f !important;
+}
+
+.streakScoreDisplay {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.25rem;
+  min-height: 2rem;
+  padding: 0.2rem 0.5rem !important;
+  border: 1px solid transparent !important;
+  border-radius: 999px !important;
+}
+
+.streakScoreDisplay.sapMObjStatusInverted .sapMObjStatusWrapper {
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: inherit !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.streakScoreDisplay .sapMObjStatusText {
+  font-size: 0.9rem !important;
+  font-weight: 800 !important;
+  line-height: 1 !important;
+  text-shadow: none !important;
+}
+
+.streakRowTotalDisplay {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.25rem;
+  min-height: 2rem;
+  padding: 0.2rem 0.45rem !important;
+  border-radius: 999px !important;
+}
+
+.streakRowTotalDisplay.sapMObjStatusInverted .sapMObjStatusWrapper {
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: inherit !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.streakRowTotalDisplay .sapMObjStatusText {
+  font-size: 0.86rem !important;
+  font-weight: 800 !important;
+  line-height: 1 !important;
+  text-shadow: none !important;
+}
+
+.streakScoreDisplay[data-score-band="low"] {
+  border-color: #f3a0a8 !important;
+  background: #fff1f2 !important;
+}
+
+.streakScoreDisplay[data-score-band="low"] .sapMObjStatusText {
+  color: #e5484d !important;
+}
+
+.streakScoreDisplay[data-score-band="caution"] {
+  border-color: #e9c46a !important;
+  background: #fff8df !important;
+}
+
+.streakScoreDisplay[data-score-band="caution"] .sapMObjStatusText {
+  color: #a66300 !important;
+}
+
+.streakScoreDisplay[data-score-band="fair"] {
+  border-color: #a7ddb9 !important;
+  background: #effaf2 !important;
+}
+
+.streakScoreDisplay[data-score-band="fair"] .sapMObjStatusText {
+  color: #56a86f !important;
+}
+
+.streakScoreDisplay[data-score-band="good"] {
+  border-color: #3ba764 !important;
+  background: #d8f0df !important;
+}
+
+.streakScoreDisplay[data-score-band="good"] .sapMObjStatusText {
+  color: #16763b !important;
+}
+
+.streakScoreDisplay[data-score-band="strong"] {
+  border-color: #14723d !important;
+  background: #c9e9d3 !important;
+}
+
+.streakScoreDisplay[data-score-band="strong"] .sapMObjStatusText {
+  color: #075c2f !important;
+}
+
+.streakScoreDisplay[data-score-band="empty"] .sapMObjStatusText {
+  color: var(--muted) !important;
+}
+
 /* Reusable status grid and tiles. */
 .cockpitLiveCard,
 .cockpitReadinessCard,
@@ -891,13 +1338,13 @@
 }
 
 .indicatorDownloadButton .sapMBtnInner {
-  min-width: 118px;
+  min-width: 2.5rem;
   justify-content: center;
 }
 
 .payloadGrid {
   display: grid !important;
-  grid-template-columns: repeat(2, minmax(280px, 1fr));
+  grid-template-columns: repeat(4, minmax(210px, 1fr));
   gap: 12px;
   width: 100%;
 }
@@ -944,7 +1391,7 @@
 
 .payloadTextArea .sapMInputBaseInner {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 0.78rem;
+  font-size: 0.74rem;
   font-weight: 400 !important;
   line-height: 1.45;
 }
@@ -1863,6 +2310,119 @@
 .analyticsGainDrawdownTile {
   border-color: rgba(22, 128, 60, 0.22);
   background: linear-gradient(180deg, #ffffff, #f1fbf4);
+}
+
+.analyticsPnlInteractiveTile {
+  cursor: pointer;
+}
+
+.analyticsPnlInteractiveTile:focus {
+  outline: 3px solid rgba(37, 99, 235, 0.28);
+  outline-offset: 2px;
+}
+
+.analyticsOptionPnlPopoverContent {
+  padding: 14px 16px 16px;
+}
+
+.analyticsOptionPnlChart {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 78px;
+}
+
+.analyticsOptionPnlPie {
+  width: 70px;
+  height: 70px;
+  flex: 0 0 70px;
+  border: 4px solid rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.16);
+}
+
+.analyticsOptionPnlLegend {
+  display: grid;
+  flex: 1;
+  gap: 8px;
+  min-width: 0;
+}
+
+.analyticsOptionPnlLegend > div {
+  display: grid;
+  grid-template-columns: 10px 1fr;
+  align-items: center;
+  column-gap: 6px;
+}
+
+.analyticsOptionPnlLegend b,
+.analyticsOptionPnlLegend small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analyticsOptionPnlLegend b {
+  color: #344054;
+  font-size: 0.75rem;
+}
+
+.analyticsOptionPnlLegend small {
+  grid-column: 2;
+  color: #667085;
+  font-size: 0.68rem;
+}
+
+.analyticsOptionPnlDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.analyticsOptionPnlCall {
+  background: #2563eb;
+}
+
+.analyticsOptionPnlPut {
+  background: #8b5cf6;
+}
+
+.analyticsStreakSequence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 0 10px;
+}
+
+.analyticsStreakDot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  color: #ffffff;
+  font-size: 0.75rem;
+  font-weight: 850;
+  box-shadow: 0 3px 8px rgba(15, 23, 42, 0.12);
+}
+
+.analyticsStreakDot[data-state="win"] {
+  background: var(--green);
+}
+
+.analyticsStreakDot[data-state="loss"] {
+  background: var(--red);
+}
+
+.analyticsStreakDot[data-state="breakeven"] {
+  background: #98a2b3;
+}
+
+.analyticsStreakHint,
+.analyticsDrilldownEmpty {
+  color: #667085;
+  font-size: 0.72rem;
 }
 
 .analyticsOutcomeMetricTile::before {
@@ -2786,6 +3346,12 @@
 
   .planningModeBox {
     min-height: 0;
+  }
+}
+
+@media (max-width: 1080px) {
+  .payloadGrid {
+    grid-template-columns: repeat(2, minmax(240px, 1fr));
   }
 }
 

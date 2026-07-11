@@ -10,6 +10,7 @@ const path = require("path");
 const { getIstDateKey, normalizeTradeMode } = require("./tradeLimitService");
 
 const tradeHistoryFile = path.join(__dirname, "../data/tradeHistory.json");
+const LEDGER_VERSION = 2;
 
 function nowIso() {
   return new Date().toISOString();
@@ -17,37 +18,90 @@ function nowIso() {
 
 function getEmptyHistory(date = getIstDateKey()) {
   return {
+    ledgerVersion: LEDGER_VERSION,
     date,
+    updatedAt: nowIso(),
     trades: [],
   };
+}
+
+function getTradeDateKey(trade, fallbackDate = "") {
+  const timestamp = trade?.entryTime || trade?.exitTime;
+  if (timestamp) {
+    const date = new Date(timestamp);
+    if (!Number.isNaN(date.getTime())) {
+      return new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Kolkata",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(date);
+    }
+  }
+
+  const idDate = String(trade?.id || "").match(/^(\d{4}-\d{2}-\d{2})/);
+  return idDate?.[1] || fallbackDate;
+}
+
+function writeLedger(history) {
+  const tempFile = `${tradeHistoryFile}.tmp`;
+  fs.writeFileSync(tempFile, JSON.stringify(history, null, 2));
+  fs.renameSync(tempFile, tradeHistoryFile);
 }
 
 function loadTradeHistory() {
   try {
     const data = fs.readFileSync(tradeHistoryFile, "utf8");
-    return JSON.parse(data);
+    const parsed = JSON.parse(data);
+    if (parsed.ledgerVersion === LEDGER_VERSION) {
+      return {
+        ...parsed,
+        trades: Array.isArray(parsed.trades) ? parsed.trades : [],
+      };
+    }
+
+    const backupFile = `${tradeHistoryFile}.bak-ledger-migration-${Date.now()}`;
+    fs.copyFileSync(tradeHistoryFile, backupFile);
+    const migrated = {
+      ledgerVersion: LEDGER_VERSION,
+      date: getIstDateKey(),
+      updatedAt: nowIso(),
+      migratedFromDailyDate: parsed.date || null,
+      migrationBackup: path.basename(backupFile),
+      trades: Array.isArray(parsed.trades) ? parsed.trades : [],
+    };
+    writeLedger(migrated);
+    return migrated;
   } catch (error) {
     return getEmptyHistory();
   }
 }
 
-function saveTradeHistory(history) {
-  fs.writeFileSync(tradeHistoryFile, JSON.stringify(history, null, 2));
+function saveTradeHistory(dayHistory) {
+  const ledger = loadTradeHistory();
+  const date = dayHistory.date || getIstDateKey();
+  const otherDays = ledger.trades.filter(
+    (trade) => getTradeDateKey(trade, ledger.migratedFromDailyDate) !== date,
+  );
+  writeLedger({
+    ...ledger,
+    ledgerVersion: LEDGER_VERSION,
+    date: getIstDateKey(),
+    updatedAt: nowIso(),
+    trades: [...otherDays, ...(Array.isArray(dayHistory.trades) ? dayHistory.trades : [])],
+  });
 }
 
 function getTradeHistoryForToday() {
   const today = getIstDateKey();
   const history = loadTradeHistory();
 
-  if (history.date !== today) {
-    const resetHistory = getEmptyHistory(today);
-    saveTradeHistory(resetHistory);
-    return resetHistory;
-  }
-
   return {
+    ledgerVersion: LEDGER_VERSION,
     date: today,
-    trades: Array.isArray(history.trades) ? history.trades : [],
+    trades: (Array.isArray(history.trades) ? history.trades : []).filter(
+      (trade) => getTradeDateKey(trade, history.migratedFromDailyDate) === today,
+    ),
   };
 }
 

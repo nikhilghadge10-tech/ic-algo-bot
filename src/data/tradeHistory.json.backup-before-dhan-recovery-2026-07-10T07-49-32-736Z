@@ -1,0 +1,8 @@
+{
+  "ledgerVersion": 2,
+  "date": "2026-07-10",
+  "updatedAt": "2026-07-10T07:49:14.666Z",
+  "migratedFromDailyDate": "2026-07-10",
+  "migrationBackup": "tradeHistory.json.bak-ledger-migration-1783669754665",
+  "trades": []
+}

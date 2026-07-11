@@ -919,7 +919,7 @@
               formatStreakPlannerUpdatedAt(result.planner?.updatedAt),
             );
           } catch (error) {
-            sap.m.MessageToast.show("Unable to load Streak Planner");
+            sap.m.MessageToast.show("Unable to load Probability");
           }
         }
 
@@ -945,9 +945,9 @@
               "/STREAK_PLANNER_UPDATED_LABEL",
               formatStreakPlannerUpdatedAt(result.planner?.updatedAt),
             );
-            if (!options.silent) sap.m.MessageToast.show("Streak Planner saved");
+            if (!options.silent) sap.m.MessageToast.show("Probability saved");
           } catch (error) {
-            sap.m.MessageToast.show("Unable to save Streak Planner");
+            sap.m.MessageToast.show("Unable to save Probability");
           } finally {
             model.setProperty("/STREAK_PLANNER_SAVING", false);
           }
@@ -4091,7 +4091,7 @@
                 items: [
                   new sap.m.VBox({
                     items: [
-                      new sap.m.Title({ text: "🧭 Streak Planner", level: "H3" }),
+                      new sap.m.Title({ text: "Probability", level: "H3" }),
                     ],
                   }),
                   new sap.m.Text({
@@ -5018,13 +5018,8 @@
 
               new sap.m.HBox({
                 items: [
-                  ...TRADINGVIEW_ADDITIONAL_TIMEFRAME_FIELDS.filter(
-                    (field) => field.key !== "ALLOW_TV_TIMEFRAME_30M",
-                  ),
                   TRADINGVIEW_BASE_TIMEFRAME_FIELD,
-                  TRADINGVIEW_ADDITIONAL_TIMEFRAME_FIELDS.find(
-                    (field) => field.key === "ALLOW_TV_TIMEFRAME_30M",
-                  ),
+                  ...TRADINGVIEW_ADDITIONAL_TIMEFRAME_FIELDS,
                 ].map(
                   createTradingViewTimeframeCheckbox,
                 ),
@@ -6421,7 +6416,7 @@
           return new sap.m.VBox({
             items: [
               new sap.m.Title({
-                text: "⚙ System Readiness",
+                text: "🛠️ System Readiness",
                 level: "H3",
               }).addStyleClass("sectionTitle"),
 
@@ -8114,8 +8109,8 @@
 
             new sap.m.IconTabFilter({
               key: "streakPlanner",
-              text: "Streak Planner",
-              icon: "sap-icon://table-chart",
+              text: "Probability",
+              icon: "images/tab-probability.png",
               content: [streakPlannerCard()],
             }),
           ],
@@ -8130,12 +8125,6 @@
                 new sap.m.HBox({
                   alignItems: "Center",
                   items: [
-                    new sap.m.Avatar({
-                      src: "images/ic-bull-face.png",
-                      displaySize: "XL",
-                      displayShape: "Circle",
-                    }).addStyleClass("botAvatar"),
-
                     new sap.m.VBox({
                       items: [
                         new sap.m.Title({
@@ -8209,6 +8198,12 @@
                         }).addStyleClass("marketDayStrip"),
                       ],
                     }).addStyleClass("heroMainContent"),
+
+                    new sap.m.Avatar({
+                      src: "images/ic-bull-face.png",
+                      displaySize: "XL",
+                      displayShape: "Circle",
+                    }).addStyleClass("botAvatar"),
 
                     new sap.m.VBox({
                       visible: {

@@ -21,11 +21,62 @@ const { sendTelegram } = require("../src/services/telegramService");
 let algoProcess = null;
 let ngrokProcess = null;
 let ngrokStarting = false;
+let ngrokRestartTimer = null;
+let ngrokRestartAttempts = 0;
+let ngrokNextRestartAt = 0;
+let ngrokOutageAlerted = false;
 let ngrokUrl = "";
 let keepAlgoRunning = process.env.IC_AUTO_MANAGE === "true";
 let keepNgrokRunning = process.env.IC_AUTO_MANAGE === "true";
 let shuttingDown = false;
 const SELF_HEAL_DELAY_MS = 5000;
+const NGROK_MAX_RESTART_DELAY_MS = 5 * 60 * 1000;
+
+function getNgrokRestartDelay() {
+  return Math.min(
+    SELF_HEAL_DELAY_MS * (2 ** Math.min(ngrokRestartAttempts, 6)),
+    NGROK_MAX_RESTART_DELAY_MS,
+  );
+}
+
+function scheduleNgrokRestart() {
+  if (!keepNgrokRunning || shuttingDown || ngrokRestartTimer) return;
+
+  const restartDelay = getNgrokRestartDelay();
+  ngrokRestartAttempts += 1;
+  ngrokNextRestartAt = Date.now() + restartDelay;
+  appendLifecycleLog(
+    `Ngrok restart attempt ${ngrokRestartAttempts} scheduled in ${Math.round(restartDelay / 1000)} seconds`,
+    "warn",
+  );
+
+  if (!ngrokOutageAlerted) {
+    ngrokOutageAlerted = true;
+    sendTelegram("⚠️ IC Algo Bot: ngrok stopped unexpectedly. Automatic recovery is in progress; repeated alerts are suppressed.");
+  }
+
+  ngrokRestartTimer = setTimeout(() => {
+    ngrokRestartTimer = null;
+    ngrokNextRestartAt = 0;
+    if (!keepNgrokRunning || shuttingDown) return;
+    axios.post(`http://localhost:${PORT}/api/start-ngrok`).catch((error) => {
+      appendLifecycleLog(`Ngrok automatic restart failed: ${error.message}`, "error");
+      scheduleNgrokRestart();
+    });
+  }, restartDelay);
+  ngrokRestartTimer.unref();
+}
+
+function clearNgrokRestartState({ recovered = false } = {}) {
+  if (ngrokRestartTimer) clearTimeout(ngrokRestartTimer);
+  ngrokRestartTimer = null;
+  ngrokNextRestartAt = 0;
+  ngrokRestartAttempts = 0;
+  if (recovered && ngrokOutageAlerted) {
+    sendTelegram("✅ IC Algo Bot: ngrok connection recovered.");
+  }
+  ngrokOutageAlerted = false;
+}
 const logPath = path.join(__dirname, "..", "logs", "app.log");
 const instrumentMasterPath = path.join(__dirname, "..", "api-scrip-master.csv");
 const tradingViewIndicatorPath = path.join(
@@ -1962,6 +2013,12 @@ app.post("/api/stop-server", async (req, res) => {
 // Start ngrok so TradingView can reach the local webhook.
 app.post("/api/start-ngrok", async (req, res) => {
   keepNgrokRunning = true;
+  if (ngrokNextRestartAt > Date.now()) {
+    return res.json({
+      success: true,
+      message: "Ngrok restart is waiting for the recovery backoff",
+    });
+  }
   if (ngrokStarting) {
     appendLifecycleLog("Ngrok start requested while startup is already in progress");
     return res.json({
@@ -1976,6 +2033,7 @@ app.post("/api/start-ngrok", async (req, res) => {
     const health = await getNgrokHealth();
 
     if (health.running && !health.duplicate) {
+      clearNgrokRestartState({ recovered: true });
       appendLifecycleLog(
         `Ngrok start requested but already running url=${health.url || "unknown"}`,
       );
@@ -2008,15 +2066,7 @@ app.post("/api/start-ngrok", async (req, res) => {
       );
       ngrokProcess = null;
       if (keepNgrokRunning && !shuttingDown) {
-        appendLifecycleLog("Ngrok stopped unexpectedly; restarting in 5 seconds", "warn");
-        sendTelegram("⚠️ IC Algo Bot: ngrok stopped unexpectedly. Automatic restart is in progress.");
-        setTimeout(() => {
-          if (keepNgrokRunning && !shuttingDown) {
-            axios.post(`http://localhost:${PORT}/api/start-ngrok`).catch((error) =>
-              appendLifecycleLog(`Ngrok automatic restart failed: ${error.message}`, "error"),
-            );
-          }
-        }, SELF_HEAL_DELAY_MS);
+        scheduleNgrokRestart();
       }
     });
 
@@ -2038,6 +2088,7 @@ app.post("/api/start-ngrok", async (req, res) => {
 // Stop ngrok, including any process that may have been started separately.
 app.post("/api/stop-ngrok", async (req, res) => {
   keepNgrokRunning = false;
+  clearNgrokRestartState();
   try {
     appendLifecycleLog("Ngrok stop requested");
 
@@ -2593,10 +2644,13 @@ setInterval(async () => {
     );
   }
 
-  if (keepNgrokRunning && !(await getNgrokHealth()).running) {
-    axios.post(`http://localhost:${PORT}/api/start-ngrok`).catch((error) =>
-      appendLifecycleLog(`Ngrok health recovery failed: ${error.message}`, "error"),
-    );
+  if (keepNgrokRunning) {
+    const ngrokHealth = await getNgrokHealth();
+    if (ngrokHealth.running && !ngrokHealth.duplicate) {
+      clearNgrokRestartState({ recovered: true });
+    } else {
+      scheduleNgrokRestart();
+    }
   }
 }, 15000).unref();
 
@@ -2604,6 +2658,7 @@ function markDashboardShutdown() {
   shuttingDown = true;
   keepAlgoRunning = false;
   keepNgrokRunning = false;
+  clearNgrokRestartState();
 }
 
 function shutdownDashboardProcess() {

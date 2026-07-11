@@ -7,6 +7,50 @@ const axios = require("axios");
 const logger = require("./logger");
 const { getRuntimeEnv } = require("./dhanRuntimeConfig");
 
+const DEFAULT_DEDUPE_WINDOW_MS = 60 * 1000;
+const DEFAULT_MIN_SEND_INTERVAL_MS = 1100;
+const recentMessages = new Map();
+let sendQueue = Promise.resolve();
+let lastSendStartedAt = 0;
+
+function getPositiveNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : fallback;
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function shouldSuppressDuplicate(message, now = Date.now()) {
+  const env = getRuntimeEnv();
+  const windowMs = getPositiveNumber(
+    env.TELEGRAM_DEDUPE_WINDOW_MS,
+    DEFAULT_DEDUPE_WINDOW_MS,
+  );
+  const key = String(message);
+  const previous = recentMessages.get(key);
+
+  // Record at queue time so concurrent copies cannot all pass the check.
+  recentMessages.set(key, now);
+  for (const [storedMessage, storedAt] of recentMessages) {
+    if (now - storedAt > windowMs) recentMessages.delete(storedMessage);
+  }
+
+  return windowMs > 0 && previous !== undefined && now - previous < windowMs;
+}
+
+async function waitForSendSlot() {
+  const env = getRuntimeEnv();
+  const intervalMs = getPositiveNumber(
+    env.TELEGRAM_MIN_SEND_INTERVAL_MS,
+    DEFAULT_MIN_SEND_INTERVAL_MS,
+  );
+  const remaining = intervalMs - (Date.now() - lastSendStartedAt);
+  if (remaining > 0) await delay(remaining);
+  lastSendStartedAt = Date.now();
+}
+
 function isTelegramEnabled() {
   const env = getRuntimeEnv();
   return String(env.TELEGRAM_ENABLED).toLowerCase() === "true";
@@ -73,7 +117,22 @@ function sendTelegram(message) {
     });
   }
 
-  void sendTelegramAndWait(message);
+  if (shouldSuppressDuplicate(message)) {
+    logger.info("Telegram duplicate suppressed");
+    return Promise.resolve({
+      success: true,
+      skipped: true,
+      duplicate: true,
+    });
+  }
+
+  // Serialize sends and leave a small gap to avoid Telegram rate-limit bursts.
+  sendQueue = sendQueue
+    .catch(() => undefined)
+    .then(async () => {
+      await waitForSendSlot();
+      return sendTelegramAndWait(message);
+    });
 
   return Promise.resolve({
     success: true,

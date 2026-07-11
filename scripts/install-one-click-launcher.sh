@@ -34,47 +34,12 @@ fi
 </dict></plist>
 PLIST
 
-/usr/bin/tee "$CONTROL_PLIST_PATH" >/dev/null <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>com.nikhil.ic-algo-bot.control</string>
-  <key>ProgramArguments</key><array>
-    <string>$PROJECT_DIR/scripts/run-control-dashboard.sh</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>ThrottleInterval</key><integer>5</integer>
-  <key>EnvironmentVariables</key><dict>
-    <key>IC_AUTO_MANAGE</key><string>true</string>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-  </dict>
-  <key>StandardOutPath</key><string>$PROJECT_DIR/logs/launch-agent.log</string>
-  <key>StandardErrorPath</key><string>$PROJECT_DIR/logs/launch-agent-error.log</string>
-</dict></plist>
-PLIST
-
-/usr/bin/tee "$STARTUP_PLIST_PATH" >/dev/null <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>com.nikhil.ic-algo-bot.startup</string>
-  <key>ProgramArguments</key><array>
-    <string>$PROJECT_DIR/scripts/launch-ic-algo-bot.sh</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>StandardOutPath</key><string>$PROJECT_DIR/logs/startup-agent.log</string>
-  <key>StandardErrorPath</key><string>$PROJECT_DIR/logs/startup-agent-error.log</string>
-</dict></plist>
-PLIST
-
 USER_DOMAIN="gui/$(/usr/bin/id -u)"
 /bin/launchctl bootout "$USER_DOMAIN" "$OLD_PLIST_PATH" 2>/dev/null || true
 /bin/launchctl bootout "$USER_DOMAIN" "$CONTROL_PLIST_PATH" 2>/dev/null || true
 /bin/launchctl bootout "$USER_DOMAIN" "$STARTUP_PLIST_PATH" 2>/dev/null || true
-/bin/rm -f "$OLD_PLIST_PATH"
-/bin/launchctl bootstrap "$USER_DOMAIN" "$CONTROL_PLIST_PATH"
-/bin/launchctl bootstrap "$USER_DOMAIN" "$STARTUP_PLIST_PATH"
+/bin/rm -f "$OLD_PLIST_PATH" "$CONTROL_PLIST_PATH" "$STARTUP_PLIST_PATH"
 
 echo "Installed $APP_DIR"
-echo "Enabled automatic startup at login"
+echo "Automatic startup at login is disabled"
+echo "Open IC Algo Bot.app from the Desktop to start the bot"

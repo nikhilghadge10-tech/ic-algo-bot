@@ -340,6 +340,66 @@ function createTrade(entry) {
   return trade;
 }
 
+const CHARGE_FIELDS = [
+  "brokerageCharges",
+  "stt",
+  "exchangeTransactionCharges",
+  "sebiTax",
+  "serviceTax",
+  "stampDuty",
+];
+
+function reconcileTradeCharges(rows, tradeMode) {
+  const history = getTradeHistoryForToday();
+  const normalizedMode = tradeMode ? normalizeTradeMode(tradeMode) : null;
+  const rowsByOrderId = new Map();
+
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const orderId = String(row.orderId || "");
+    if (!orderId) return;
+    if (!rowsByOrderId.has(orderId)) rowsByOrderId.set(orderId, []);
+    rowsByOrderId.get(orderId).push(row);
+  });
+
+  history.trades.forEach((trade) => {
+    if (normalizedMode && trade.tradeMode !== normalizedMode) return;
+    if (trade.tradeMode !== "LIVE") return;
+
+    const orderIds = [trade.entryOrderId, trade.exitOrderId]
+      .filter(Boolean)
+      .map(String);
+    const matchedRows = orderIds.flatMap(
+      (orderId) => rowsByOrderId.get(orderId) || [],
+    );
+    if (!matchedRows.length) return;
+
+    const breakdown = Object.fromEntries(
+      CHARGE_FIELDS.map((field) => [
+        field,
+        roundMoney(
+          matchedRows.reduce((sum, row) => sum + Number(row[field] || 0), 0),
+        ) || 0,
+      ]),
+    );
+    const total = roundMoney(
+      Object.values(breakdown).reduce((sum, value) => sum + value, 0),
+    );
+
+    trade.charges = total;
+    trade.chargeBreakdown = breakdown;
+    trade.chargesUpdatedAt = nowIso();
+    trade.chargesFinal = Boolean(
+      trade.exitOrderId && rowsByOrderId.has(String(trade.exitOrderId)),
+    );
+    trade.netProfitAfterCharges = Number.isFinite(Number(trade.realizedProfit))
+      ? roundMoney(Number(trade.realizedProfit) - total)
+      : null;
+  });
+
+  saveTradeHistory(history);
+  return history.trades;
+}
+
 function findLatestOpenTrade(trades) {
   for (let index = trades.length - 1; index >= 0; index -= 1) {
     if (["RUNNING", "RUNNING_UNPROTECTED"].includes(trades[index].status)) {
@@ -532,13 +592,22 @@ function getDashboardTrades(limit = 3, tradeMode, fallbackPremiumSlInterval) {
       displayStatus: getDisplayStatus(trade.status),
       entrySignal: trade.entrySignal,
       entryTime: trade.entryTime,
+      exitSignal: trade.exitSignal || null,
       exitTime: trade.exitTime,
+      exitOrderId: trade.exitOrderId || null,
       optionSymbol: trade.optionSymbol,
       quantity: trade.quantity,
       entryPrice: trade.entryPrice || trade.entryPremiumReference || null,
       exitPrice: trade.exitPrice === 0 ? 0 : trade.exitPrice || null,
       realizedProfit:
         trade.realizedProfit === 0 ? 0 : trade.realizedProfit || null,
+      charges: trade.charges === 0 ? 0 : trade.charges || null,
+      chargesFinal: trade.chargesFinal === true,
+      chargesUpdatedAt: trade.chargesUpdatedAt || null,
+      netProfitAfterCharges:
+        trade.netProfitAfterCharges === 0
+          ? 0
+          : trade.netProfitAfterCharges || null,
       riskPoints: trade.riskPoints,
       riskAmount,
       capitalDeployed: trade.capitalDeployed || null,
@@ -572,6 +641,7 @@ module.exports = {
   markLatestOpenTradeExited,
   markTradeFailed,
   markTradeStopLossHit,
+  reconcileTradeCharges,
   updateLatestOpenTradeMarket,
   updateLatestOpenTradeStopLoss,
 };

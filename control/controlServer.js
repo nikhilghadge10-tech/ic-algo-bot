@@ -19,6 +19,8 @@ const axios = require("axios");
 const { sendTelegram } = require("../src/services/telegramService");
 
 let algoProcess = null;
+let algoOutageAlertTimer = null;
+let algoOutageAlerted = false;
 let ngrokProcess = null;
 let ngrokStarting = false;
 let ngrokRestartTimer = null;
@@ -31,6 +33,25 @@ let keepNgrokRunning = process.env.IC_AUTO_MANAGE === "true";
 let shuttingDown = false;
 const SELF_HEAL_DELAY_MS = 5000;
 const NGROK_MAX_RESTART_DELAY_MS = 5 * 60 * 1000;
+const PERSISTENT_OUTAGE_ALERT_MS = 60 * 1000;
+
+function clearAlgoOutageAlert() {
+  if (algoOutageAlertTimer) clearTimeout(algoOutageAlertTimer);
+  algoOutageAlertTimer = null;
+  algoOutageAlerted = false;
+}
+
+function scheduleAlgoOutageAlert() {
+  if (algoOutageAlertTimer || algoOutageAlerted || shuttingDown) return;
+
+  algoOutageAlertTimer = setTimeout(async () => {
+    algoOutageAlertTimer = null;
+    if (!keepAlgoRunning || shuttingDown || await isAlgoActuallyRunning()) return;
+    algoOutageAlerted = true;
+    sendTelegram("🚨 IC Algo Bot: algo server recovery failed for 60 seconds. Please open the dashboard and check System Readiness.");
+  }, PERSISTENT_OUTAGE_ALERT_MS);
+  algoOutageAlertTimer.unref();
+}
 
 function getNgrokRestartDelay() {
   return Math.min(
@@ -50,9 +71,11 @@ function scheduleNgrokRestart() {
     "warn",
   );
 
-  if (!ngrokOutageAlerted) {
+  // Brief ngrok exits are self-healed silently. Alert only after three failed
+  // restart windows (about 35 seconds) have already elapsed.
+  if (!ngrokOutageAlerted && ngrokRestartAttempts >= 4) {
     ngrokOutageAlerted = true;
-    sendTelegram("⚠️ IC Algo Bot: ngrok stopped unexpectedly. Automatic recovery is in progress; repeated alerts are suppressed.");
+    sendTelegram("🚨 IC Algo Bot: ngrok recovery is still failing. TradingView webhooks cannot reach the bot; please check System Readiness.");
   }
 
   ngrokRestartTimer = setTimeout(() => {
@@ -67,14 +90,11 @@ function scheduleNgrokRestart() {
   ngrokRestartTimer.unref();
 }
 
-function clearNgrokRestartState({ recovered = false } = {}) {
+function clearNgrokRestartState() {
   if (ngrokRestartTimer) clearTimeout(ngrokRestartTimer);
   ngrokRestartTimer = null;
   ngrokNextRestartAt = 0;
   ngrokRestartAttempts = 0;
-  if (recovered && ngrokOutageAlerted) {
-    sendTelegram("✅ IC Algo Bot: ngrok connection recovered.");
-  }
   ngrokOutageAlerted = false;
 }
 const logPath = path.join(__dirname, "..", "logs", "app.log");
@@ -1955,11 +1975,13 @@ app.post("/api/config", (req, res) => {
 app.post("/api/start-server", async (req, res) => {
   keepAlgoRunning = true;
   if (algoProcess) {
+    clearAlgoOutageAlert();
     appendLifecycleLog("Algo server start requested but already running");
     return res.json({ success: true, message: "Algo server already running" });
   }
 
   if (await isAlgoActuallyRunning()) {
+    clearAlgoOutageAlert();
     appendLifecycleLog("Algo server start requested but already running on port 3000");
     return res.json({ success: true, message: "Algo server already running" });
   }
@@ -1980,7 +2002,7 @@ app.post("/api/start-server", async (req, res) => {
     algoProcess = null;
     if (keepAlgoRunning && !shuttingDown) {
       appendLifecycleLog("Algo server stopped unexpectedly; restarting in 5 seconds", "warn");
-      sendTelegram("⚠️ IC Algo Bot: algo server stopped unexpectedly. Automatic restart is in progress.");
+      scheduleAlgoOutageAlert();
       setTimeout(() => {
         if (keepAlgoRunning && !shuttingDown) {
           axios.post(`http://localhost:${PORT}/api/start-server`).catch((error) =>
@@ -1997,6 +2019,7 @@ app.post("/api/start-server", async (req, res) => {
 // Stop the child algo server if this dashboard started it.
 app.post("/api/stop-server", async (req, res) => {
   keepAlgoRunning = false;
+  clearAlgoOutageAlert();
   const stoppedListener = await stopAlgoListener();
   if (!algoProcess && !stoppedListener) {
     appendLifecycleLog("Algo server stop requested but dashboard has no child process");
@@ -2033,7 +2056,7 @@ app.post("/api/start-ngrok", async (req, res) => {
     const health = await getNgrokHealth();
 
     if (health.running && !health.duplicate) {
-      clearNgrokRestartState({ recovered: true });
+      clearNgrokRestartState();
       appendLifecycleLog(
         `Ngrok start requested but already running url=${health.url || "unknown"}`,
       );
@@ -2156,14 +2179,12 @@ app.post("/api/start-all", async (req, res) => {
       }
     }
 
-    if (algoRunning && ngrokHealth.running && dhanConnected) {
-      sendTelegram(`✅ IC Algo Bot is ready. Webhook: ${ngrokHealth.url}`);
-    } else {
+    if (!(algoRunning && ngrokHealth.running && dhanConnected)) {
       sendTelegram(
         `⚠️ IC Algo Bot needs attention. Server: ${algoRunning ? "running" : "stopped"}; ngrok: ${ngrokHealth.running ? "running" : "stopped"}; Dhan: ${dhanMessage}`,
       );
     }
-  }, 8000);
+  }, PERSISTENT_OUTAGE_ALERT_MS);
 });
 
 // Consolidated readiness result for the launcher and dashboard diagnostics.
@@ -2216,6 +2237,20 @@ app.get("/api/algo-status", async (req, res) => {
       lastSignalTime: "",
       lastTrades: [],
       message: "Algo server not reachable",
+    });
+  }
+});
+
+app.get("/api/trade-charges", async (req, res) => {
+  try {
+    const response = await axios.get("http://localhost:3000/trade-charges", {
+      timeout: 15000,
+    });
+    res.json(response.data);
+  } catch (error) {
+    res.status(error.response?.status || 500).json({
+      success: false,
+      message: error.response?.data?.message || "Trade charges unavailable",
     });
   }
 });
@@ -2472,6 +2507,29 @@ app.get("/api/nifty-spot", async (req, res) => {
   }
 });
 
+// Proxy manual ATM option quotes from the algo server.
+app.get("/api/manual-signal-preview", async (req, res) => {
+  try {
+    const response = await axios.get(
+      "http://localhost:3000/manual-signal-preview",
+      {
+        params: {
+          price: req.query.price,
+          interval: req.query.interval,
+        },
+        timeout: 10000,
+      },
+    );
+    res.json(response.data);
+  } catch (error) {
+    res.status(error.response?.status || 500).json({
+      success: false,
+      message: error.response?.data?.message || "Option premium unavailable",
+      error: error.response?.data || error.message,
+    });
+  }
+});
+
 // Return the nearest tradable option expiry across supported index underlyings.
 app.get("/api/nifty-expiry", (req, res) => {
   try {
@@ -2647,7 +2705,7 @@ setInterval(async () => {
   if (keepNgrokRunning) {
     const ngrokHealth = await getNgrokHealth();
     if (ngrokHealth.running && !ngrokHealth.duplicate) {
-      clearNgrokRestartState({ recovered: true });
+      clearNgrokRestartState();
     } else {
       scheduleNgrokRestart();
     }
@@ -2658,6 +2716,7 @@ function markDashboardShutdown() {
   shuttingDown = true;
   keepAlgoRunning = false;
   keepNgrokRunning = false;
+  clearAlgoOutageAlert();
   clearNgrokRestartState();
 }
 

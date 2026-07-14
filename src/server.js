@@ -39,12 +39,14 @@ const {
 } = require("./services/instrumentService");
 const {
   getDailyTradeLimitStatus,
+  getIstDateKey,
   normalizeTradeMode,
   recordSuccessfulEntry,
 } = require("./services/tradeLimitService");
 const {
   getUnderlyingSpotLtp,
   getOptionLtp,
+  getOptionLtps,
   getPreviousCompletedIntradayCandle,
 } = require("./services/dhanMarketDataService");
 const { calculateLots } = require("./services/riskService");
@@ -60,7 +62,9 @@ const {
   markTradeStopLossHit,
   updateLatestOpenTradeMarket,
   updateLatestOpenTradeStopLoss,
+  reconcileTradeCharges,
 } = require("./services/tradeHistoryService");
+const { getTradeChargesForDate } = require("./services/dhanChargeService");
 const {
   getUnderlyingProfile,
   getUnderlyingProfileForSymbol,
@@ -226,6 +230,39 @@ app.get("/status", async (req, res) => {
         }
       : null,
   });
+});
+
+app.get("/trade-charges", async (req, res) => {
+  try {
+    const config = getRuntimeConfig();
+    const tradeMode = getTradeMode(config);
+
+    if (tradeMode !== "LIVE") {
+      return res.json({
+        success: true,
+        available: false,
+        message: "Actual Dhan charges are available for live trades only",
+        lastTrades: getDashboardTrades(3, tradeMode, config.PREMIUM_SL_INTERVAL),
+      });
+    }
+
+    const date = getIstDateKey();
+    const result = await getTradeChargesForDate(date);
+    reconcileTradeCharges(result.rows, tradeMode);
+
+    res.json({
+      success: true,
+      available: true,
+      environment: result.environment,
+      date,
+      lastTrades: getDashboardTrades(3, tradeMode, config.PREMIUM_SL_INTERVAL),
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.response?.data?.errorMessage || error.message,
+    });
+  }
 });
 
 app.post("/trail-stop-loss", async (req, res) => {
@@ -3022,6 +3059,9 @@ No order placed.`,
 
     // Global kill switch: useful for market holidays or manual pauses.
     if (isEnabled(config.NO_TRADE_TODAY)) {
+      logger.warn(
+        `${signal} ignored because trading is disabled for today: NO_TRADE_TODAY=true`,
+      );
       await sendTelegram(
         `⚠️ Trading Disabled Today
 
@@ -3086,6 +3126,12 @@ No order placed.`,
         try {
           // This bot currently allows only one open position at a time.
           if (currentPosition !== null) {
+            logger.warn(
+              `${signal} ignored because position already open: ` +
+                `currentPosition=${currentPosition} ` +
+                `positionMode=${normalizeTradeMode(currentPositionMode)} ` +
+                `signalMode=${activeTradeMode}`,
+            );
             await sendTelegram(
               `⚠️ LONG_ENTRY ignored
 
@@ -3574,6 +3620,12 @@ No order placed.`,
         try {
           // Avoid opening a second position before the first one is closed.
           if (currentPosition !== null) {
+            logger.warn(
+              `${signal} ignored because position already open: ` +
+                `currentPosition=${currentPosition} ` +
+                `positionMode=${normalizeTradeMode(currentPositionMode)} ` +
+                `signalMode=${activeTradeMode}`,
+            );
             await sendTelegram(
               `⚠️ SHORT_ENTRY ignored
 
@@ -4356,6 +4408,148 @@ app.get("/nifty-spot", async (req, res) => {
     res.json({
       success: true,
       ...spot,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.response?.data?.errorMessage || error.message,
+      error: error.response?.data || error.message,
+    });
+  }
+});
+
+// Quote the ATM call and put used by manual entry signals before an order is sent.
+app.get("/manual-signal-preview", async (req, res) => {
+  try {
+    const profile = getActiveUnderlyingProfile();
+    const config = getRuntimeConfig();
+    const spot = Number(String(req.query.price || "").replace(/,/g, ""));
+    const interval = normalizeAlertIntervalMinutes(
+      req.query.interval,
+      config.PREMIUM_SL_INTERVAL || 15,
+    );
+
+    if (!Number.isFinite(spot) || spot <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid spot price is required",
+      });
+    }
+
+    const selections = ["LONG_ENTRY", "SHORT_ENTRY"].map((signal) => {
+        const option = getOptionDetails(signal, spot, profile);
+        const contract = getIndexOption(
+          option.strike,
+          option.optionType,
+          profile,
+        );
+
+        if (!contract) {
+          return {
+            signal,
+            contract: null,
+            strike: option.strike,
+            optionType: option.optionType,
+            available: false,
+          };
+        }
+        return {
+          signal,
+          contract,
+          strike: option.strike,
+          optionType: option.optionType,
+          available: true,
+        };
+      });
+    const availableSelections = selections.filter((item) => item.contract);
+    const quotes = await getOptionLtps(
+      availableSelections.map((item) => item.contract),
+    );
+    let quoteIndex = 0;
+    const previews = selections.map((selection) => {
+      if (!selection.contract) return selection;
+      const quote = quotes[quoteIndex++];
+
+      return {
+          signal: selection.signal,
+          strike: selection.strike,
+          optionType: selection.optionType,
+          available: true,
+          optionSymbol: selection.contract.SEM_CUSTOM_SYMBOL,
+          securityId: String(selection.contract.SEM_SMST_SECURITY_ID),
+          expiry: selection.contract.SEM_EXPIRY_DATE,
+          premium: quote.ltp,
+          checkedAt: quote.checkedAt,
+      };
+    });
+    const plannedPreviews = await Promise.all(
+      previews.map(async (preview) => {
+        if (!preview.available) return preview;
+
+        const selection = availableSelections.find(
+          (item) => item.signal === preview.signal,
+        );
+        const stopLossPlan = await getPremiumStopLossPlan(
+          selection.contract,
+          config,
+          new Date(),
+          interval,
+        );
+
+        if (stopLossPlan && !stopLossPlan.success) {
+          return {
+            ...preview,
+            planAvailable: false,
+            planError: stopLossPlan.error,
+          };
+        }
+
+        const stopLossPremium = stopLossPlan?.triggerPrice ?? null;
+        const riskPoints = stopLossPlan
+          ? Number((preview.premium - stopLossPremium).toFixed(2))
+          : Number(config.PLANNING_SL_POINTS || 0);
+
+        if (!Number.isFinite(riskPoints) || riskPoints <= 0) {
+          return {
+            ...preview,
+            planAvailable: false,
+            stopLossPremium,
+            planError: `Premium ${preview.premium} must be above SL ${stopLossPremium}`,
+          };
+        }
+
+        const sizing = getEntrySizing(
+          preview.signal,
+          config,
+          riskPoints,
+          selection.contract,
+        );
+
+        return {
+          ...preview,
+          planAvailable: true,
+          interval,
+          stopLossPremium,
+          riskPoints,
+          previousCandle: stopLossPlan?.candle || null,
+          hugeCandleAdjusted: stopLossPlan?.hugeCandleAdjusted || false,
+          lots: sizing.finalLots,
+          quantity: sizing.quantity,
+          loss: Number((riskPoints * sizing.quantity).toFixed(2)),
+          capitalDeployed: Number(
+            (preview.premium * sizing.quantity).toFixed(2),
+          ),
+        };
+      }),
+    );
+
+    res.json({
+      success: true,
+      symbol: profile.symbol,
+      spot,
+      interval,
+      lotSize: Number(profile.lotSize),
+      previews: plannedPreviews,
     });
   } catch (error) {
     res.status(500).json({

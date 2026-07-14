@@ -12,7 +12,10 @@ mkdir -p "$LOG_DIR"
 cd "$PROJECT_DIR" || exit 1
 
 if ! /usr/bin/curl -fsS "$DASHBOARD_URL/api/config" >/dev/null 2>&1; then
-  /usr/bin/nohup /opt/homebrew/bin/node control/controlServer.js >>"$CONTROL_LOG" 2>&1 &
+  # Detach fully so macOS does not terminate the dashboard when this launcher
+  # app finishes. The bot still starts only when the Desktop app is clicked.
+  /usr/bin/nohup /opt/homebrew/bin/node control/controlServer.js \
+    </dev/null >>"$CONTROL_LOG" 2>&1 &!
 fi
 
 dashboard_ready=false

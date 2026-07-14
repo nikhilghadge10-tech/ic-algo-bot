@@ -333,7 +333,7 @@
   width: auto !important;
   max-width: none !important;
   min-width: max-content;
-  margin-top: 8px;
+  margin-top: 4px;
   padding-inline: 4px;
   line-height: 1.2;
   overflow: visible !important;
@@ -872,6 +872,31 @@
   overflow: hidden;
 }
 
+.cockpitLiveCard .sapMPanelHdr,
+.cockpitReadinessCard .sapMPanelHdr,
+.cockpitGuardrailsCard .sapMPanelHdr,
+.cockpitTelegramCard .sapMPanelHdr {
+  color: var(--ink);
+  font-size: 1.06rem;
+  font-weight: 700;
+}
+
+.cockpitLiveCard .sapMPanelExpandableIcon,
+.cockpitReadinessCard .sapMPanelExpandableIcon,
+.cockpitGuardrailsCard .sapMPanelExpandableIcon,
+.cockpitTelegramCard .sapMPanelExpandableIcon {
+  color: var(--blue);
+}
+
+.cockpitLiveCard .sapMPanelContent,
+.cockpitReadinessCard .sapMPanelContent,
+.cockpitGuardrailsCard .sapMPanelContent,
+.cockpitTelegramCard .sapMPanelContent {
+  padding: 14px 0 0 !important;
+  border-bottom: 0 !important;
+  background: transparent !important;
+}
+
 .cockpitLiveCard > .sapMFlexItem:has(.sectionTitle),
 .cockpitReadinessCard > .sapMFlexItem:has(.sectionTitle),
 .cockpitGuardrailsCard > .sapMFlexItem:has(.sectionTitle),
@@ -926,6 +951,10 @@
   width: 100%;
 }
 
+.statusGrid > .sapMFlexItem:has(.todayTradesTile) {
+  grid-column: span 2;
+}
+
 .statusTile,
 .permissionTile {
   position: relative;
@@ -973,6 +1002,14 @@
   background: var(--red);
 }
 
+.cockpitLiveCard .todayTradesTile::before {
+  background: var(--teal) !important;
+}
+
+.cockpitLiveCard .emergencyStopTile::before {
+  background: var(--red) !important;
+}
+
 .cockpitReadinessCard .statusGrid > .sapMFlexItem:nth-child(1) .statusTile::before,
 .cockpitReadinessCard .statusGrid > .sapMFlexItem:nth-child(2) .statusTile::before {
   background: var(--teal);
@@ -1000,6 +1037,23 @@
   text-transform: uppercase;
 }
 
+.todayTradesHeader {
+  gap: 12px;
+  width: 100%;
+}
+
+.todayTradesHeader .statusTitle {
+  margin-bottom: 0;
+}
+
+.todayTradesCount {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #ffffff;
+}
+
 .statusTile .sapMObjStatusText,
 .statusTile .sapMText {
   font-weight: 600;
@@ -1014,6 +1068,25 @@
 
 .statusTile .lastTradeDetailLine:first-of-type {
   margin-top: 8px;
+}
+
+.statusTile .activePositionStrongLine.sapMText {
+  font-weight: 800 !important;
+}
+
+.statusTile .activePositionRiskLine.sapMText,
+.statusTile .activePositionSlRiskLine.sapMText {
+  color: #c33131 !important;
+}
+
+.statusTile .activePositionDeployedLine.sapMText {
+  color: #15803d !important;
+}
+
+.lastTradeChargesText {
+  margin-top: 3px;
+  color: var(--muted) !important;
+  font-size: 0.72rem;
 }
 
 .sapMObjStatusSuccess .sapMObjStatusText {
@@ -1830,6 +1903,40 @@
   transition: border-color 0.18s ease, background 0.18s ease;
 }
 
+.trailStrategyPlanningGroup.sapMPanel,
+.premiumThresholdGroup.sapMPanel {
+  min-height: 0;
+  padding: 0;
+}
+
+.trailStrategyPlanningGroup .sapMPanelHdr,
+.premiumThresholdGroup .planningCollapsibleToolbar {
+  height: 48px;
+  padding: 0 14px;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--ink);
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 48px;
+}
+
+.trailStrategyPlanningGroup .sapMPanelExpandableIcon,
+.premiumThresholdGroup .sapMPanelExpandableIcon {
+  color: var(--blue);
+}
+
+.trailStrategyPlanningGroup .sapMPanelContent,
+.premiumThresholdGroup .sapMPanelContent {
+  padding: 12px 14px 14px !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+.premiumThresholdGroup .planningCollapsibleToolbar .planningGroupTitle {
+  margin-bottom: 0;
+}
+
 .underlyingSegmentedButton
   .sapMSegBBtn:nth-child(2).sapMSegBBtnSel
   .sapMSegBBtnInner {
@@ -2183,6 +2290,47 @@
 
 .analyticsEmptyState {
   margin-bottom: 4px;
+}
+
+.analyticsCollapsiblePanel {
+  margin-bottom: 16px;
+  overflow: hidden;
+  border: 1px solid var(--line) !important;
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #ffffff, var(--panel-soft));
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+}
+
+.analyticsCollapsiblePanel .sapMPanelHdr {
+  height: 48px;
+  padding: 0 14px;
+  border: 0 !important;
+  background: linear-gradient(90deg, rgba(37, 99, 235, 0.07), rgba(22, 128, 60, 0.06));
+  color: var(--ink);
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 48px;
+}
+
+.analyticsCollapsiblePanel .sapMPanelExpandableIcon {
+  color: var(--blue);
+}
+
+.analyticsCollapsiblePanel .sapMPanelContent {
+  padding: 14px !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+.analyticsCollapsiblePanel .analyticsMetricGrid {
+  margin-bottom: 0;
+}
+
+.analyticsPnlRibbon .analyticsPnlTablePanel {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .analyticsMetricGrid,
@@ -3045,6 +3193,216 @@
   width: 100%;
 }
 
+.manualOptionPreviewGroup {
+  grid-column: 1 / -1;
+  order: 3;
+  min-height: 0;
+  padding: 18px;
+  border-color: rgba(37, 99, 235, 0.24);
+  background: linear-gradient(145deg, #f8fbff, #ffffff 52%, #fffaf0);
+}
+
+.manualPreviewPanel,
+.manualPreviewPanel .sapMPanelWrappingDiv,
+.manualPreviewPanel .sapMPanelContent {
+  border: 0 !important;
+  background: transparent !important;
+}
+
+.manualPreviewPanel .sapMPanelHdr {
+  height: 42px;
+  padding-left: 0;
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  line-height: 42px;
+}
+
+.manualPreviewPanel .sapMPanelExpandableIcon {
+  color: var(--blue);
+}
+
+.manualPreviewPanel .sapMPanelContent {
+  padding: 4px 0 0 !important;
+}
+
+.manualOptionPreviewGroup .sapMListUl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.manualOptionPreviewGroup::before {
+  background: linear-gradient(90deg, var(--green), var(--blue), var(--red));
+}
+
+.manualPreviewSubtitle {
+  margin-top: -8px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.manualEntryConfirmDialog .sapMDialogScrollCont {
+  padding: 18px !important;
+}
+
+.manualEntryConfirmDialog .manualPreviewSubtitle {
+  display: block;
+  margin: 0 0 10px;
+}
+
+.manualEntryConfirmDialog .manualPlanCard {
+  border: 1px solid rgba(102, 112, 133, 0.16);
+  border-radius: 12px;
+}
+
+.manualOptionPreviewGroup .sapMList,
+.manualOptionPreviewGroup .sapMListUl {
+  background: transparent;
+}
+
+.manualPlanListItem {
+  overflow: hidden;
+  border: 1px solid rgba(102, 112, 133, 0.16) !important;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.07);
+}
+
+.manualPlanListItem .sapMLIBContent {
+  padding: 0 !important;
+}
+
+.manualPlanCard {
+  gap: 14px;
+  min-height: 220px;
+  padding: 18px;
+}
+
+.manualPlanCardLong {
+  background: linear-gradient(160deg, rgba(22, 128, 60, 0.08), #fff 44%);
+}
+
+.manualPlanCardShort {
+  background: linear-gradient(160deg, rgba(195, 49, 49, 0.07), #fff 44%);
+}
+
+.manualPlanHeader {
+  gap: 14px;
+  width: 100%;
+}
+
+.manualPlanDirection {
+  font-size: 0.72rem;
+  font-weight: 900 !important;
+  letter-spacing: 0.09em;
+}
+
+.manualPlanContractLine {
+  gap: 7px;
+}
+
+.manualPlanContractLine .sapMText {
+  color: var(--text);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.manualPlanContractLine .manualPlanDirection {
+  font-weight: 900 !important;
+}
+
+.manualPlanContractLine .manualPlanLong {
+  color: var(--green);
+}
+
+.manualPlanContractLine .manualPlanShort {
+  color: var(--red);
+}
+
+.manualPlanLong {
+  color: var(--green);
+}
+
+.manualPlanShort {
+  color: var(--red);
+}
+
+.manualPlanContractTitle {
+  margin-top: 2px;
+}
+
+.manualPlanContractName,
+.manualPlanCandleNote {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.manualPlanReadiness {
+  padding: 5px 9px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
+.manualPlanMetrics {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.manualPlanMetric {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(102, 112, 133, 0.13);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.manualPlanMetricLabel {
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 900 !important;
+  letter-spacing: 0.05em;
+}
+
+.manualPlanMetricValue {
+  margin-top: 2px;
+  color: var(--text);
+  font-size: 0.88rem;
+  font-weight: 400 !important;
+}
+
+.manualPlanMetricValue.manualPlanCapital,
+.manualPlanCapital.sapMText {
+  color: #15803d !important;
+}
+
+.manualPlanMetricValue.manualPlanRisk,
+.manualPlanMetricValue.manualPlanLoss,
+.manualPlanRisk.sapMText,
+.manualPlanLoss.sapMText {
+  color: #c33131 !important;
+}
+
+.manualPlanMetricValue.manualPlanOrderSize,
+.manualPlanOrderSize.sapMText {
+  color: #b45309 !important;
+}
+
+.manualPlanBlockedMessage {
+  margin-top: auto;
+}
+
+.manualEntryExitGroup,
+.trailSlGroup {
+  order: 2;
+}
+
 .manualActionTitle {
   display: block;
   color: var(--muted);
@@ -3364,6 +3722,16 @@
   .planningModeBox {
     min-height: 0;
   }
+
+  .manualOptionPreviewGroup .sapMListUl {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 540px) {
+  .manualPlanMetrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1080px) {
@@ -3441,6 +3809,10 @@
   .riskInputRow,
   .riskControlRow {
     grid-template-columns: 1fr;
+  }
+
+  .statusGrid > .sapMFlexItem:has(.todayTradesTile) {
+    grid-column: span 1;
   }
 
   .analyticsEmptyMetricTile {

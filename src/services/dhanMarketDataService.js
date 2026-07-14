@@ -12,6 +12,45 @@ const {
   requireDhanMarketDataConfig,
 } = require("./dhanRuntimeConfig");
 
+const MARKET_FEED_MIN_INTERVAL_MS = 1200;
+const MARKET_FEED_RETRY_DELAY_MS = 1800;
+let marketFeedQueue = Promise.resolve();
+let nextMarketFeedRequestAt = 0;
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function enqueueMarketFeedRequest(request) {
+  const run = async () => {
+    const delay = Math.max(0, nextMarketFeedRequestAt - Date.now());
+    if (delay) await wait(delay);
+    nextMarketFeedRequestAt = Date.now() + MARKET_FEED_MIN_INTERVAL_MS;
+
+    try {
+      return await request();
+    } catch (error) {
+      if (error.response?.status !== 429) throw error;
+
+      await wait(MARKET_FEED_RETRY_DELAY_MS);
+      nextMarketFeedRequestAt = Date.now() + MARKET_FEED_MIN_INTERVAL_MS;
+      return request();
+    }
+  };
+
+  const queued = marketFeedQueue.then(run, run);
+  marketFeedQueue = queued.catch(() => {});
+  return queued;
+}
+
+function postMarketFeedLtp(config, payload) {
+  return enqueueMarketFeedRequest(() =>
+    axios.post(getDhanUrl("/v2/marketfeed/ltp", config), payload, {
+      headers: { ...getDhanHeaders(config) },
+    }),
+  );
+}
+
 function formatIstDateTime(date) {
   const istOffsetMs = 5.5 * 60 * 60 * 1000;
   const istDate = new Date(date.getTime() + istOffsetMs);
@@ -92,15 +131,7 @@ async function getInstrumentLtp(exchangeSegment, securityId, instrument) {
     [exchangeSegment]: [Number(normalizedSecurityId)],
   };
 
-  const response = await axios.post(
-    getDhanUrl("/v2/marketfeed/ltp", config),
-    payload,
-    {
-      headers: {
-        ...getDhanHeaders(config),
-      },
-    },
-  );
+  const response = await postMarketFeedLtp(config, payload);
 
   const ltp = Number(
     extractLtp(response.data, exchangeSegment, normalizedSecurityId),
@@ -127,6 +158,29 @@ async function getOptionLtp(contract) {
     String(contract.SEM_SMST_SECURITY_ID),
     contract.SEM_INSTRUMENT_NAME || "OPTIDX",
   );
+}
+
+async function getOptionLtps(contracts) {
+  const config = requireDhanMarketDataConfig();
+  const exchangeSegment = "NSE_FNO";
+  const securityIds = contracts.map((contract) =>
+    String(contract.SEM_SMST_SECURITY_ID),
+  );
+  const response = await postMarketFeedLtp(config, {
+    [exchangeSegment]: securityIds.map(Number),
+  });
+  const checkedAt = new Date().toISOString();
+
+  return contracts.map((contract, index) => {
+    const securityId = securityIds[index];
+    const ltp = Number(extractLtp(response.data, exchangeSegment, securityId));
+
+    if (!Number.isFinite(ltp) || ltp <= 0) {
+      throw new Error(`LTP missing in Dhan response for ${exchangeSegment}:${securityId}`);
+    }
+
+    return { ltp, exchangeSegment, securityId, checkedAt };
+  });
 }
 
 async function getPreviousCompletedIntradayCandle(
@@ -182,6 +236,7 @@ async function getPreviousCompletedIntradayCandle(
 
 module.exports = {
   getOptionLtp,
+  getOptionLtps,
   getNiftySpotLtp,
   getUnderlyingSpotLtp,
   getPreviousCompletedIntradayCandle,

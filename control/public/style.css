@@ -54,11 +54,59 @@
   border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: var(--radius);
   background:
-    linear-gradient(110deg, rgba(7, 13, 26, 0.88) 0%, rgba(18, 45, 77, 0.68) 44%, rgba(18, 64, 83, 0.44) 100%),
-    url("images/ic-hero-banner.png") center / cover;
+    linear-gradient(110deg, rgba(5, 5, 6, 0.84) 0%, rgba(18, 17, 16, 0.58) 48%, rgba(44, 32, 17, 0.22) 100%),
+    url("images/ic-hero-command-gold.png") center / cover;
   box-shadow:
     0 18px 42px rgba(15, 23, 42, 0.18),
     inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  transition:
+    min-height 0.24s ease,
+    padding 0.24s ease,
+    margin 0.24s ease,
+    box-shadow 0.24s ease;
+}
+
+.heroCollapseButton {
+  position: absolute !important;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+}
+
+.heroCollapseButton .sapMBtnInner {
+  min-width: 2.25rem;
+  border: 1px solid rgba(245, 184, 75, 0.34) !important;
+  border-radius: 999px !important;
+  background: rgba(3, 9, 18, 0.58) !important;
+}
+
+.heroCollapseButton .sapMBtnIcon {
+  color: #f5b84b !important;
+}
+
+.heroCard[data-collapsed="true"] {
+  min-height: 54px;
+  padding: 10px 58px 10px 18px;
+  margin-bottom: 10px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+}
+
+.heroCard[data-collapsed="true"]
+  .heroMainContent
+  > .sapMFlexItem:not(:has(> .heroTitle)),
+.heroCard[data-collapsed="true"] .botAvatar,
+.heroCard[data-collapsed="true"] .marketEventsPanel,
+.heroCard[data-collapsed="true"] .marketTicker,
+.heroCard[data-collapsed="true"]::after {
+  display: none !important;
+}
+
+.heroCard[data-collapsed="true"] .heroMainContent {
+  width: auto;
+}
+
+.heroCard[data-collapsed="true"] .heroTitle .sapMTitleStyleAuto {
+  font-size: 1.05rem;
 }
 
 .heroCard::before {
@@ -76,7 +124,7 @@
   inset: auto 26px 37px auto;
   width: 240px;
   height: 3px;
-  background: linear-gradient(90deg, var(--teal), #f5b84b, var(--red));
+  background: linear-gradient(90deg, #343434, #f5b84b, #9b652d);
   content: "";
   opacity: 0.82;
 }
@@ -84,6 +132,7 @@
 .botAvatar {
   width: 148px !important;
   height: 148px !important;
+  margin-right: 44px;
   margin-left: 22px;
   border: 1px solid rgba(245, 184, 75, 0.34);
   box-shadow:
@@ -434,6 +483,10 @@
 .streakPlannerSavedAt {
   color: var(--muted) !important;
   font-size: 0.78rem;
+}
+
+.streakPlannerHeaderActions {
+  gap: 6px;
 }
 
 .streakPlannerEntryToolbar {
@@ -1721,6 +1774,40 @@
 
 .planningMainColumn {
   container-type: inline-size;
+}
+
+/* Keep the two collapsible planning ribbons on one shared desktop row. */
+@media (min-width: 761px) {
+  .planningDashboardLayout > .sapMFlexItem,
+  .planningMainColumn,
+  .planningSideColumn {
+    display: contents !important;
+  }
+
+  .planningMainColumn > .planningRiskLayout {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .planningMainColumn > .planningKeyMetricsRow {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .planningSideColumn > .planningModeBox {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+
+  .planningMainColumn > .sapMFlexItem:has(> .trailStrategyPlanningGroup) {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .planningSideColumn > .sapMFlexItem:has(> .premiumThresholdGroup) {
+    grid-column: 2;
+    grid-row: 3;
+  }
 }
 
 .planningRiskLayout,
@@ -3751,6 +3838,13 @@
     flex-direction: column !important;
     min-height: 188px;
     padding: 18px 18px 54px;
+  }
+
+  .heroCard[data-collapsed="true"] {
+    align-items: center !important;
+    flex-direction: row !important;
+    min-height: 54px;
+    padding: 10px 58px 10px 14px;
   }
 
   .heroTitle .sapMTitleStyleAuto {

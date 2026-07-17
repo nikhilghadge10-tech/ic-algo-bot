@@ -122,11 +122,11 @@ const streakPlannerPath = path.join(
   "streakPlanner.json",
 );
 const STREAK_PLANNER_INTERVALS = ["1", "3", "5", "15", "30", "60"];
-const STREAK_PLANNER_TRADE_COUNT = 50;
+const STREAK_PLANNER_TRADE_COUNT = 100;
 const STREAK_PLANNER_OUTCOMES = new Set([
   "",
   "-1",
-  ...Array.from({ length: 10 }, (_, index) => String(index)),
+  ...Array.from({ length: 99 }, (_, index) => String(index + 1)),
 ]);
 
 function getEmptyStreakPlanner() {
@@ -154,15 +154,23 @@ function normalizeStreakPlanner(payload) {
       const source = rowsByInterval.get(interval);
       const trades = Array.isArray(source?.trades) ? source.trades : [];
       const updatedAt = Array.isArray(source?.updatedAt) ? source.updatedAt : [];
+      const legacyOffset = trades.length > 0 && trades.length <= 50
+        ? STREAK_PLANNER_TRADE_COUNT - trades.length
+        : 0;
       const normalizedTrades = Array.from(
         { length: STREAK_PLANNER_TRADE_COUNT },
         (_, index) => {
-          const rawOutcome = String(trades[index] ?? "").toUpperCase();
-          const outcome = rawOutcome === "PROFIT"
-            ? "1"
-            : rawOutcome === "SL"
-              ? "-1"
-              : rawOutcome;
+          const sourceIndex = index - legacyOffset;
+          const rawOutcome = String(
+            sourceIndex >= 0 ? trades[sourceIndex] ?? "" : "",
+          ).toUpperCase();
+          const outcome = rawOutcome === "0"
+            ? ""
+            : rawOutcome === "PROFIT"
+              ? "1"
+              : rawOutcome === "SL"
+                ? "-1"
+                : rawOutcome;
           return STREAK_PLANNER_OUTCOMES.has(outcome) ? outcome : "";
         },
       );
@@ -171,7 +179,8 @@ function normalizeStreakPlanner(payload) {
         interval,
         trades: normalizedTrades,
         updatedAt: Array.from({ length: STREAK_PLANNER_TRADE_COUNT }, (_, index) => {
-          const value = String(updatedAt[index] || "");
+          const sourceIndex = index - legacyOffset;
+          const value = String(sourceIndex >= 0 ? updatedAt[sourceIndex] || "" : "");
           return normalizedTrades[index] && !Number.isNaN(new Date(value).getTime())
             ? value
             : "";
@@ -1617,7 +1626,17 @@ function formatDashboardLogs(content, telegramEnabled = false) {
   let currentTrade = null;
   let pendingTrade = null;
 
-  lines.slice(-160).forEach((line) => {
+  const recentDateKeys = new Set(
+    [...new Set(lines.map((line) => getParsedLogLine(line).dateKey))]
+      .filter((dateKey) => dateKey !== "unknown")
+      .sort()
+      .slice(-2),
+  );
+  const recentLines = lines.filter((line) =>
+    recentDateKeys.has(getParsedLogLine(line).dateKey),
+  );
+
+  recentLines.forEach((line) => {
     const parsedLine = getParsedLogLine(line);
     const day = getLogDay(daysByKey, parsedLine);
     day.latestMs = Math.max(day.latestMs, parsedLine.timestampMs);

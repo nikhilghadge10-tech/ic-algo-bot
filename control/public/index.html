@@ -23,7 +23,7 @@
 
     <script>
       sap.ui.getCore().attachInit(async function () {
-        const LOG_FILTER_STORAGE_KEY = "icAlgoBot.activityLogFilters";
+        const LOG_FILTER_STORAGE_KEY = "icAlgoBot.activityLogFilters.v2";
         const ACTIVE_TAB_STORAGE_KEY = "icAlgoBot.activeTab";
         const TOKEN_EXPIRY_WARNING_STORAGE_KEY = "icAlgoBot.dhanTokenExpiryWarning";
         const DHAN_PROFILE_URL = "https://web.dhan.co/index/profile";
@@ -248,7 +248,7 @@
             SHOW_TRADINGVIEW_SIGNAL_LOGS: true,
             SHOW_MANUAL_SIGNAL_LOGS: true,
             SHOW_PAPER_TRADE_LOGS: true,
-            SHOW_IGNORED_SIGNAL_LOGS: false,
+            SHOW_IGNORED_SIGNAL_LOGS: true,
             SHOW_FAILED_SIGNAL_LOGS: true,
             SHOW_READINESS_LOGS: false,
             SHOW_DETAILED_SIGNAL_LOGS: false,
@@ -322,6 +322,7 @@
         config.dhanHealth = null;
         config.RAW_LOGS = "";
         config.LIVE_LOGS = "";
+        config.HERO_COLLAPSED = false;
         config.MARKET_TODAY_LABEL = formatMarketDate();
         config.NIFTY_NEXT_EXPIRY_LABEL = "Loading expiry...";
         config.NIFTY_NEXT_EXPIRY_META = "";
@@ -367,6 +368,7 @@
         config.tradeAnalytics = null;
         config.STREAK_PLANNER_SAVING = false;
         config.STREAK_PLANNER_UPDATED_LABEL = "Not saved yet";
+        config.STREAK_PLANNER_DIRTY = false;
         config.STREAK_PLANNER_ENTRY_DATE = new Date();
         config.STREAK_PLANNER_INTERVAL = "15";
         config.STREAK_PLANNER_MODE = "overview";
@@ -391,7 +393,6 @@
         let lastSavedDhanEnvironment = config.DHAN_ENV || "LIVE";
         let dhanHealthRequestSequence = 0;
         let pendingConfigSaveTimer = null;
-        let pendingStreakPlannerSaveTimer = null;
         let activePremiumHugeCandleUnderlying = normalizeUnderlyingSymbol(
           config.UNDERLYING_SYMBOL,
         );
@@ -406,6 +407,7 @@
           fresh.dhanHealth = currentData.dhanHealth || null;
           fresh.RAW_LOGS = currentData.RAW_LOGS || "";
           fresh.LIVE_LOGS = currentData.LIVE_LOGS || "";
+          fresh.HERO_COLLAPSED = currentData.HERO_COLLAPSED === true;
           applyLogFilterPrefs(fresh, currentData);
           fresh.MARKET_TODAY_LABEL = currentData.MARKET_TODAY_LABEL;
           fresh.NIFTY_NEXT_EXPIRY_LABEL = currentData.NIFTY_NEXT_EXPIRY_LABEL;
@@ -496,6 +498,7 @@
             currentData.STREAK_PLANNER_SAVING === true;
           fresh.STREAK_PLANNER_UPDATED_LABEL =
             currentData.STREAK_PLANNER_UPDATED_LABEL || "Not saved yet";
+          fresh.STREAK_PLANNER_DIRTY = currentData.STREAK_PLANNER_DIRTY === true;
           fresh.STREAK_PLANNER_ENTRY_DATE =
             currentData.STREAK_PLANNER_ENTRY_DATE instanceof Date
               ? currentData.STREAK_PLANNER_ENTRY_DATE
@@ -685,10 +688,15 @@
 
         function calculateStreakPlannerRow(row) {
           const trades = Array.isArray(row?.trades)
-            ? row.trades.map((outcome) => String(outcome ?? ""))
+            ? row.trades.map((outcome) => {
+                const value = String(outcome ?? "");
+                return value === "0" ? "" : value;
+              })
             : [];
           const updatedAt = Array.isArray(row?.updatedAt)
-            ? row.updatedAt.map((value) => String(value ?? ""))
+            ? row.updatedAt.map((value, index) =>
+                trades[index] === "" ? "" : String(value ?? ""),
+              )
             : [];
           const completed = trades.filter((outcome) => {
             const value = Number(outcome);
@@ -725,6 +733,7 @@
 
           return {
             ...row,
+            trades,
             updatedAt,
             intervalLabel: `${row.interval}-min`,
             completedCount: completed.length,
@@ -750,9 +759,10 @@
           const values = Array.isArray(trades) ? trades : [];
           const ordered = [];
 
-          for (let rowIndex = 4; rowIndex >= 0; rowIndex -= 1) {
+          for (let rowIndex = 9; rowIndex >= 0; rowIndex -= 1) {
             for (let tradeIndex = 9; tradeIndex >= 0; tradeIndex -= 1) {
-              ordered.push(String(values[rowIndex * 10 + tradeIndex] ?? ""));
+              const value = String(values[rowIndex * 10 + tradeIndex] ?? "");
+              ordered.push(value === "0" ? "" : value);
             }
           }
 
@@ -776,19 +786,38 @@
         function updateStreakPlannerRows(rows) {
           model.setProperty(
             "/streakPlanner/rows",
-            (Array.isArray(rows) ? rows : []).map((row) =>
-              calculateStreakPlannerRow({
+            (Array.isArray(rows) ? rows : []).map((row) => {
+              const sourceTrades = Array.isArray(row?.trades) ? row.trades : [];
+              const sourceUpdatedAt = Array.isArray(row?.updatedAt)
+                ? row.updatedAt
+                : [];
+              const legacyOffset = sourceTrades.length > 0 && sourceTrades.length <= 50
+                ? 100 - sourceTrades.length
+                : 0;
+
+              return calculateStreakPlannerRow({
                 ...row,
                 trades: Array.from(
-                  { length: 50 },
-                  (_, index) => String(row?.trades?.[index] ?? ""),
+                  { length: 100 },
+                  (_, index) => {
+                    const sourceIndex = index - legacyOffset;
+                    const value = String(
+                      sourceIndex >= 0 ? sourceTrades[sourceIndex] ?? "" : "",
+                    );
+                    return value === "0" ? "" : value;
+                  },
                 ),
                 updatedAt: Array.from(
-                  { length: 50 },
-                  (_, index) => String(row?.updatedAt?.[index] ?? ""),
+                  { length: 100 },
+                  (_, index) => {
+                    const sourceIndex = index - legacyOffset;
+                    return String(
+                      sourceIndex >= 0 ? sourceUpdatedAt[sourceIndex] ?? "" : "",
+                    );
+                  },
                 ),
-              }),
-            ),
+              });
+            }),
           );
           rebuildStreakPlannerGrid();
         }
@@ -842,11 +871,14 @@
             (row) => String(row?.interval) === String(interval),
           );
           const trades = Array.from(
-            { length: 50 },
-            (_, index) => String(sourceRow?.trades?.[index] ?? ""),
+            { length: 100 },
+            (_, index) => {
+              const value = String(sourceRow?.trades?.[index] ?? "");
+              return value === "0" ? "" : value;
+            },
           );
           const updatedAt = Array.from(
-            { length: 50 },
+            { length: 100 },
             (_, index) => String(sourceRow?.updatedAt?.[index] ?? ""),
           );
           const selectedSummary = calculateStreakPlannerRow({
@@ -864,7 +896,7 @@
           });
           const stopLossStreak = getConsecutiveStopLossCount(trades);
           const winProbability = stopLossStreak * 20;
-          const gridRows = Array.from({ length: 5 }, (_, rowIndex) => {
+          const gridRows = Array.from({ length: 10 }, (_, rowIndex) => {
             const rowTrades = trades.slice(rowIndex * 10, rowIndex * 10 + 10);
             const rowUpdatedAt = updatedAt.slice(rowIndex * 10, rowIndex * 10 + 10);
 
@@ -875,15 +907,30 @@
               updatedAt: rowUpdatedAt,
             });
           });
+          const visibleBlankRowIndexes = new Set(
+            gridRows
+              .filter((row) => Number(row.completedCount || 0) === 0)
+              .slice(-1)
+              .map((row) => row.gridRowIndex),
+          );
+          const entryRows = gridRows.filter(
+            (row) =>
+              Number(row.completedCount || 0) > 0 ||
+              visibleBlankRowIndexes.has(row.gridRowIndex),
+          );
 
-          model.setProperty("/STREAK_PLANNER_GRID_ROWS", gridRows);
+          model.setProperty("/STREAK_PLANNER_GRID_ROWS", entryRows);
           model.setProperty(
             "/STREAK_PLANNER_OVERVIEW_ROWS",
             gridRows.filter((row) => Number(row.completedCount || 0) > 0),
           );
           model.setProperty(
             "/STREAK_PLANNER_CAN_ROLL",
-            trades.every((outcome) => String(outcome ?? "") !== ""),
+            entryRows.length > 0 && entryRows.every((row) =>
+              (row.trades || []).every(
+                (outcome) => String(outcome ?? "") !== "",
+              ),
+            ),
           );
           model.setProperty(
             "/STREAK_PLANNER_TOTAL_LABEL",
@@ -948,6 +995,7 @@
               "/STREAK_PLANNER_UPDATED_LABEL",
               formatStreakPlannerUpdatedAt(result.planner?.updatedAt),
             );
+            model.setProperty("/STREAK_PLANNER_DIRTY", false);
           } catch (error) {
             sap.m.MessageToast.show("Unable to load Probability");
           }
@@ -975,22 +1023,13 @@
               "/STREAK_PLANNER_UPDATED_LABEL",
               formatStreakPlannerUpdatedAt(result.planner?.updatedAt),
             );
+            model.setProperty("/STREAK_PLANNER_DIRTY", false);
             if (!options.silent) sap.m.MessageToast.show("Probability saved");
           } catch (error) {
             sap.m.MessageToast.show("Unable to save Probability");
           } finally {
             model.setProperty("/STREAK_PLANNER_SAVING", false);
           }
-        }
-
-        function scheduleStreakPlannerAutosave() {
-          if (pendingStreakPlannerSaveTimer) {
-            clearTimeout(pendingStreakPlannerSaveTimer);
-          }
-          pendingStreakPlannerSaveTimer = setTimeout(() => {
-            pendingStreakPlannerSaveTimer = null;
-            saveStreakPlanner({ silent: true, preserveModel: true });
-          }, 200);
         }
 
         function getAnalyticsTradeOutcome(row) {
@@ -1575,6 +1614,11 @@
               }
             },
           });
+          const focusTokenInput = function () {
+            setTimeout(function () {
+              if (tokenInput.getDomRef()) tokenInput.focus();
+            }, 0);
+          };
 
           const updateButton = new sap.m.Button({
             text: "Update Token",
@@ -1632,6 +1676,7 @@
             contentWidth: "480px",
             draggable: true,
             resizable: true,
+            initialFocus: tokenInput,
             content: [
               new sap.m.VBox({
                 items: [
@@ -1709,15 +1754,15 @@
                 dialog.close();
               },
             }),
+            afterOpen: focusTokenInput,
             afterClose: function () {
+              window.removeEventListener("focus", focusTokenInput);
               dialog.destroy();
             },
           });
 
+          window.addEventListener("focus", focusTokenInput, { once: true });
           dialog.open();
-          setTimeout(function () {
-            tokenInput.focus();
-          }, 0);
         }
 
         // Pull recent logs from the backend; the backend already sorts newest-first.
@@ -3223,17 +3268,6 @@
           if (pendingConfigSaveTimer) {
             flushPendingConfigSave({ beacon: true });
           }
-          if (pendingStreakPlannerSaveTimer) {
-            clearTimeout(pendingStreakPlannerSaveTimer);
-            pendingStreakPlannerSaveTimer = null;
-            navigator.sendBeacon(
-              "/api/streak-planner",
-              new Blob(
-                [JSON.stringify({ rows: model.getProperty("/streakPlanner/rows") })],
-                { type: "application/json" },
-              ),
-            );
-          }
         });
 
         // Save dashboard settings to .env.
@@ -4041,7 +4075,7 @@
           let targetRow = 0;
           let targetTrade = 0;
 
-          for (let rowIndex = Math.min(gridRows.length - 1, 4); rowIndex >= 0; rowIndex -= 1) {
+          for (let rowIndex = gridRows.length - 1; rowIndex >= 0; rowIndex -= 1) {
             const trades = gridRows[rowIndex]?.trades || [];
 
             for (let tradeIndex = 9; tradeIndex >= 0; tradeIndex -= 1) {
@@ -4076,37 +4110,36 @@
           const plannerRowPath = `/streakPlanner/rows/${plannerRowIndex}`;
           const row = model.getProperty(plannerRowPath) || {};
           const trades = Array.from(
-            { length: 50 },
+            { length: 100 },
             (_, index) => String(row.trades?.[index] ?? ""),
           );
           const updatedAt = Array.from(
-            { length: 50 },
+            { length: 100 },
             (_, index) => String(row.updatedAt?.[index] ?? ""),
           );
 
           if (trades.some((outcome) => String(outcome ?? "") === "")) {
-            sap.m.MessageToast.show(
-              `${interval}m still has empty outcomes. Fill all 50 before adding slots.`,
-            );
-            model.setProperty("/STREAK_PLANNER_CAN_ROLL", false);
+            rebuildStreakPlannerGrid();
+            setTimeout(() => focusFirstEmptyStreakOutcomeInput(), 0);
+            sap.m.MessageToast.show(`${interval}m: 10 more outcome slots added`);
             return;
           }
 
           model.setProperty(
             `${plannerRowPath}/trades`,
-            [...Array(10).fill(""), ...trades].slice(0, 50),
+            [...Array(10).fill(""), ...trades].slice(0, 100),
           );
           model.setProperty(
             `${plannerRowPath}/updatedAt`,
-            [...Array(10).fill(""), ...updatedAt].slice(0, 50),
+            [...Array(10).fill(""), ...updatedAt].slice(0, 100),
           );
           model.setProperty(
             plannerRowPath,
             calculateStreakPlannerRow(model.getProperty(plannerRowPath)),
           );
           rebuildStreakPlannerGrid();
-          saveStreakPlanner({ silent: true, preserveModel: true });
-          sap.m.MessageToast.show(`${interval}m: 10 fresh outcome slots added`);
+          model.setProperty("/STREAK_PLANNER_DIRTY", true);
+          sap.m.MessageToast.show(`${interval}m: 10 fresh outcome slots added. Click Save to keep them.`);
         }
 
         function setStreakPlannerMode(mode) {
@@ -4160,17 +4193,24 @@
               const context = event.getSource().getBindingContext();
               if (!context) return;
               const rowIndex = Number(context.getPath().split("/").pop());
+              const gridRowIndex = Number(
+                model.getProperty(`${context.getPath()}/gridRowIndex`),
+              );
               let value = event.getParameter("value").trim();
               if (value === "-") {
                 value = "-1";
                 event.getSource().setValue(value);
               }
+              if (value === "0") {
+                value = "";
+                event.getSource().setValue(value);
+              }
 
-              if (value !== "" && value !== "-1" && !/^[0-9]$/.test(value)) {
+              if (value !== "" && value !== "-1" && !/^[1-9][0-9]?$/.test(value)) {
                 event.getSource().setValue(
                   model.getProperty(`${context.getPath()}/trades/${tradeIndex}`) || "",
                 );
-                sap.m.MessageToast.show('Allowed values: blank, -1, or one digit 0–9');
+                sap.m.MessageToast.show('Allowed values: blank, -1, or 1–99');
                 return;
               }
 
@@ -4191,7 +4231,7 @@
                 (plannerRow) => String(plannerRow?.interval) === String(interval),
               );
               if (plannerRowIndex >= 0) {
-                const outcomeIndex = rowIndex * 10 + tradeIndex;
+                const outcomeIndex = gridRowIndex * 10 + tradeIndex;
                 const plannerRowPath = `/streakPlanner/rows/${plannerRowIndex}`;
                 model.setProperty(
                   `${plannerRowPath}/trades/${outcomeIndex}`,
@@ -4206,9 +4246,19 @@
                   calculateStreakPlannerRow(model.getProperty(plannerRowPath)),
                 );
               }
-              scheduleStreakPlannerAutosave();
+              model.setProperty("/STREAK_PLANNER_DIRTY", true);
+              const visibleRows =
+                model.getProperty("/STREAK_PLANNER_GRID_ROWS") || [];
+              model.setProperty(
+                "/STREAK_PLANNER_CAN_ROLL",
+                visibleRows.length > 0 && visibleRows.every((visibleRow) =>
+                  (visibleRow.trades || []).every(
+                    (outcome) => String(outcome ?? "") !== "",
+                  ),
+                ),
+              );
 
-              if (value === "-1" || /^[0-9]$/.test(value)) {
+              if (value === "-1" || /^[1-9][0-9]$/.test(value)) {
                 const nextTradeIndex = tradeIndex > 0 ? tradeIndex - 1 : 9;
                 const nextRowIndex = tradeIndex > 0 ? rowIndex : Math.max(rowIndex - 1, 0);
                 setTimeout(() => focusStreakOutcomeInput(nextRowIndex, nextTradeIndex), 0);
@@ -4237,7 +4287,12 @@
               nextTrade = tradeIndex > 0 ? tradeIndex - 1 : 9;
               nextRow = tradeIndex > 0 ? rowIndex : Math.max(0, rowIndex - 1);
             } else if (event.key === "ArrowUp") nextRow = Math.max(0, rowIndex - 1);
-            else if (event.key === "ArrowDown") nextRow = Math.min(4, rowIndex + 1);
+            else if (event.key === "ArrowDown") {
+              const visibleRowCount = (
+                model.getProperty("/STREAK_PLANNER_GRID_ROWS") || []
+              ).length;
+              nextRow = Math.min(Math.max(visibleRowCount - 1, 0), rowIndex + 1);
+            }
             else return;
 
             event.preventDefault();
@@ -4307,15 +4362,6 @@
                     tooltip: "Sum of the 10 outcomes in this row.",
                   }),
                 }),
-                new sap.m.Column({
-                  width: "5rem",
-                  hAlign: "Center",
-                  header: new sap.m.Text({
-                    text: "Score",
-                    tooltip:
-                      "0–100 performance score: win rate adjusted by up to 20 points for the current winning or losing streak.",
-                  }),
-                }),
               ]),
             ],
           }).addStyleClass(
@@ -4341,28 +4387,6 @@
                       state: "{rowTotalState}",
                       inverted: true,
                     }).addStyleClass("streakRowTotalDisplay"),
-                    new sap.m.ObjectStatus({
-                    customData: [
-                      new sap.ui.core.CustomData({
-                        key: "score-band",
-                        value: {
-                          path: "score",
-                          formatter: (score) => {
-                            if (score === null || score === undefined) return "empty";
-                            if (score <= 35) return "low";
-                            if (score <= 50) return "caution";
-                            if (score <= 65) return "fair";
-                            if (score <= 80) return "good";
-                            return "strong";
-                          },
-                        },
-                        writeToDom: true,
-                      }),
-                    ],
-                    text: "{scoreLabel}",
-                    state: "{scoreState}",
-                    inverted: true,
-                    }).addStyleClass("streakScoreDisplay"),
                   ]),
                 ],
               });
@@ -4390,9 +4414,48 @@
                       new sap.m.Title({ text: "Probability", level: "H3" }),
                     ],
                   }),
-                  new sap.m.Text({
-                    text: "{/STREAK_PLANNER_UPDATED_LABEL}",
-                  }).addStyleClass("streakPlannerSavedAt"),
+                  new sap.m.HBox({
+                    alignItems: "Center",
+                    wrap: "Wrap",
+                    items: [
+                      new sap.m.Text({
+                        text: "{/STREAK_PLANNER_UPDATED_LABEL}",
+                      }).addStyleClass("streakPlannerSavedAt"),
+                      new sap.m.Button({
+                        icon: {
+                          path: "/STREAK_PLANNER_MODE",
+                          formatter: (mode) =>
+                            mode === "manualEntry"
+                              ? "sap-icon://display"
+                              : "sap-icon://edit",
+                        },
+                        type: {
+                          path: "/STREAK_PLANNER_MODE",
+                          formatter: (mode) =>
+                            mode === "manualEntry" ? "Emphasized" : "Transparent",
+                        },
+                        tooltip: {
+                          path: "/STREAK_PLANNER_MODE",
+                          formatter: (mode) =>
+                            mode === "manualEntry" ? "Show overview" : "Change entries",
+                        },
+                        press: toggleStreakPlannerMode,
+                      }).addStyleClass("streakPlannerModeButton"),
+                      new sap.m.Button({
+                        icon: "sap-icon://save",
+                        type: "Transparent",
+                        tooltip: "Save changes",
+                        enabled: {
+                          parts: [
+                            { path: "/STREAK_PLANNER_DIRTY" },
+                            { path: "/STREAK_PLANNER_SAVING" },
+                          ],
+                          formatter: (dirty, saving) => dirty && !saving,
+                        },
+                        press: () => saveStreakPlanner({ preserveModel: true }),
+                      }).addStyleClass("streakPlannerModeButton streakPlannerSaveButton"),
+                    ],
+                  }).addStyleClass("streakPlannerHeaderActions"),
                 ],
               }).addStyleClass("streakPlannerHeader"),
               new sap.m.HBox({
@@ -4458,39 +4521,8 @@
                           formatter: (state) => state !== "None",
                         },
                       }).addStyleClass("streakPlannerToolbarChip"),
-                      new sap.m.ObjectStatus({
-                        title: "Score",
-                        text: "{/STREAK_PLANNER_SCORE_LABEL}",
-                        state: "{/STREAK_PLANNER_SCORE_STATE}",
-                        inverted: {
-                          path: "/STREAK_PLANNER_SCORE_STATE",
-                          formatter: (state) => state !== "None",
-                        },
-                      }).addStyleClass("streakPlannerToolbarChip"),
                     ],
                   }).addStyleClass("streakPlannerToolbarStats"),
-                  new sap.m.Button({
-                    icon: {
-                      path: "/STREAK_PLANNER_MODE",
-                      formatter: (mode) =>
-                        mode === "manualEntry"
-                          ? "sap-icon://display"
-                          : "sap-icon://edit",
-                    },
-                    type: {
-                      path: "/STREAK_PLANNER_MODE",
-                      formatter: (mode) =>
-                        mode === "manualEntry" ? "Emphasized" : "Transparent",
-                    },
-                    tooltip: {
-                      path: "/STREAK_PLANNER_MODE",
-                      formatter: (mode) =>
-                        mode === "manualEntry"
-                          ? "Show overview"
-                          : "Manual entry",
-                    },
-                    press: toggleStreakPlannerMode,
-                  }).addStyleClass("streakPlannerModeButton"),
                 ],
               }).addStyleClass("streakPlannerTimeframeSwitch"),
               new sap.m.VBox({
@@ -4512,7 +4544,7 @@
                     wrap: "Wrap",
                     items: [
                       new sap.m.Text({
-                        text: "Blank, -1, or 0–9. Entry starts at the first empty slot from bottom-right.",
+                        text: "Blank, -1, or 1–99. Zero is treated as unfilled; press Enter after a single digit.",
                       }).addStyleClass("streakPlannerEntryHelp"),
                       new sap.m.HBox({
                         alignItems: "Center",
@@ -4533,10 +4565,7 @@
                               }
 
                               model.setProperty("/STREAK_PLANNER_ENTRY_DATE", date);
-                              model.setProperty(
-                                "/STREAK_PLANNER_UPDATED_LABEL",
-                                formatStreakPlannerUpdatedAt(date.toISOString()),
-                              );
+                              model.setProperty("/STREAK_PLANNER_DIRTY", true);
                             },
                           }).addStyleClass("streakPlannerTimestampPicker"),
                           new sap.m.Button({
@@ -4544,7 +4573,7 @@
                             icon: "sap-icon://restart",
                             type: "Transparent",
                             tooltip:
-                              "Enabled only when all 50 outcomes are filled. Adds 10 blank outcomes at the top and discards the oldest 10 from the bottom.",
+                              "Enabled when the visible row is complete. Reveals 10 more slots; after all 100 are filled, it starts a fresh row and discards the oldest 10.",
                             enabled: "{/STREAK_PLANNER_CAN_ROLL}",
                             press: rollSelectedStreakPlannerSession,
                           }).addStyleClass("streakPlannerNewSessionButton"),
@@ -8555,7 +8584,7 @@
             new sap.m.IconTabFilter({
               key: "tradingDesk",
               text: "Cockpit",
-              icon: "images/tab-cockpit-gold.png",
+              icon: "images/tab-cockpit-navigator-gold.png",
               content: [
                 liveTradingStatusCard(),
                 readinessCenterCard(),
@@ -8566,43 +8595,43 @@
 
             new sap.m.IconTabFilter({
               key: "planning",
-              text: "Risk Guard",
-              icon: "images/tab-risk-guard.png",
+              text: "Planning",
+              icon: "images/tab-planning-gold.png",
               content: [planningCard()],
             }),
 
             new sap.m.IconTabFilter({
               key: "manualSignals",
               text: "Manual Entry",
-              icon: "images/tab-manual-entry-gold-hand-v2.png",
+              icon: "images/tab-manual-entry-pearl-gold.png",
               content: [testCenterCard()],
             }),
 
             new sap.m.IconTabFilter({
               key: "analytics",
               text: "Analytics",
-              icon: "images/tab-analytics.png",
+              icon: "images/tab-analytics-gold.png",
               content: [analyticsCard()],
             }),
 
             new sap.m.IconTabFilter({
               key: "streakPlanner",
               text: "Probability",
-              icon: "images/tab-probability.png",
+              icon: "images/tab-probability-gold.png",
               content: [streakPlannerCard()],
             }),
 
             new sap.m.IconTabFilter({
               key: "monitoring",
               text: "Logs",
-              icon: "images/tab-logs.png",
+              icon: "images/tab-logs-egyptian-gold.png",
               content: [monitoringCard()],
             }),
 
             new sap.m.IconTabFilter({
               key: "tradingView",
-              text: "TV Webhook",
-              icon: "images/tab-tv-webhook.png",
+              text: "Webhooks",
+              icon: "images/tab-webhooks-spider-gold.png",
               content: [tradingViewReferenceCard()],
             }),
           ],
@@ -8616,6 +8645,17 @@
               items: [
                 new sap.m.HBox({
                   alignItems: "Center",
+                  customData: [
+                    new sap.ui.core.CustomData({
+                      key: "collapsed",
+                      value: {
+                        path: "/HERO_COLLAPSED",
+                        formatter: (collapsed) =>
+                          collapsed ? "true" : "false",
+                      },
+                      writeToDom: true,
+                    }),
+                  ],
                   items: [
                     new sap.m.VBox({
                       items: [
@@ -8692,7 +8732,7 @@
                     }).addStyleClass("heroMainContent"),
 
                     new sap.m.Avatar({
-                      src: "images/ic-bull-face.png",
+                      src: "images/ic-bull-medallion-gold.png",
                       displaySize: "XL",
                       displayShape: "Circle",
                     }).addStyleClass("botAvatar"),
@@ -8760,6 +8800,28 @@
                         }).addStyleClass("marketTickerTrack"),
                       ],
                     }).addStyleClass("marketTicker"),
+
+                    new sap.m.Button({
+                      type: "Transparent",
+                      icon: {
+                        path: "/HERO_COLLAPSED",
+                        formatter: (collapsed) =>
+                          collapsed
+                            ? "sap-icon://slim-arrow-down"
+                            : "sap-icon://slim-arrow-up",
+                      },
+                      tooltip: {
+                        path: "/HERO_COLLAPSED",
+                        formatter: (collapsed) =>
+                          collapsed ? "Expand hero" : "Collapse hero",
+                      },
+                      press: () => {
+                        model.setProperty(
+                          "/HERO_COLLAPSED",
+                          !model.getProperty("/HERO_COLLAPSED"),
+                        );
+                      },
+                    }).addStyleClass("heroCollapseButton"),
                   ],
                 }).addStyleClass("heroCard"),
 
